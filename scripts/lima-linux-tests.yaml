@@ -1,0 +1,69 @@
+# Long-lived Lima VM for `just test-linux`: scripts/linux-exec.sh boots it on first use, under the lane lock, and then
+# reuses it. Each cross-compiled Linux test binary runs here as `runner`, a non-root user with a supplementary group, as
+# on CI's runner (uid 1001, also in adm). The home directory is mounted read-only at its own path, so a package dir and
+# its testdata resolve as on the host. No port is forwarded, so the VM never collides with a lane VM (8080/8081).
+# After a change here, `limactl delete -f funcd-linux-tests`; the next run boots a new VM.
+
+# The lanes' Debian image (scripts/lima.yaml; scripts/lima-cache.py primes it): keep the two in step.
+images:
+  - location: "https://laotzu.ftp.acc.umu.se/cdimage/cloud/bookworm/latest/debian-12-genericcloud-arm64.qcow2"
+    arch: "aarch64"
+    digest: "sha512:f7339d10adfe8c4f6aec4cf1134b9fd6086b2710e1f9ba50e7f1d0890024036fe13417b904cc328f7b35dd9ec07165a4857ae425093bb333769f2fb527e2b02b"
+  - location: "https://laotzu.ftp.acc.umu.se/cdimage/cloud/bookworm/latest/debian-12-genericcloud-amd64.qcow2"
+    arch: "x86_64"
+    digest: "sha512:ee13b9618400b521b83d92dec5106c853c3290d14f25efbacb851828abceac1847b63d3d1bac8059d980c7d443efcbc7451fdd6648b2a134796b28563cedfda9"
+
+cpus: 4
+memory: "4GiB"
+disk: "20GiB"
+
+mounts:
+  - location: "~"
+
+containerd:
+  system: false
+  user: false
+
+# One ignore rule for every bind address. guestIP 0.0.0.0 alone makes Lima default guestIPMustBeZero to true: the rule
+# then matches only a bind on 0.0.0.0 or ::, and Lima's built-in rule forwards a bind on 127.0.0.1 to the host.
+portForwards:
+  - guestIP: "0.0.0.0"
+    guestIPMustBeZero: false
+    guestPortRange:
+      - 1
+      - 65535
+    proto: any
+    ignore: true
+
+# node: the tests that start a worker; the nodejs_22 version of the flake's nixpkgs, pinned by checksum like the image.
+# git: `go build` in a test stamps VCS information, from a checkout runner does not own.
+provision:
+  - mode: system
+    script: |
+      #!/bin/bash
+      set -euo pipefail
+      id runner >/dev/null 2>&1 || useradd --uid 1001 --user-group --groups adm --create-home --shell /bin/bash runner
+      command -v git >/dev/null || { apt-get update -qq && apt-get install -y -qq git; }
+      git config --system safe.directory '*'
+      v=22.22.3
+      if [ "$(node --version 2>/dev/null)" != "v$v" ]; then
+        case $(uname -m) in
+        aarch64) arch=arm64 sum=cc8bc82b2dd0b595c3b95a4c3c9c8c350907cff011afbdee3d1379e812e1e3e3 ;;
+        x86_64) arch=x64 sum=c7a10d6816da8eaaa7534dd73c71c6e2b2c391dbbf845e364902d156615dd1b8 ;;
+        esac
+        file=node-v$v-linux-$arch.tar.gz
+        curl -fsSLo "/tmp/$file" "https://nodejs.org/dist/v$v/$file"
+        echo "$sum  /tmp/$file" | sha256sum -c -
+        tar -xzf "/tmp/$file" -C /usr/local --strip-components=1 --no-same-owner
+        rm "/tmp/$file"
+      fi
+
+probes:
+  - description: "runner, git and node are in place"
+    script: |
+      #!/bin/bash
+      set -eux -o pipefail
+      id runner
+      command -v git
+      command -v node
+    hint: "the provision did not complete; see /var/log/cloud-init-output.log in `limactl shell funcd-linux-tests`"
