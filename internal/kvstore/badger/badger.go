@@ -18,6 +18,8 @@ import (
 
 	"github.com/pyvvo/funcd/api/fault"
 	"github.com/pyvvo/funcd/internal/kvstore"
+	"github.com/pyvvo/funcd/internal/snapshot"
+	snapbadger "github.com/pyvvo/funcd/internal/snapshot/badger"
 )
 
 // Op is the mutation kind a CDC change-log entry records.
@@ -373,6 +375,25 @@ func (d *driver) DropPrefix(prefix string) error {
 	return g.Wait()
 }
 
+// SnapshotPrefix exports one store (ADR-0209 Decision 7) beyond the kvstore.KV port: one read transaction and one
+// iterator over prefix, each live key without prefix with its value, in key order, version "". It needs no backup
+// seam and carries no delete record. A bad prefix is fault.Invalid before any emit.
+func (d *driver) SnapshotPrefix(prefix string) snapshot.Source {
+	return prefixSource{db: d.db, prefix: prefix}
+}
+
+type prefixSource struct {
+	db     *badger.DB
+	prefix string
+}
+
+func (s prefixSource) Snapshot(ctx context.Context, emit func(snapshot.Record) error) (string, error) {
+	if err := kvstore.CheckStorePrefix("kvbadger.SnapshotPrefix", s.prefix); err != nil {
+		return "", err
+	}
+	return "", snapbadger.SnapshotPrefix(ctx, s.db, []byte(s.prefix), emit)
+}
+
 func (d *driver) Close() error {
 	d.closeOnce.Do(func() { // idempotent: a double Close must not panic on the gateway/stop channel
 		close(d.stop)
@@ -380,7 +401,7 @@ func (d *driver) Close() error {
 		if c, ok := d.cdc.(interface{ release() }); ok { // return the CDC seq lease before closing the db
 			c.release()
 		}
-		if bk, ok := d.backup.(*backup); ok { // Badger panics when an export reads a closed db: let a running Ship or Rebaseline finish
+		if bk, ok := d.backup.(*exporter); ok { // Badger panics when an export reads a closed db: let a running Ship or Rebaseline finish
 			bk.loop.Lock()
 			defer bk.loop.Unlock()
 		}
