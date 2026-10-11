@@ -232,7 +232,8 @@ lima-example name:
     limactl delete -f "$vm" >/dev/null 2>&1 || true
     limactl start --name "$vm" --tty=false scripts/lima-lane.yaml
     # Declarative e2e via OVH Venom (ADR-0077) — the generic VM already gated `limactl start` on the lane's
-    # `ready` target, so we invoke immediately. Run from the scratch dir with the absolute suite path.
+    # `ready` target when the lane sets one (a lane without it deploys in its suite), so we invoke immediately.
+    # Run from the scratch dir with the absolute suite path.
     # VENOM_VERBOSE=2 keeps each step's output in venom.<pid>.log even when the suite PASSES (venom
     # prints a step's `info:` line to the console only on failure/retry) — so a green run leaves a
     # transcript to cite, not just a pass/fail XML.
@@ -250,8 +251,9 @@ lima-cache-image from="":
 
 # Run EVERY Venom e2e lane back-to-back: the data-driven lanes from scripts/lanes.yaml (each has its own
 # `venom:` suite, ADR-0077) PLUS the metastore lane. Lanes are enumerated from the registry, so a new lane
-# is covered automatically. Continues past a failing lane and prints a PASS/FAIL summary, exiting non-zero
-# if any lane failed. Needs docker (colima) up. `just lima-example-all`.
+# is covered automatically; an `optional` lane is left out (`just lima-example <name>` runs it). Continues
+# past a failing lane and prints a PASS/FAIL summary, exiting non-zero if any lane failed. Needs docker
+# (colima) up. `just lima-example-all`.
 [group('example')]
 lima-example-all:
     #!/usr/bin/env bash
