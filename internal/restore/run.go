@@ -80,12 +80,13 @@ type restoring struct {
 	dirs      []storeDir
 	hadMarker bool
 	// nsHeld are the namespaces whose data marker the restore wrote (ADR-0222 Decision 8).
-	nsHeld []v1.NamespaceName
-	eng    store.Engine
-	st     store.Store
-	runs   runstate.Store
-	events *eventstore.Store
-	master *savedFile
+	nsHeld  []v1.NamespaceName
+	eng     store.Engine
+	st      store.Store
+	runs    runstate.Store
+	events  *eventstore.Store
+	master  *savedFile
+	created hold.Created
 }
 
 // savedFile is a file a restore replaced, with what it held before.
@@ -172,6 +173,9 @@ func Run(ctx context.Context, p Point, o Options) (_ Report, err error) {
 	if err = hold.Write(r.dataDir, hold.Marker{Reason: "restore", Since: v1.NewTimestamp(time.Now())}); err != nil {
 		return Report{}, err
 	}
+	for _, d := range r.dirs {
+		r.created.Track(d.path)
+	}
 	if err = r.open(); err != nil {
 		return Report{}, err
 	}
@@ -217,7 +221,7 @@ func Run(ctx context.Context, p Point, o Options) (_ Report, err error) {
 	if r.master != nil {
 		roots = append(roots, r.master.path)
 	}
-	if err = hold.Own(r.dataDir, roots...); err != nil {
+	if err = hold.Own(r.dataDir, append(roots, r.created...)...); err != nil {
 		return Report{}, err
 	}
 	if err = hold.End(r.dataDir); err != nil {
@@ -244,6 +248,7 @@ func (r *restoring) holdNamespaces(ctx context.Context) error {
 		return nil
 	}
 	slices.Sort(r.nsHeld)
+	r.created.Track(filepath.Join(r.dataDir, hold.NamespaceDir))
 	if err := hold.MarkNamespaces(r.dataDir, r.nsHeld, hold.Marker{Reason: hold.ReasonData, Since: v1.NewTimestamp(time.Now())}); err != nil {
 		return err
 	}
@@ -348,7 +353,7 @@ func (r *restoring) undo() error {
 			errs = append(errs, removeFile(m.path))
 		}
 	}
-	errs = append(errs, hold.End(r.dataDir))
+	errs = append(errs, r.created.Remove(), hold.End(r.dataDir))
 	if err := errors.Join(errs...); err != nil {
 		return fault.Wrapf(err, fault.Internal, "restore.Run", "remove what the failed restore created")
 	}
@@ -483,6 +488,7 @@ func (r *restoring) installMaster(ctx context.Context, plan escrow.MasterPlan, m
 	if plan.Install != nil {
 		old, err := os.ReadFile(plan.Path) //nolint:gosec // the node master secret's place
 		r.master = &savedFile{path: plan.Path, old: old, existed: err == nil}
+		r.created.Track(filepath.Dir(plan.Path))
 		if err := os.MkdirAll(filepath.Dir(plan.Path), 0o700); err != nil {
 			return fault.Wrapf(err, fault.Internal, op, "create the directory of %s", plan.Path)
 		}

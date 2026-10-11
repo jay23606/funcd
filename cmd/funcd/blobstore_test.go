@@ -3,7 +3,9 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -21,6 +23,7 @@ import (
 	"github.com/pyvvo/funcd/internal/platform/clock"
 	"github.com/pyvvo/funcd/internal/platform/config"
 	"github.com/pyvvo/funcd/internal/platform/hold"
+	"github.com/pyvvo/funcd/internal/testkit/poll"
 	"github.com/pyvvo/funcd/internal/testkit/s3stub"
 )
 
@@ -243,7 +246,7 @@ func TestBlobMirrorAssembledWithHold(t *testing.T) {
 	t.Cleanup(func() { cancel(); _ = closeExec() })
 	require.Contains(t, logs.String(), "prefix=blob/ days=60")
 	manifest := filepath.Join(target, "blob", "0000000001", "gen", "0000000001", "manifest.yaml")
-	require.Never(t, func() bool { _, err := os.Stat(manifest); return err == nil }, 400*time.Millisecond, 20*time.Millisecond)
+	require.True(t, poll.Never(func() bool { _, err := os.Stat(manifest); return err == nil }, 400*time.Millisecond, 20*time.Millisecond))
 	require.NoError(t, held.Release(time.Now()))
 	require.Eventually(t, func() bool { _, err := os.Stat(manifest); return err == nil }, 10*time.Second, 20*time.Millisecond)
 }
@@ -269,25 +272,11 @@ func runRestore(t *testing.T, args ...string) (string, error) {
 // answer Q15); a non-empty store is refused; `restore list` shows the blob rows; --at needs a versioned store.
 func TestRestoreBlobCommand(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
 	target := t.TempDir()
 	path := backupConfig(t, "file", "backup:\n  target: \""+gocloud.FileURL(target)+"\"\n  encryption:\n    none: true\n")
 	cfg, err := config.Load(path, config.Flags{})
 	require.NoError(t, err)
-
-	src := mustDir(t, filepath.Join(t.TempDir(), "blob"))
-	from, err := gocloud.Open(ctx, gocloud.FileURL(src))
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = from.Close() })
-	require.NoError(t, from.Put(ctx, "s3/ns/b/k", []byte("age-encryption.org/v1\nuser bytes"), blob.PutOptions{ContentType: "text/plain"}))
-	tb, err := gocloud.Open(ctx, gocloud.FileURL(target))
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = tb.Close() })
-	m, err := blobmirror.New(blobmirror.Config{Dir: src, Target: tb, Interval: time.Hour, Rebaseline: time.Hour,
-		Retention: time.Hour, RetryInterval: time.Minute})
-	require.NoError(t, err)
-	_, err = m.Run(ctx)
-	require.NoError(t, err)
+	mirrorGeneration(t, target)
 
 	out, err := runRestore(t, "list", "--config", path)
 	require.NoError(t, err)
@@ -296,6 +285,7 @@ func TestRestoreBlobCommand(t *testing.T) {
 
 	_, err = runRestore(t, "blob", "--config", path, "--at", "2026-10-05T10:00:00Z")
 	require.Equal(t, fault.Invalid, fault.KindOf(err), "the local store keeps no versions")
+	require.NoDirExists(t, cfg.Blob.Dir, "a refused restore creates no store")
 
 	out, err = runRestore(t, "blob", "--config", path)
 	require.NoError(t, err)
@@ -309,6 +299,111 @@ func TestRestoreBlobCommand(t *testing.T) {
 	_, err = runRestore(t, "blob", "--config", path, "1")
 	require.Equal(t, fault.Conflict, fault.KindOf(err), "a non-empty store")
 	require.NoFileExists(t, filepath.Join(cfg.Storage.DataDir, hold.BusyFile))
+}
+
+// mirrorGeneration writes blob mirror generation 1 of a local store to the directory target: the objects given as key
+// and content, else one.
+func mirrorGeneration(t *testing.T, target string, objects ...[2]string) {
+	t.Helper()
+	ctx := context.Background()
+	src := mustDir(t, filepath.Join(t.TempDir(), "blob"))
+	from, err := gocloud.Open(ctx, gocloud.FileURL(src))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = from.Close() })
+	if len(objects) == 0 {
+		objects = [][2]string{{"s3/ns/b/k", "age-encryption.org/v1\nuser bytes"}}
+	}
+	for _, o := range objects {
+		require.NoError(t, from.Put(ctx, o[0], []byte(o[1]), blob.PutOptions{ContentType: "text/plain"}))
+	}
+	tb, err := gocloud.Open(ctx, gocloud.FileURL(target))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = tb.Close() })
+	m, err := blobmirror.New(blobmirror.Config{Dir: src, Target: tb, Interval: time.Hour, Rebaseline: time.Hour,
+		Retention: time.Hour, RetryInterval: time.Minute})
+	require.NoError(t, err)
+	_, err = m.Run(ctx)
+	require.NoError(t, err)
+}
+
+// damageParts overwrites every part file below dir that holds the given bytes (all with ""), so a restore reading
+// them fails its integrity check.
+func damageParts(t *testing.T, dir, holding string) {
+	t.Helper()
+	var n int
+	require.NoError(t, filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !strings.HasPrefix(d.Name(), "part-") {
+			return err
+		}
+		data, err := os.ReadFile(p) //nolint:gosec // a test temp path
+		if err != nil || !strings.Contains(string(data), holding) {
+			return err
+		}
+		n++
+		return os.WriteFile(p, []byte("damaged"), 0o600)
+	}))
+	require.Positive(t, n, "no part below %s holds %q", dir, holding)
+}
+
+// `funcd restore blob` into a blob.dir below a directory that does not exist yet: a successful run gives every
+// directory it created the data directory's owner, and one that fails, on a damaged part, removes them (ADR-0206
+// Decision 2). Run as root, they were left root's, out of the daemon's reach.
+func TestRestoreBlobCreatedDirs(t *testing.T) {
+	t.Parallel()
+	setup := func(t *testing.T) (path, target, parent string) {
+		t.Helper()
+		target = t.TempDir()
+		mirrorGeneration(t, target)
+		path = backupConfig(t, "file", "backup:\n  target: \""+gocloud.FileURL(target)+"\"\n  encryption:\n    none: true\n")
+		parent = filepath.Join(filepath.Dir(path), "nested")
+		f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+		require.NoError(t, err)
+		_, err = f.WriteString("blob:\n  dir: \"" + filepath.Join(parent, "blob") + "\"\n")
+		require.NoError(t, errors.Join(err, f.Close()))
+		return path, target, parent
+	}
+	t.Run("succeeds", func(t *testing.T) {
+		t.Parallel()
+		path, _, parent := setup(t)
+		want := otherOwner(t, filepath.Dir(path))
+		_, err := runRestore(t, "blob", "--config", path)
+		require.NoError(t, err)
+		for _, p := range []string{parent, filepath.Join(parent, "blob")} {
+			require.Equal(t, want, ownerOf(t, p), "owner of %s", p)
+		}
+	})
+	t.Run("fails", func(t *testing.T) {
+		t.Parallel()
+		path, target, parent := setup(t)
+		damageParts(t, filepath.Join(target, "blob"), "")
+		_, err := runRestore(t, "blob", "--config", path)
+		require.Error(t, err)
+		require.NoDirExists(t, parent)
+	})
+}
+
+// A restore into a blob.dir that exists, failing on its second object, deletes the first and leaves the directories
+// that write made the data directory's owner's, not root's after a run as root (ADR-0206 Decision 2).
+func TestRestoreBlobFailedIntoExistingStore(t *testing.T) {
+	t.Parallel()
+	target := t.TempDir()
+	mirrorGeneration(t, target, [2]string{"s3/ns/a/first", "first object"}, [2]string{"s3/ns/b/second", "second object"})
+	damageParts(t, filepath.Join(target, "blob"), "second object")
+	path := backupConfig(t, "file", "backup:\n  target: \""+gocloud.FileURL(target)+"\"\n  encryption:\n    none: true\n")
+	cfg, err := config.Load(path, config.Flags{})
+	require.NoError(t, err)
+	require.NoError(t, os.MkdirAll(cfg.Blob.Dir, 0o700))
+	want := otherOwner(t, cfg.Storage.DataDir)
+
+	_, err = runRestore(t, "blob", "--config", path)
+	require.Error(t, err)
+	require.DirExists(t, filepath.Join(cfg.Blob.Dir, "s3", "ns", "a"), "the first object was written, then deleted")
+	require.NoError(t, filepath.WalkDir(cfg.Blob.Dir, func(p string, d fs.DirEntry, err error) error {
+		require.NoError(t, err)
+		require.True(t, d.IsDir(), "%s is left", p)
+		require.Equal(t, want, ownerOf(t, p), "owner of %s", p)
+		return nil
+	}))
 }
 
 // `funcd restore blob --at` restores a versioned blob.target with --store-credentials-file and blob.versionRetention,

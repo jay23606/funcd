@@ -25,6 +25,7 @@ import (
 	"github.com/pyvvo/funcd/internal/platform/config"
 	"github.com/pyvvo/funcd/internal/platform/hold"
 	"github.com/pyvvo/funcd/internal/platform/version"
+	"github.com/pyvvo/funcd/internal/testkit/poll"
 	"github.com/pyvvo/funcd/internal/testkit/s3stub"
 )
 
@@ -165,7 +166,7 @@ func TestScenarioInheritsPlatformTarget(t *testing.T) {
 		require.NotContains(t, a, "AKIDPLATFORM", "a request to K is signed with backup.credentialsFile")
 	}
 	before := len(platform.Keys(kvbadger.KVPrefix))
-	require.Never(t, func() bool { return len(platform.Keys(kvbadger.KVPrefix)) != before }, 100*time.Millisecond, 10*time.Millisecond,
+	require.True(t, poll.Never(func() bool { return len(platform.Keys(kvbadger.KVPrefix)) != before }, 100*time.Millisecond, 10*time.Millisecond),
 		"the KV with its own target wrote to backup.target")
 }
 
@@ -252,7 +253,7 @@ func TestKVBackupAssembledWithHold(t *testing.T) {
 	t.Cleanup(func() { cancel(); _ = closeExec() })
 	require.Contains(t, logs.String(), "kv/inc/:2")
 	bases := filepath.Join(target, "kv", "base")
-	require.Never(t, func() bool { _, err := os.Stat(bases); return err == nil }, 300*time.Millisecond, 20*time.Millisecond)
+	require.True(t, poll.Never(func() bool { _, err := os.Stat(bases); return err == nil }, 300*time.Millisecond, 20*time.Millisecond))
 	require.NoError(t, held.Release(time.Now()))
 	require.Eventually(t, func() bool { _, err := os.Stat(bases); return err == nil }, 10*time.Second, 20*time.Millisecond)
 }
@@ -333,6 +334,40 @@ func TestScenarioRestoreAnyPoint(t *testing.T) {
 	require.Equal(t, fault.NotFound, fault.KindOf(err))
 	require.NoDirExists(t, empty.Kvstore.DataDir)
 	require.NoFileExists(t, filepath.Join(empty.Storage.DataDir, hold.MarkerFile))
+}
+
+// `funcd restore kv` into a kvstore.dataDir below a directory that does not exist yet: a successful run gives every
+// directory it created the data directory's owner, and one that fails, on a damaged base part, removes them (ADR-0206
+// Decision 2, ADR-0209 Decision 6). Run as root, they were left root's, out of the daemon's reach.
+func TestRestoreKVCreatedDirs(t *testing.T) {
+	t.Parallel()
+	setup := func(t *testing.T) (cfg config.Config, path, target, parent string) {
+		t.Helper()
+		target = t.TempDir()
+		kvChain(t, target)
+		parent = filepath.Join(t.TempDir(), "nested")
+		cfg, path = kvYAML(t, "  dataDir: \""+filepath.Join(parent, "kv")+"\"\n  backup:\n    enabled: true\n    target: \""+
+			gocloud.FileURL(target)+"\"\n    encryption:\n      none: true\n")
+		return cfg, path, target, parent
+	}
+	t.Run("succeeds", func(t *testing.T) {
+		t.Parallel()
+		cfg, path, _, parent := setup(t)
+		want := otherOwner(t, cfg.Storage.DataDir)
+		_, err := runRestore(t, "kv", "--config", path, "1/5")
+		require.NoError(t, err)
+		for _, p := range []string{parent, filepath.Join(parent, "kv")} {
+			require.Equal(t, want, ownerOf(t, p), "owner of %s", p)
+		}
+	})
+	t.Run("fails", func(t *testing.T) {
+		t.Parallel()
+		_, path, target, parent := setup(t)
+		damageParts(t, filepath.Join(target, "kv", "base"), "")
+		_, err := runRestore(t, "kv", "--config", path, "1/5")
+		require.Error(t, err)
+		require.NoDirExists(t, parent)
+	})
 }
 
 // scenario: newer-chain-refused (the command) — a point written by funcd 0.(m+1).0 lists as newer to funcd 0.m.x,
