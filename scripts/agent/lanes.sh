@@ -5,7 +5,7 @@
 # lane lock, prints one PASS/FAIL line, and removes the checkout. The checkout is lane-<branch>-<lane>.<random>, so two
 # runs at once never share one, and only the run that made it removes it, also when the run is stopped. Full logs:
 # .cache/lanes/<branch>-<lane>.log in the main checkout. Both names turn the slashes of the branch into underscores. A
-# full lane run takes about 12 minutes per spec.
+# spec of all lanes takes about 8 minutes (one shared VM, ADR-0230).
 set -u
 [ $# -gt 0 ] || { echo "usage: lanes.sh <branch>:<lane|all>..." >&2; exit 2; }
 root=$(cd "$(git -C "$(dirname "$0")" rev-parse --path-format=absolute --git-common-dir)/.." && pwd)
@@ -30,7 +30,7 @@ for spec in "$@"; do
   t0=$SECONDS
   if [ "$lane" = all ]; then recipe=(just lima-example-all); else recipe=(just lima-example "$lane"); fi
   if (cd "$wt" && scripts/agent/d "${recipe[@]}") >"$log" 2>&1; then r=PASS; else r=FAIL; fail=1; fi
-  echo "$spec @ $sha: $r ($((SECONDS - t0))s); $(grep -E 'final status|FAILED:|lane-lock' "$log" | tail -1)"
+  echo "$spec @ $sha: $r ($((SECONDS - t0))s); $(grep -E 'final status|FAILED:|lanes not run|lane-lock' "$log" | tail -1)"
   git -C "$root" worktree remove --force "$wt"
   wt=
 done
