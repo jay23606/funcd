@@ -35,3 +35,17 @@ func (c *Client) ReleaseHold(ctx context.Context, advance []string) error {
 	_, err = c.do(ctx, http.MethodPost, c.baseURL+apiPrefix+"/hold/release", body)
 	return err
 }
+
+// ReleaseNamespaceHold removes the hold a restore left on each namespace (ADR-0222 Decision 8): restore run's data
+// marker and an ended in-place Restore's marker. POST …/hold/release with namespaces, which needs update on each
+// Namespace; an in-place Restore still Pending or Running ⇒ fault.Conflict naming it.
+func (c *Client) ReleaseNamespaceHold(ctx context.Context, namespaces []string) error {
+	body, err := json.Marshal(struct {
+		Namespaces []string `json:"namespaces"`
+	}{namespaces})
+	if err != nil {
+		return fault.Internalf("sdk.ReleaseNamespaceHold", "encode the release: %v", err)
+	}
+	_, err = c.do(ctx, http.MethodPost, c.baseURL+apiPrefix+"/hold/release", body)
+	return err
+}
