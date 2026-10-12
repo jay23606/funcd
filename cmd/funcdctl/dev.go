@@ -42,14 +42,17 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"regexp"
+	goruntime "runtime"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -75,6 +78,8 @@ import (
 	"github.com/pyvvo/funcd/internal/platform/observability"
 	"github.com/pyvvo/funcd/internal/platform/stopsignal"
 	"github.com/pyvvo/funcd/internal/runtime/process"
+	sqldevengine "github.com/pyvvo/funcd/internal/sql/devengine"
+	sqlembedengine "github.com/pyvvo/funcd/internal/sql/embedengine"
 	"github.com/pyvvo/funcd/internal/store"
 	badgerstore "github.com/pyvvo/funcd/internal/store/badger"
 	"github.com/pyvvo/funcd/pkg/funcd"
@@ -463,6 +468,7 @@ func resolveWorkflowPlan(op, path string, wf *v1.Workflow) ([]plannedFunc, error
 	if len(pfs) == 0 {
 		return nil, fault.Invalidf(op, "workflow %q has no function.ref/image steps resolving to a <stem>.funcdctl.yaml", wf.Name)
 	}
+	isolateSharedMains(pfs)
 	// Land the workflow in the dev-authorized namespace/group so the run engine + link resolver reach it.
 	wf.TypeMeta = v1.TypeMeta{APIVersion: v1.KindWorkflow.GVK().APIVersion(), Kind: v1.KindWorkflow}
 	wf.Namespace = devNamespace
@@ -543,12 +549,17 @@ func (a *cli) bootDev(ctx context.Context, op string, pfs []plannedFunc, wf *dev
 	if rerr != nil {
 		return nil, rerr
 	}
+	// A database this build cannot serve would only fail later, at the first call (ADR-0237 Decision 4).
+	if bindsSQL(pfs) && !sqlembedengine.Bundled() {
+		return nil, fault.Unavailablef(op, "a function binds a SQL database, but this funcdctl has no SQL engine: build it with "+
+			"just build-sql-engine %s %s, then go build -tags dev ./cmd/funcdctl", goruntime.GOOS, goruntime.GOARCH)
+	}
 	plan, perr := resolvePersistPlan(cfg, pfs[0].m)
 	if perr != nil {
 		return nil, perr
 	}
 	// The durable state dirs change while the session runs, so the hot-reload watcher never walks them.
-	stateDirs := []string{plan.storeDir, plan.kvDir, plan.blobDir, plan.catalogDir}
+	stateDirs := []string{plan.storeDir, plan.kvDir, plan.blobDir, plan.catalogDir, plan.sqlDir}
 
 	inst := &devInstance{runErr: make(chan error, 1), logger: logger}
 	for _, pf := range pfs {
@@ -711,6 +722,11 @@ func (a *cli) devPlatformOptions(ctx context.Context, op string, pfs []plannedFu
 		return nil, caterr
 	}
 	opts = append(opts, catOpts...)
+	sqlOpts, sqlerr := devSQLOptions(plan, stateDir, inst)
+	if sqlerr != nil {
+		return nil, sqlerr
+	}
+	opts = append(opts, sqlOpts...)
 
 	// Stream function logs to the terminal in real time (Decision 6, dev UX): tee every captured log
 	// line to the printer. A mutex keeps concurrent functions' lines from interleaving.
@@ -734,6 +750,15 @@ func (a *cli) devPlatformOptions(ctx context.Context, op string, pfs []plannedFu
 	if cfg.cport != 0 {
 		opts = append(opts, funcd.WithListenAddr(fmt.Sprintf("127.0.0.1:%d", cfg.cport)))
 	}
+	// The SQL engines' change feed (ADR-0235) on a free loopback port, so dev runs side by side never contend for the
+	// daemon's fixed default.
+	feed, ferr := freeLocalAddr()
+	if ferr != nil {
+		return nil, fault.Wrapf(ferr, fault.Internal, op, "reserve the SQL change feed port")
+	}
+	_, feedPort, _ := net.SplitHostPort(feed)
+	port, _ := strconv.Atoi(feedPort)
+	opts = append(opts, funcd.WithSQLChangeFeedPort(port))
 
 	// Durable-local drivers (ADR-0125 Decision 7): under --persist (or a `dev.backends` file:// override)
 	// the memory store/KV/blob are swapped for Badger + fileblob under per-service subdirs. dev.backends is
@@ -803,6 +828,27 @@ func devCatalogOptions(plan persistPlan, stateDir string, pfs []plannedFunc, ins
 	return opts, nil
 }
 
+// bindsSQL reports whether a planned function binds a SQL database.
+func bindsSQL(pfs []plannedFunc) bool {
+	return slices.ContainsFunc(pfs, func(pf plannedFunc) bool { return len(pf.m.Bindings.SQL) > 0 })
+}
+
+// devSQLOptions runs the SQL databases on the dev engine (ADR-0237 Decision 2) when the build embeds one, so a binding
+// a hot reload adds is served too: the embedded rqlited as a host subprocess per database, its data under
+// <persist-to>/sql with --persist, else in a temporary root, and its processes saved in the state dir for the reap
+// after a crash. bootDev has already refused a binding this build cannot serve.
+func devSQLOptions(plan persistPlan, stateDir string, inst *devInstance) ([]funcd.Option, error) {
+	if !sqlembedengine.Bundled() {
+		return nil, nil
+	}
+	eng, err := sqldevengine.New(inst.logger, sqldevengine.WithStateDir(stateDir), sqldevengine.WithDataDir(plan.sqlDir))
+	if err != nil {
+		return nil, fault.Wrapf(err, fault.KindOf(err), "funcdctl dev", "start the SQL engine runtime in %s", stateDir)
+	}
+	inst.cleanup = append(inst.cleanup, eng.StopAll)
+	return []funcd.Option{funcd.WithSQLProviderRuntime(eng)}, nil
+}
+
 // checkFixedPorts refuses two equal fixed listen ports (--gport / --s3port / --cport; 0 is the ephemeral free
 // port). The ports are checked in a fixed order so the error is stable.
 func checkFixedPorts(op string, cfg devConfig) error {
@@ -862,7 +908,7 @@ func applyBoot(ctx context.Context, op string, c *sdk.Client, resObjs, fnObjs []
 func pruneStale(ctx context.Context, c *sdk.Client, desired []v1.Object, logger *slog.Logger) ([]v1.Object, error) {
 	var prev []v1.Object
 	for _, kind := range []v1.Kind{
-		v1.KindKVStore, v1.KindBucket, v1.KindSecret, v1.KindCatalogService, v1.KindConfigMap,
+		v1.KindKVStore, v1.KindBucket, v1.KindSQLDatabase, v1.KindSecret, v1.KindCatalogService, v1.KindConfigMap,
 		v1.KindRole, v1.KindRolesAssignment, v1.KindFunction, v1.KindWorkflow,
 	} {
 		objs, err := c.List(ctx, kind, devNamespace)
@@ -943,6 +989,7 @@ type persistPlan struct {
 	kvDir      string // durable function KV (Badger); "" ⇒ memory
 	blobDir    string // durable blob (fileblob); "" ⇒ mem://
 	catalogDir string // durable DuckLake SQLite catalog root (devengine); "" ⇒ ephemeral temp
+	sqlDir     string // durable SQL engines' data root (ADR-0237); "" ⇒ ephemeral temp
 }
 
 // devStateDir is where `funcdctl dev` saves the workers and catalog engines it starts (ADR-0167): <persist-to>/process
@@ -996,6 +1043,7 @@ func resolvePersistPlan(cfg devConfig, m *sdk.Manifest) (persistPlan, error) {
 	if cfg.persist {
 		p.storeDir = filepath.Join(absRoot, "metastore")
 		p.catalogDir = filepath.Join(absRoot, "catalog")
+		p.sqlDir = filepath.Join(absRoot, "sql")
 	}
 
 	kvDir, kerr := resolveBackendDir(op, m.Dev.Backends.KV, cfg.persist, absRoot, "kv")
@@ -1112,6 +1160,7 @@ type plannedFunc struct {
 	srcDir       string // the dir holding the handler source
 	entry        string // the handler entry filename within srcDir
 	isolate      bool
+	linkSrc      bool   // isolated with links to every file of srcDir, which another function's main shares
 	manifestPath string // the funcdctl.yaml (its dir is the base for a dev.python/dev.node relative path)
 }
 
@@ -1200,6 +1249,7 @@ func resolveDirFunctions(op, dir, entryFlag, nameFlag string) ([]plannedFunc, er
 			srcDir, entry, isolate := manifestEntry(m, dir, stemEntry(stem, m.Runtime), true)
 			pfs = append(pfs, plannedFunc{m: m, name: sanitizeName(stem), srcDir: srcDir, entry: entry, isolate: isolate, manifestPath: mp})
 		}
+		isolateSharedMains(pfs)
 		return pfs, nil
 	}
 	generic := filepath.Join(dir, manifestFileName)
@@ -1283,6 +1333,7 @@ func loadManifestAt(op, path string) (*sdk.Manifest, error) {
 func synthesizeResources(op string, pfs []plannedFunc) ([]v1.Object, error) {
 	kvStores := map[v1.ObjectName]map[string]v1.ObjectName{} // store → table → owner
 	buckets := map[v1.ObjectName]map[string]v1.ObjectName{}  // bucket → prefix → owner
+	databases := map[v1.ObjectName][]v1.ObjectName{}         // database → the functions that bind it, in plan order
 	for _, pf := range pfs {
 		for _, b := range pf.m.Bindings.KV {
 			if kvStores[b.Store] == nil {
@@ -1295,6 +1346,9 @@ func synthesizeResources(op string, pfs []plannedFunc) ([]v1.Object, error) {
 				buckets[b.Bucket] = map[string]v1.ObjectName{}
 			}
 			buckets[b.Bucket][b.Prefix] = pf.name
+		}
+		for _, b := range pf.m.Bindings.SQL {
+			databases[b.Database] = append(databases[b.Database], pf.name)
 		}
 	}
 
@@ -1344,6 +1398,8 @@ func synthesizeResources(op string, pfs []plannedFunc) ([]v1.Object, error) {
 		}
 		objs = append(objs, bk)
 	}
+
+	objs = append(objs, devDatabases(databases)...)
 
 	// The CatalogService per dev.catalog + its QUACK_TOKEN Secret. The token is the dev engine's fixed
 	// DevQuackToken, so the consumer's resolveCatalogEnv (FUNCD_CATALOG_<ALIAS>_TOKEN) presents exactly what
@@ -1438,6 +1494,40 @@ func synthesizeResources(op string, pfs []plannedFunc) ([]v1.Object, error) {
 	return objs, nil
 }
 
+// devDatabases is the SQLDatabase per bound database, owned by the last function that binds it, and a SQL Data Writer
+// RolesAssignment for each other function that binds one, scoped to each such database (ADR-0237 Decision 1).
+func devDatabases(databases map[v1.ObjectName][]v1.ObjectName) []v1.Object {
+	writes := map[v1.ObjectName][]v1.ObjectName{} // function → the databases it writes but does not own
+	var objs []v1.Object
+	for _, name := range slices.Sorted(maps.Keys(databases)) {
+		fns := databases[name]
+		obj, _ := v1.NewObject(v1.KindSQLDatabase)
+		db := obj.(*v1.SQLDatabase)
+		setMeta(&db.ObjectMeta, name)
+		db.Spec.Owner = fns[len(fns)-1]
+		objs = append(objs, db)
+		for _, fn := range fns {
+			if fn != db.Spec.Owner && !slices.Contains(writes[fn], name) {
+				writes[fn] = append(writes[fn], name)
+			}
+		}
+	}
+	for _, fn := range slices.Sorted(maps.Keys(writes)) {
+		obj, _ := v1.NewObject(v1.KindRolesAssignment)
+		ra := obj.(*v1.RolesAssignment)
+		setMeta(&ra.ObjectMeta, v1.ObjectName("dev-sql-writer-"+string(fn)))
+		ra.Spec.Principal = &v1.PrincipalRef{Kind: v1.PrincipalKindFunction, Name: fn}
+		for _, name := range writes[fn] {
+			ra.Spec.Assignments = append(ra.Spec.Assignments, v1.AssignmentEntry{
+				RoleRef: v1.RoleRef{Kind: v1.RoleRefKindBuiltin, Name: "SQL Data Writer"},
+				Scope:   &v1.ScopeRef{Kind: v1.ScopeKindSQLDatabase, Name: string(name)},
+			})
+		}
+		objs = append(objs, ra)
+	}
+	return objs
+}
+
 // devBlobWriterRole is the name of the write-only Role `funcdctl dev` provisions to make each dev function
 // a member of every prefix's `writers` set (ADR-0128 as amended → ADR-0136), without widening reads.
 const devBlobWriterRole v1.ObjectName = "dev-blob-writer"
@@ -1457,6 +1547,7 @@ func synthesizeFunction(pf plannedFunc, imagePath string) *v1.Function {
 	fn.Spec.Scaling = v1.Scaling{MinReplicas: 1}
 	fn.Spec.KV = pf.m.Bindings.KV
 	fn.Spec.Blob = pf.m.Bindings.Blob
+	fn.Spec.SQL = pf.m.Bindings.SQL
 	fn.Spec.Catalogs = pf.m.Bindings.Catalogs // so resolveCatalogEnv injects FUNCD_CATALOG_<ALIAS>_URL/_TOKEN (ADR-0091)
 	fn.Spec.Config = pf.m.Bindings.Config
 	fn.Spec.Secrets = pf.m.Bindings.Secrets
@@ -1492,7 +1583,12 @@ func prepareBundle(op string, pf plannedFunc, contractBlob []byte) (imagePath st
 		return "", nil, fault.Wrapf(terr, fault.Internal, op, "create bundle temp dir")
 	}
 	cleanup = func() { _ = os.RemoveAll(tmp) }
-	if nm := filepath.Join(pf.srcDir, "node_modules"); dirExists(nm) {
+	if pf.linkSrc {
+		if lerr := linkSources(op, pf.srcDir, tmp); lerr != nil {
+			cleanup()
+			return "", nil, lerr
+		}
+	} else if nm := filepath.Join(pf.srcDir, "node_modules"); dirExists(nm) {
 		_ = os.Symlink(nm, filepath.Join(tmp, "node_modules")) // best-effort: let a single-file function's imports resolve
 	}
 	if derr := deliverBundle(op, pf, tmp, contractBlob); derr != nil {
@@ -1505,7 +1601,7 @@ func prepareBundle(op string, pf plannedFunc, contractBlob []byte) (imagePath st
 // deliverBundle writes one function's ADR-0123 contract into its bundle dir and, for an isolated bundle, copies
 // the handler entry beside it — at boot, and again on each hot-reload.
 func deliverBundle(op string, pf plannedFunc, bundleDir string, contractBlob []byte) error {
-	if pf.isolate {
+	if pf.isolate && !pf.linkSrc {
 		data, rerr := os.ReadFile(filepath.Join(pf.srcDir, pf.entry)) //nolint:gosec // the resolved handler entry in the manifest dir
 		if rerr != nil {
 			return fault.Wrapf(rerr, fault.NotFound, op, "read handler entry %q", pf.entry)
@@ -1517,6 +1613,28 @@ func deliverBundle(op string, pf plannedFunc, bundleDir string, contractBlob []b
 	contractPath := filepath.Join(bundleDir, devContractFile)
 	if werr := os.WriteFile(contractPath, contractBlob, 0o600); werr != nil {
 		return fault.Wrapf(werr, fault.Internal, op, "deliver contract to %q", contractPath)
+	}
+	return nil
+}
+
+// linkSources links every file of srcDir but its contract dotfile into bundleDir, by absolute path, since srcDir is
+// relative to the working directory when the project is named as `.`.
+func linkSources(op, srcDir, bundleDir string) error {
+	srcDir, err := filepath.Abs(srcDir)
+	if err != nil {
+		return fault.Wrapf(err, fault.Internal, op, "resolve %s", srcDir)
+	}
+	entries, err := os.ReadDir(srcDir)
+	if err != nil {
+		return fault.Wrapf(err, fault.Internal, op, "read %s", srcDir)
+	}
+	for _, e := range entries {
+		if e.Name() == devContractFile {
+			continue
+		}
+		if lerr := os.Symlink(filepath.Join(srcDir, e.Name()), filepath.Join(bundleDir, e.Name())); lerr != nil {
+			return fault.Wrapf(lerr, fault.Internal, op, "link %s into the bundle", e.Name())
+		}
 	}
 	return nil
 }
@@ -1605,6 +1723,23 @@ func stemEntry(stem string, rt v1.RuntimeName) string {
 		return stem + ".py"
 	}
 	return stem + ".mjs"
+}
+
+// isolateSharedMains gives a private bundle to each function whose main shares its directory with another one's: in
+// place they would share that directory's one contract dotfile. The bundle links every file of the directory, so the
+// handler's sibling imports resolve.
+func isolateSharedMains(pfs []plannedFunc) {
+	inPlace := map[string]int{}
+	for _, pf := range pfs {
+		if !pf.isolate {
+			inPlace[pf.srcDir]++
+		}
+	}
+	for i := range pfs {
+		if !pfs[i].isolate && inPlace[pfs[i].srcDir] > 1 {
+			pfs[i].isolate, pfs[i].linkSrc = true, true
+		}
+	}
 }
 
 // manifestEntry resolves a manifest's bundle root + entry file. With the wrangler-style `main` set (a

@@ -17,6 +17,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -87,6 +88,7 @@ import (
 	identitysvc "github.com/pyvvo/funcd/internal/services/identity"
 	kvsvc "github.com/pyvvo/funcd/internal/services/kv"
 	rolessvc "github.com/pyvvo/funcd/internal/services/roles"
+	sqlsvc "github.com/pyvvo/funcd/internal/services/sql"
 	"github.com/pyvvo/funcd/internal/site"
 	"github.com/pyvvo/funcd/internal/snapshot"
 	"github.com/pyvvo/funcd/internal/store"
@@ -113,6 +115,8 @@ const (
 	defaultKVStoresPerNamespace = 100
 	// defaultBucketsPerNamespace is the per-namespace Bucket count cap when unset (ADR-0080).
 	defaultBucketsPerNamespace = 100
+	// defaultSQLDatabasesPerNamespace is the per-namespace SQLDatabase count cap when unset (ADR-0232).
+	defaultSQLDatabasesPerNamespace = 20
 	// The workflow engine tunables when WithWorkflow is not given: the daemon config's workflow.* defaults
 	// (ADR-0094, internal/platform/config), so a hung step fails the same way in dev and in production.
 	defaultWorkflowStepTimeout  = 300 * time.Second
@@ -139,6 +143,9 @@ type config struct {
 	// bucketMaxPerNamespace is the per-namespace Bucket count cap at admission (ADR-0080); 0 ⇒
 	// the default (100); negative disables the quota.
 	bucketMaxPerNamespace int
+	// sqlMaxDatabasesPerNamespace is the per-namespace SQLDatabase count cap at admission (ADR-0232); 0 ⇒ the default
+	// (20); negative disables the quota.
+	sqlMaxDatabasesPerNamespace int
 	// nestedInFlightCap is the per-target cap on nested fn-to-fn calls in flight (ADR-0147); 0 ⇒ the default (10).
 	nestedInFlightCap int
 	blob              blob.Bucket
@@ -282,6 +289,18 @@ type config struct {
 	// `funcdctl dev` (ADR-0125) to a process-mode driver that runs the embedded DuckDB+Quack engine
 	// as a host subprocess — there are no containers in process-dev.
 	catalogProvider provider.Runtime
+	// sqlProvider overrides the SQLDatabase engine runtime (ADR-0232); nil ⇒ the production runtime.
+	sqlProvider provider.Runtime
+	// sqlCallTimeout bounds one context.sql call (ADR-0233, sql.callTimeout); 0 ⇒ 30 s.
+	sqlCallTimeout time.Duration
+	// sqlChangeFeedPort is the port the engines post their changes to (ADR-0235, sql.changeFeedPort); 0 ⇒ 7075.
+	sqlChangeFeedPort int
+
+	// providerStorage is the root of the add-on engines' durable directories (ADR-0231); "" ⇒ none.
+	providerStorage string
+	// providerStorageEphemeral is a root that does not outlive the daemon (storage.mode memory), so a missing engine
+	// directory is no lost data (ADR-0234 Decision 6).
+	providerStorageEphemeral bool
 
 	// catalogExtensionDir is injected as DUCKDB_EXTENSION_DIRECTORY into catalog-consumer functions
 	// (dev analogue of the prod bundle's duckdb-ext, ADR-0089). Set by `funcdctl dev`; empty in prod.
@@ -330,6 +349,53 @@ type config struct {
 	presetBlob blob.Bucket
 	presetBus  bus.Bus
 }
+
+// sqlFeedBootWait bounds how long the change feed's boot gate waits for the Sensors present at the start to subscribe
+// (ADR-0235 Decision 4); one that never does, an invalid Sensor, keeps no other change waiting past it.
+const sqlFeedBootWait = 30 * time.Second
+
+// openSQLFeed opens the change feed's boot gate once every Sensor present at the start has subscribed to each event it
+// names, so a change redelivered at boot reaches it; until then rqlite's deliveries answer 503 and are retried.
+func (p *Platform) openSQLFeed(ctx context.Context) {
+	defer p.sqlFeed.Loaded()
+	l, err := p.cfg.store.List(ctx, v1.KindSensor.GVK(), store.ListOptions{})
+	if err != nil {
+		p.logger.WarnContext(ctx, "sql change feed: list the Sensors to wait for", "error", err)
+		return
+	}
+	type dep struct {
+		ns            v1.NamespaceName
+		source, event v1.ObjectName
+	}
+	var deps []dep
+	for _, o := range l.Items {
+		if se, ok := o.(*v1.Sensor); ok {
+			for _, d := range se.Spec.On {
+				deps = append(deps, dep{ns: se.Namespace, source: d.Source, event: d.Event})
+			}
+		}
+	}
+	deadline := time.Now().Add(sqlFeedBootWait)
+	for {
+		deps = slices.DeleteFunc(deps, func(d dep) bool { return p.eventFanout.Subscribed(d.ns, d.source, d.event) })
+		if len(deps) == 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			p.logger.WarnContext(ctx, "sql change feed: opening with Sensors not subscribed", "waiting", len(deps),
+				"first", string(deps[0].ns)+"/"+string(deps[0].source)+"/"+string(deps[0].event))
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+}
+
+// sqlChangeFeedPortOrDefault is sql.changeFeedPort, 7075 when unset (ADR-0235 Decision 2).
+func (c *config) sqlChangeFeedPortOrDefault() int { return cmp.Or(c.sqlChangeFeedPort, 7075) }
 
 // gate is the hold every side-effect runner asks (ADR-0206 Decision 6): hold.Never without WithHold.
 func (c *config) gate() hold.Gate {
@@ -402,7 +468,10 @@ type Platform struct {
 	routeReconciler *route.Reconciler      // Sets the full Route table once before the controller runs (ADR-0176)
 	backups         *backupsvc.Reconcilers // ADR-0222: the workload backups, whose runs Run waits for
 	kvReconciler    *kvsvc.Reconciler      // reclaims deleted stores' data once before the controller runs (issue #708)
-	prober          *health.Prober         // the storage probes (ADR-0215), started before the controller runs
+	sqlReconciler   *sqlsvc.Reconciler     // reclaims deleted databases' directories before the controller runs (ADR-0232)
+	sqlFeed         *sqlsvc.Feed           // the engines' change feed, served from Run (ADR-0235)
+	sqlFeedHost     string
+	prober          *health.Prober // the storage probes (ADR-0215), started before the controller runs
 
 	dataPlaneServer   *http.Server // function-invocation listener (ADR-0033)
 	dataPlaneListener net.Listener
@@ -528,6 +597,10 @@ func (p *Platform) buildControlPlane() error {
 	if bucketMax == 0 {
 		bucketMax = defaultBucketsPerNamespace
 	}
+	sqlMax := c.sqlMaxDatabasesPerNamespace
+	if sqlMax == 0 {
+		sqlMax = defaultSQLDatabasesPerNamespace
+	}
 
 	sched, err := singlenode.New(c.localNode, c.nodePlatform)
 	if err != nil {
@@ -602,7 +675,8 @@ func (p *Platform) buildControlPlane() error {
 	cedarRegistry, err := cedarauth.NewRegistry(
 		// ADR-0137 (F102): CatalogCapability makes the live PDP understand catalog::query; the per-CatalogService
 		// PEP proxy that calls it is not yet wired here — see TODO(ADR-0137) in internal/services/catalog/reconcile.go.
-		[]cedarauth.Capability{cedarauth.KVCapabilityWithWriters(writerLister), cedarauth.InvokeCapability(), s3Cap, cedarauth.EgressCapability(), cedarauth.CatalogCapability()},
+		[]cedarauth.Capability{cedarauth.KVCapabilityWithWriters(writerLister), cedarauth.InvokeCapability(), s3Cap, cedarauth.EgressCapability(), cedarauth.CatalogCapability(),
+			cedarauth.SQLCapabilityWithWriters(writerLister)},
 		[]cedarauth.PrincipalSource{cedarauth.FunctionPrincipalSource(), cedarauth.CatalogServicePrincipalSource()},
 	)
 	if err != nil {
@@ -662,15 +736,43 @@ func (p *Platform) buildControlPlane() error {
 	if err != nil {
 		return fault.Wrapf(err, fault.KindOf(err), op, "build storage prober")
 	}
+	// The node master secret (ADR-0085): the SAME 32-byte key the S3 gateway derives per-function
+	// SigV4 keypairs from, the catalog PEP proxy derives/verifies per-function catalog tokens with
+	// (ADR-0137) and the SQL engines' passwords come from (ADR-0232). Loaded ONCE here — before the SQL
+	// facade, the s3gw and the catalog wiring — so they share one master (LoadOrCreateMaster is
+	// deterministic per file/dir, but loading twice risks generating two different keys on a first run).
+	// Never logged.
+	master := c.masterSecret
+	if master == nil {
+		if merr := s3gateway.MigrateMaster(c.s3gwMasterFile, c.s3gwDataDir, c.s3gwEnabled, p.logger); merr != nil {
+			return fault.Wrapf(merr, fault.KindOf(merr), op, "migrate node master secret")
+		}
+		var merr error
+		if master, merr = s3gateway.LoadOrCreateMaster(c.s3gwMasterFile, c.s3gwDataDir); merr != nil {
+			return fault.Wrapf(merr, fault.KindOf(merr), op, "load node master secret")
+		}
+	}
+	// ADR-0233: the SQL facade, context.sql's PEP, over the engines the SQLDatabase reconciler records.
+	sqlEngines := sqlsvc.NewEngines()
+	sqlResolver, err := sqlsvc.NewResolver(metaReader{c.store})
+	if err != nil {
+		return fault.Wrapf(err, fault.KindOf(err), op, "build SQL binding resolver")
+	}
+	sqlFacade, err := sqlsvc.NewFacade(sqlsvc.FacadeDeps{
+		Resolver: sqlResolver, Authorizer: cedarPDP, Engines: sqlEngines, Master: master, CallTimeout: c.sqlCallTimeout, Logger: p.logger,
+	})
+	if err != nil {
+		return fault.Wrapf(err, fault.KindOf(err), op, "build SQL facade")
+	}
 	deps := health.NewChecker(health.CheckerDeps{
-		Store: c.store, KV: kvFacade, Blob: blobCheck, Links: local.NewResolver(c.store), Authz: cedarPDP, Health: p.prober,
+		Store: c.store, KV: kvFacade, Blob: blobCheck, SQL: sqlFacade, Links: local.NewResolver(c.store), Authz: cedarPDP, Health: p.prober,
 	})
 	nestedCap := c.nestedInFlightCap
 	if nestedCap == 0 {
 		nestedCap = defaultNestedInFlightCap
 	}
 	invoker := local.NewNestedCapInvoker(local.NewInvoker(dpHolder), nestedCap, invokeMeter(c.telemetry))
-	p.invokeMgr = local.NewManager(invokeSockDir, c.store, invoker, cedarPDP, kvFacade, blobPort, deps, p.logger)
+	p.invokeMgr = local.NewManager(invokeSockDir, c.store, invoker, cedarPDP, kvFacade, blobPort, deps, p.logger, local.WithSQL(sqlFacade))
 
 	// Egress gateway + DNS forwarder (ADR-0117, F81): the sole egress PEP + the domain trust anchor.
 	// Wired only when enabled (Linux/containerd only; egress.New is a no-op elsewhere, mirroring F80).
@@ -699,22 +801,7 @@ func (p *Platform) buildControlPlane() error {
 	// S3 gateway (ADR-0080/0085): opt-in S3-protocol frontend over the blob substrate, reusing the
 	// cedar PDP as the PEP. When enabled, build the server and expose the per-function keypair deriver to
 	// the reconciler for worker-env injection. Disabled ⇒ nothing is built (no listener, no IAM, no
-	// injection) — zero-config unchanged. The master below is loaded either way (ADR-0204 Decision 7).
-	// The node master secret (ADR-0085): the SAME 32-byte key the S3 gateway derives per-function
-	// SigV4 keypairs from AND the catalog PEP proxy derives/verifies per-function catalog tokens with
-	// (ADR-0137). Loaded ONCE here — before both the s3gw and the catalog wiring — so they share one
-	// master (LoadOrCreateMaster is deterministic per file/dir, but loading twice risks generating two
-	// different keys on a first run). Never logged.
-	master := c.masterSecret
-	if master == nil {
-		if merr := s3gateway.MigrateMaster(c.s3gwMasterFile, c.s3gwDataDir, c.s3gwEnabled, p.logger); merr != nil {
-			return fault.Wrapf(merr, fault.KindOf(merr), op, "migrate node master secret")
-		}
-		var merr error
-		if master, merr = s3gateway.LoadOrCreateMaster(c.s3gwMasterFile, c.s3gwDataDir); merr != nil {
-			return fault.Wrapf(merr, fault.KindOf(merr), op, "load node master secret")
-		}
-	}
+	// injection) — zero-config unchanged. The master is loaded either way (ADR-0204 Decision 7), above.
 
 	var s3Injection function.S3GatewayInjection
 	if c.s3gwEnabled {
@@ -910,7 +997,7 @@ func (p *Platform) buildControlPlane() error {
 	// a held revision's wake or reclaim is written to its Revision's status (ADR-0190 Decision 5)
 	ctrl.Watches(v1.KindRevision.GVK(), fnReconciler.MapRevision)
 	// a change to what a namespace grants its Functions can move a pooled one to another pool
-	for _, k := range []v1.Kind{v1.KindKVStore, v1.KindBucket, v1.KindRolesAssignment, v1.KindEgressPolicy, v1.KindPolicy} {
+	for _, k := range []v1.Kind{v1.KindKVStore, v1.KindBucket, v1.KindSQLDatabase, v1.KindRolesAssignment, v1.KindEgressPolicy, v1.KindPolicy} {
 		ctrl.Watches(k.GVK(), fnReconciler.MapAccess)
 	}
 	ctrl.Watches(v1.KindFunction.GVK(), fnReconciler.MapPoolDisplaced) // an asleep member a newcomer displaces (ADR-0193)
@@ -1001,7 +1088,7 @@ func (p *Platform) buildControlPlane() error {
 		var perr error
 		providerRuntime, perr = provider.NewRuntime(provider.Deps{
 			Runtime: c.runtime, OwnerKind: v1.KindCatalogService, Gateway: c.gateway, Logger: p.logger,
-			ProbeTimeout: c.pacing.EngineProbeTimeout,
+			ProbeTimeout: c.pacing.EngineProbeTimeout, StorageRoot: c.providerStorage,
 		})
 		if perr != nil {
 			return fault.Wrapf(perr, fault.KindOf(perr), op, "build provider runtime")
@@ -1037,6 +1124,44 @@ func (p *Platform) buildControlPlane() error {
 	// ADR-0162: a consumer's status follows its catalog, and a released listener closes once no Function binds it.
 	ctrl.Watches(v1.KindCatalogService.GVK(), fnReconciler.MapCatalogService)
 	ctrl.Watches(v1.KindFunction.GVK(), catalogReconciler.MapFunction)
+
+	// ADR-0232: one rqlite engine per SQLDatabase, run by its own add-on runtime with durable storage (ADR-0231).
+	sqlRuntime := c.sqlProvider
+	if sqlRuntime == nil {
+		var perr error
+		sqlRuntime, perr = provider.NewRuntime(provider.Deps{
+			Runtime: c.runtime, OwnerKind: v1.KindSQLDatabase, Gateway: c.gateway, Logger: p.logger,
+			ProbeTimeout: c.pacing.EngineProbeTimeout, StorageRoot: c.providerStorage,
+		})
+		if perr != nil {
+			return fault.Wrapf(perr, fault.KindOf(perr), op, "build the SQL provider runtime")
+		}
+	}
+	// ADR-0235: every engine posts its changes to the feed, on the catalog proxies' host, which workers reach.
+	feedWatermarks := p.eventStore.ChangeWatermarks()
+	p.sqlFeed, err = sqlsvc.NewFeed(sqlsvc.FeedDeps{Store: c.store, Publisher: p.eventFanout, Watermarks: feedWatermarks, Master: master,
+		Hold: c.gate(), NamespaceHold: c.nsGate(), Logger: p.logger})
+	if err != nil {
+		return fault.Wrapf(err, fault.KindOf(err), op, "build the SQL change feed")
+	}
+	p.sqlFeedHost = cmp.Or(c.catalogProxyHost, "127.0.0.1")
+	if c.imageFor != nil && c.catalogProxyHost == "" {
+		p.logger.Warn("sql change feed listens on loopback, which engine containers cannot reach: set catalog.proxyHost " +
+			"to the bridge gateway address, else no EventSource of kind sql fires")
+	}
+	sqlReconciler, err := sqlsvc.NewReconciler(sqlsvc.ReconcilerDeps{
+		Store: c.store, Provider: sqlRuntime, Engines: sqlEngines, Master: master, ImageFor: c.imageFor,
+		Hold: c.gate(), Logger: p.logger, SupervisionPeriod: c.pacing.SupervisionPeriod,
+		DurableStorage: c.providerStorage != "" && !c.providerStorageEphemeral,
+		ChangeFeedURL:  p.sqlFeed.URL(p.sqlFeedHost, c.sqlChangeFeedPortOrDefault()), Watermarks: feedWatermarks,
+	})
+	if err != nil {
+		return fault.Wrapf(err, fault.KindOf(err), op, "build SQLDatabase reconciler")
+	}
+	ctrl.Register(v1.KindSQLDatabase.GVK(), sqlReconciler)
+	ctrl.Watches(v1.KindFunction.GVK(), sqlReconciler.MapFunction) // status.bindings counts Function.spec.sql
+	ctrl.Watches(v1.KindRestore.GVK(), sqlReconciler.MapRestore)   // a Succeeded Restore clears DataMissing (ADR-0234)
+	p.sqlReconciler = sqlReconciler
 
 	// ADR-0135 (F100): the Identity credential-issuing reconciler — issues a keypair→owned Secret and
 	// registers it (via storeExternalKeys, wired into s3gateway.Deps.External above).
@@ -1171,6 +1296,9 @@ func (p *Platform) buildControlPlane() error {
 			// the same substrate view the s3gateway writes (s3BucketFor).
 			admission.NewBucketQuotaAdmission(r, bucketMax),
 			admission.NewBucketDeletionProtectionAdmission(r, blobProber{blobBucketLister{resolve: s3BucketFor(c.blob, c.store)}}),
+			// ADR-0232 SQLDatabase rules: the count quota, and no API delete while the engine holds a table.
+			admission.NewSQLDatabaseQuotaAdmission(r, sqlMax),
+			admission.NewSQLDatabaseDeletionProtectionAdmission(r, sqlReconciler.Prober()),
 			// ADR-0086/0091 catalog blob + consumer-binding EXISTENCE were write-time gates; now reconcile-time
 			// (ADR-0121): the CatalogService / Function reconcilers wait for the referent (Waiting condition).
 			// ADR-0139 Site: spec.prefix is immutable on Update (the prefix permanently holds the site's bundles).
@@ -1471,6 +1599,10 @@ func (p *Platform) Run(ctx context.Context) error {
 		if err := reclaimDeletedBuckets(ctx, p.cfg.blob, p.cfg.store, p.logger); err != nil && ctx.Err() == nil {
 			p.logger.WarnContext(ctx, "reclaim of deleted Buckets incomplete", "error", err)
 		}
+		// ADR-0232 Decision 7: the same for the directory of each SQLDatabase deleted before its reconcile ran.
+		if err := p.sqlReconciler.ReclaimOrphans(ctx); err != nil && ctx.Err() == nil {
+			p.logger.WarnContext(ctx, "reclaim of deleted SQL databases incomplete", "error", err)
+		}
 	}
 
 	// ADR-0176 Decision 6: the edge aggregator holds every catalog entry until "routes" has Set once, and no
@@ -1502,6 +1634,19 @@ func (p *Platform) Run(ctx context.Context) error {
 			p.logger.ErrorContext(ctx, "eventing stopped", "error", err)
 		}
 	}()
+	if p.sqlFeed != nil { // ADR-0235: the engines' change feed (closes on ctx cancel)
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			p.openSQLFeed(ctx)
+		}()
+		go func() {
+			defer wg.Done()
+			if err := p.sqlFeed.Serve(ctx, p.sqlFeedHost, p.cfg.sqlChangeFeedPortOrDefault()); err != nil && !errors.Is(err, context.Canceled) {
+				p.logger.ErrorContext(ctx, "sql change feed stopped", "error", err)
+			}
+		}()
+	}
 	if p.blobWatcher != nil { // ADR-0119: the blob EventSource poll loop (drains on ctx cancel)
 		wg.Add(1)
 		go func() {
@@ -2148,7 +2293,8 @@ func (p *Platform) registerWorkloadBackups(ctrl *controller.Controller, secrets 
 	c := p.cfg
 	d := backupsvc.Deps{
 		Store: c.store, Secrets: secrets, Purger: bucketPurger{shared: c.blob}, StoreURL: c.blobStoreURL,
-		Sources: workload.Sources{Blob: c.blob, BucketPrefix: bucketPrefix},
+		Sources: workload.Sources{Blob: c.blob, BucketPrefix: bucketPrefix, SQL: p.sqlReconciler.Backups().Source},
+		SQL:     p.sqlReconciler.Backups(),
 		Period:  c.pacing.SupervisionPeriod, Clock: c.backupClock, Meter: c.backupMeter, Logger: p.logger,
 	}
 	if d.Meter == nil {
@@ -2286,6 +2432,10 @@ func (h holdPlatform) Orphans(ctx context.Context) ([]string, error) {
 
 func (h holdPlatform) BucketOrphans(ctx context.Context) ([]v1.ObjectRef, error) {
 	return bucketOrphans(ctx, h.p.cfg.blob, h.p.cfg.store)
+}
+
+func (h holdPlatform) SQLOrphans(ctx context.Context) ([]v1.ObjectRef, error) {
+	return h.p.sqlReconciler.Orphans(ctx)
 }
 
 func (h holdPlatform) Advance(ctx context.Context, ns v1.NamespaceName, source v1.ObjectName) error {

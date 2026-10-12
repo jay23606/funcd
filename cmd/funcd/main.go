@@ -6,17 +6,20 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"math"
+	"net"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"sync/atomic"
 	"time"
 	_ "time/tzdata" // ADR-0211: cron time zones resolve on a host without zoneinfo
@@ -368,6 +371,7 @@ func buildOptions(ctx context.Context, cfg config.Config, root *slog.Logger, hel
 		funcd.WithStore(st),
 		funcd.WithKVStore(kvDriver),
 		funcd.WithKVStoreQuota(cfg.Kvstore.MaxStoresPerNamespace),
+		funcd.WithSQLDatabaseQuota(cfg.SQL.MaxDatabasesPerNamespace),
 		funcd.WithNestedInFlightCap(cfg.Invoke.MaxNestedInFlight),
 		credOpt,
 		funcd.WithArtifactStore(filepath.Join(cfg.Storage.DataDir, "artifacts")),
@@ -425,7 +429,12 @@ func buildOptions(ctx context.Context, cfg config.Config, root *slog.Logger, hel
 				return nil, noopClose, nil, "", fmt.Errorf("egress isolation: parse dnsResolver %q: %w", n.DNSResolver, err)
 			}
 		}
-		for _, s := range n.InternalAllow {
+		internal := slices.Clone(n.InternalAllow)
+		if cfg.Catalog.ProxyHost != "" {
+			// ADR-0235 Decision 2: the engines post their changes to the feed on the bridge address.
+			internal = append(internal, net.JoinHostPort(cfg.Catalog.ProxyHost, strconv.Itoa(cmp.Or(cfg.SQL.ChangeFeedPort, 7075))))
+		}
+		for _, s := range internal {
 			ap, err := netip.ParseAddrPort(s)
 			if err != nil {
 				return nil, noopClose, nil, "", fmt.Errorf("egress isolation: parse internalAllow %q: %w", s, err)
@@ -502,6 +511,11 @@ func buildOptions(ctx context.Context, cfg config.Config, root *slog.Logger, hel
 		return nil, noopClose, nil, "", err
 	}
 	opts = append(opts, funcd.WithPacing(pace), funcd.WithAppRevisionHistory(cfg.App.RevisionHistory))
+	sqlCallTimeout, err := parseDuration("sql.callTimeout", cfg.SQL.CallTimeout, 30*time.Second, minPositive, v1.MaxDuration)
+	if err != nil {
+		return nil, noopClose, nil, "", err
+	}
+	opts = append(opts, funcd.WithSQLCallTimeout(sqlCallTimeout), funcd.WithSQLChangeFeedPort(cfg.SQL.ChangeFeedPort))
 
 	// Eventing DLQ + bounded action-delivery retry (ADR-0118, F85): its own dedicated Badger store at
 	// Eventing.Deadletter.DataDir (default <dataDir>/deadletter; in-memory when the substrate is memory).
@@ -1398,7 +1412,31 @@ func containerdOptions(ctx context.Context, cfg config.Config, logger *slog.Logg
 			logger.WarnContext(ctx, "funcd: could not clear everything an earlier run left in containerd", "error", serr)
 		}
 	}
-	return []funcd.Option{funcd.WithRuntime(cd), funcd.WithContainerExecution(mgrCfg.ImageFor(c.ImagePrefix))}, mgr.Close, nil
+	root, closeRoot, err := providerStorageRoot(cfg)
+	if err != nil {
+		_ = mgr.Close()
+		return nil, noopClose, err
+	}
+	closer := func() error { return errors.Join(mgr.Close(), closeRoot()) }
+	opts := []funcd.Option{funcd.WithRuntime(cd), funcd.WithContainerExecution(mgrCfg.ImageFor(c.ImagePrefix)),
+		funcd.WithProviderStorage(root)}
+	if cfg.Storage.Mode == "memory" {
+		opts = append(opts, funcd.WithEphemeralProviderStorage())
+	}
+	return opts, closer, nil
+}
+
+// providerStorageRoot is the add-on engines' storage root on the containerd runtime (ADR-0231 Decision 5):
+// <dataDir>/providers, or with storage.mode memory a temporary directory that the returned closer removes.
+func providerStorageRoot(cfg config.Config) (string, func() error, error) {
+	if cfg.Storage.Mode != "memory" {
+		return filepath.Join(cfg.Storage.DataDir, "providers"), noopClose, nil
+	}
+	dir, err := os.MkdirTemp("", "funcd-providers-")
+	if err != nil {
+		return "", noopClose, fmt.Errorf("create the temporary engine storage root: %w", err)
+	}
+	return dir, func() error { return os.RemoveAll(dir) }, nil
 }
 
 // processShimOptions extracts the embedded Node shim and pool host, and the Python shim when a usable python3 is

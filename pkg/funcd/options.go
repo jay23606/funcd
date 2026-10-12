@@ -49,6 +49,28 @@ func WithKVStore(kv kvstore.KV) Option {
 	return func(c *config) error { c.kvStore = kv; return nil }
 }
 
+// WithSQLDatabaseQuota sets the per-namespace SQLDatabase count cap enforced at admission (ADR-0232,
+// sql.maxDatabasesPerNamespace). 0 ⇒ the default (20); a negative value disables the quota.
+func WithSQLDatabaseQuota(maxPerNamespace int) Option {
+	return func(c *config) error { c.sqlMaxDatabasesPerNamespace = maxPerNamespace; return nil }
+}
+
+// WithSQLCallTimeout bounds one context.sql call (ADR-0233, sql.callTimeout); 0 ⇒ 30 s.
+func WithSQLCallTimeout(d time.Duration) Option {
+	return func(c *config) error { c.sqlCallTimeout = d; return nil }
+}
+
+// WithSQLChangeFeedPort sets the port the engines post their changes to (ADR-0235, sql.changeFeedPort); 0 ⇒ 7075.
+func WithSQLChangeFeedPort(port int) Option {
+	return func(c *config) error { c.sqlChangeFeedPort = port; return nil }
+}
+
+// WithSQLProviderRuntime overrides the SQLDatabase engine runtime (ADR-0232); the production runtime supervises the
+// rqlite container, tests and `funcdctl dev` (ADR-0237) inject their own. It must implement provider.Volumes.
+func WithSQLProviderRuntime(r provider.Runtime) Option {
+	return func(c *config) error { c.sqlProvider = r; return nil }
+}
+
 // WithKVStoreQuota sets the per-namespace KVStore count cap enforced at admission (ADR-0072,
 // kvstore.maxStoresPerNamespace). 0 ⇒ the default (100); a negative value disables the quota.
 func WithKVStoreQuota(maxPerNamespace int) Option {
@@ -476,6 +498,17 @@ func WithWorkflowContractResolver(r workflow.ContractResolver) Option {
 // obs runs on the log-routing goroutine and must not block.
 func WithLogObserver(obs LogObserver) Option {
 	return func(c *config) error { c.logObserver = obs; return nil }
+}
+
+// WithProviderStorage sets the add-on engines' storage root (ADR-0231); "" keeps durable storage off.
+func WithProviderStorage(root string) Option {
+	return func(c *config) error { c.providerStorage = root; return nil }
+}
+
+// WithEphemeralProviderStorage marks the storage root of WithProviderStorage as one that does not outlive the daemon
+// (storage.mode memory), so a SQL database never reports DataMissing (ADR-0234 Decision 6).
+func WithEphemeralProviderStorage() Option {
+	return func(c *config) error { c.providerStorageEphemeral = true; return nil }
 }
 
 // WithCatalogProviderRuntime overrides the CatalogService add-on-provider runtime (ADR-0087). The

@@ -5,7 +5,7 @@
 # ---- helpers ----
 _has-packages := `go list ./... 2>/dev/null`
 # the packages with files built only under `-tags dev` (ADR-0125); lint and test them again with the tag
-_dev-packages := "./cmd/funcdctl ./internal/catalog/devengine ./internal/catalog/embedengine"
+_dev-packages := "./cmd/funcdctl ./internal/catalog/devengine ./internal/catalog/embedengine ./internal/sql/devengine ./internal/sql/embedengine"
 
 # ---- recipes ----
 
@@ -144,8 +144,54 @@ build-runtime-images: embedimg-pin
     docker build --provenance=false --sbom=false --platform linux/{{ARCH}} --build-arg SOURCE_DATE_EPOCH=315532800 -f images/runtime/duckdb/Dockerfile --output type=image,name=funcd/runtime-duckdb:latest,rewrite-timestamp=true,unpack=false .
     docker save funcd/runtime-nodejs22:latest | gzip -9n > internal/runtime/embedimg/nodejs22.tar
     docker save funcd/runtime-python314:latest | gzip -9n > internal/runtime/embedimg/python314.tar
+    just _build-rqlite-image {{ARCH}}
     docker save funcd/runtime-duckdb:latest | gzip -9n > internal/runtime/embedimg/duckdb.tar
+    docker save funcd/runtime-rqlite:latest | gzip -9n > internal/runtime/embedimg/rqlite.tar
     @echo "embedded OCI tars written to internal/runtime/embedimg/ for {{ARCH}} (replaces the placeholders)"
+
+# Build the rqlite engine image for one arch (ADR-0232): the pure-Go entrypoint on the host, then rqlited statically
+# from the source pinned in images/runtime/rqlite/rqlite.pin, on distroless static.
+[private]
+_build-rqlite-image arch:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    . images/runtime/rqlite/rqlite.pin
+    entry=$(mktemp -d)
+    trap 'rm -rf "$entry"' EXIT
+    CGO_ENABLED=0 GOOS=linux GOARCH={{arch}} go build -trimpath -o "$entry/funcd-rqlite" ./cmd/funcd-rqlite
+    docker build --provenance=false --sbom=false --platform linux/{{arch}} --build-arg SOURCE_DATE_EPOCH=315532800 \
+      --build-arg RQLITE_VERSION="$RQLITE_VERSION" --build-arg RQLITE_COMMIT="$RQLITE_COMMIT" --build-context entry="$entry" \
+      -f images/runtime/rqlite/Dockerfile --output type=image,name=funcd/runtime-rqlite:latest,rewrite-timestamp=true,unpack=false \
+      images/runtime/rqlite
+
+# Check the rqlite engine image once on a host with docker (ADR-0232): readiness without a credential, a refused call
+# without the password and with a wrong one, an accepted one, the image's uid, and a write that survives killing the
+# container and starting a new one on the same volume. NOT run by ci.
+[group('runtime')]
+smoke-rqlite-image:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    just _build-rqlite-image {{ARCH}}
+    img=funcd/runtime-rqlite:latest; vol=funcd-rqlite-smoke-$$; name=funcd-rqlite-smoke-$$; port=14590
+    cleanup() { docker rm -f "$name" >/dev/null 2>&1 || true; docker volume rm -f "$vol" >/dev/null 2>&1 || true; }
+    trap cleanup EXIT
+    test "$(docker image inspect "$img" --format '{{{{.Config.User}}')" = "65532:65532"
+    docker volume create "$vol" >/dev/null
+    docker run --rm -v "$vol":/data golang:1.26.7-alpine@sha256:28d89ee9cc0ff9fec75c82ca201e6bf7fdf9a679d4b7b24dfa04f2bb766bb468 chown 65532:65532 /data
+    start() {
+      docker run -d --rm --name "$name" -p 127.0.0.1:$port:4001 -v "$vol":/data -e FUNCD_SQL_NODE_ID=smoke -e FUNCD_SQL_PASSWORD=smoke-pass "$img" >/dev/null
+      for _ in $(seq 1 100); do curl -fs 127.0.0.1:$port/readyz >/dev/null 2>&1 && return 0; sleep 0.1; done
+      docker logs "$name"; return 1
+    }
+    code() { curl -s -o /dev/null -w '%{http_code}' "$@"; }
+    start
+    test "$(code -G 127.0.0.1:$port/db/query --data-urlencode 'q=SELECT 1')" = 401
+    test "$(code -u funcd:wrong -G 127.0.0.1:$port/db/query --data-urlencode 'q=SELECT 1')" = 401
+    curl -fs -u funcd:smoke-pass -XPOST -H 'Content-Type: application/json' 127.0.0.1:$port/db/execute -d '["CREATE TABLE t (v TEXT)", "INSERT INTO t VALUES(\"kept\")"]' >/dev/null
+    docker kill "$name" >/dev/null; sleep 1
+    start
+    curl -fs -u funcd:smoke-pass -G 127.0.0.1:$port/db/query --data-urlencode 'q=SELECT v FROM t' | grep -q kept
+    echo "smoke-rqlite-image: ok"
 
 # Fetch + bundle the DuckDB+Quack CATALOG ENGINE for ONE target os/arch into
 # internal/catalog/embedengine/engine.tar.gz — the process-mode engine `funcdctl dev` embeds
@@ -166,6 +212,23 @@ catalog-engine-pin:
 [group('runtime')]
 catalog-engine-unpin:
     git update-index --no-skip-worktree internal/catalog/embedengine/engine.tar.gz
+
+# Build rqlited, the SQL engine `funcdctl dev` embeds (ADR-0237 Decision 3), for ONE target os/arch into
+# internal/sql/embedengine/rqlited.gz, over the committed placeholder (skip-worktree'd by the dep), from the source
+# images/runtime/rqlite/rqlite.pin pins: linux in the image's Docker builder stage, darwin natively on macOS. Delegates
+# to scripts/build-sql-engine.sh, shared with the release workflow. NOT run by ci.
+[group('runtime')]
+build-sql-engine os arch: sql-engine-pin
+    scripts/build-sql-engine.sh {{os}} {{arch}}
+
+[group('runtime')]
+sql-engine-pin:
+    git update-index --skip-worktree internal/sql/embedengine/rqlited.gz
+    @echo "sql embedengine placeholder pinned (skip-worktree) — local engine builds won't dirty the tree"
+
+[group('runtime')]
+sql-engine-unpin:
+    git update-index --no-skip-worktree internal/sql/embedengine/rqlited.gz
 
 # Pin/unpin the embedimg placeholders' skip-worktree bit. `build-runtime-images` OVERWRITES the tracked
 # <1 KB placeholders with real 30–100 MB images, which would otherwise leave the working tree permanently
@@ -432,6 +495,11 @@ check-hygiene:
             fail=1
         fi
     done
+    sz=$(git cat-file -s ":internal/sql/embedengine/rqlited.gz" 2>/dev/null || echo 0)
+    if [ "$sz" -gt 4096 ]; then
+        echo "hygiene: internal/sql/embedengine/rqlited.gz is ${sz}B staged — commit the placeholder, not the built engine (just build-sql-engine output)"
+        fail=1
+    fi
     if git ls-files --error-unmatch bench/expr-engine/expr-engine >/dev/null 2>&1; then
         echo "hygiene: bench/expr-engine/expr-engine is tracked — it is a compiled build output; keep it gitignored"
         fail=1
@@ -497,6 +565,12 @@ dev-example project gport="3005" s3port="3006" cport="3007" *args:
       echo "▶ fetching the DuckDB+Quack catalog engine for $(go env GOOS)/$(go env GOARCH) (once) …"
       git update-index --skip-worktree internal/catalog/embedengine/engine.tar.gz 2>/dev/null || true
       scripts/fetch-catalog-engine.sh "$(go env GOOS)" "$(go env GOARCH)"
+    fi
+    # A SQL binding needs the real SQL engine embedded (ADR-0237) — build it once, skip-worktree'd as well.
+    if grep -rqlE '^  sql:' "$dir" --include='*funcdctl.yaml' 2>/dev/null && [ "$(wc -c < internal/sql/embedengine/rqlited.gz)" -lt 4096 ]; then
+      echo "▶ building the SQL engine for $(go env GOOS)/$(go env GOARCH) (once) …"
+      git update-index --skip-worktree internal/sql/embedengine/rqlited.gz 2>/dev/null || true
+      scripts/build-sql-engine.sh "$(go env GOOS)" "$(go env GOARCH)"
     fi
     mkdir -p dist
     echo "▶ building funcdctl (-tags dev) …"

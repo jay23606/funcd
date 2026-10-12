@@ -115,6 +115,16 @@ type FunctionSpec struct {
 	// bound catalog is Ready. Empty ⇒ no catalog consumption. Cross-resource validity (the catalog
 	// exists) is an admission; only the structural rules (alias is a unique DNS-1123 label) are Validate.
 	Catalogs []FunctionCatalog `json:"catalogs,omitempty"`
+	// SQL declares this function's SQL database bindings (ADR-0233, F129): each binds a local alias to a
+	// SQLDatabase in this namespace, reached through context.sql. The binding is the read grant; writes need the
+	// database's owner or a writer role. A missing database holds the Function Pending (SQLDatabaseNotFound).
+	SQL []FunctionSQL `json:"sql,omitempty"`
+}
+
+// FunctionSQL binds this function to a SQLDatabase of its namespace under a local alias (ADR-0233).
+type FunctionSQL struct {
+	Alias    string     `json:"alias" pattern:"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$"`
+	Database ObjectName `json:"database"`
 }
 
 // FunctionCatalog binds this function to a CatalogService it consumes (ADR-0091, F61). Declaring the
@@ -302,18 +312,21 @@ func (s *FunctionSpec) validateBindings(op, prefix string) error {
 	}
 	// Catalog binding structural rules (ADR-0091): alias is a DNS-1123 label, unique within Catalogs;
 	// catalog is a DNS-1123 label. Cross-resource validity (the CatalogService exists) is an admission.
-	catSeen := make(map[string]bool, len(s.Catalogs))
+	cats := make([][2]string, 0, len(s.Catalogs))
 	for _, c := range s.Catalogs {
-		if !dnsLabel.MatchString(c.Alias) {
-			return fault.Invalidf(op, "%s.catalogs alias %q is not a valid DNS-1123 label", prefix, c.Alias)
-		}
-		if catSeen[c.Alias] {
-			return fault.Invalidf(op, "%s.catalogs alias %q is duplicated", prefix, c.Alias)
-		}
-		catSeen[c.Alias] = true
-		if !dnsLabel.MatchString(string(c.Catalog)) {
-			return fault.Invalidf(op, "%s.catalogs[%s].catalog %q is not a valid CatalogService name", prefix, c.Alias, c.Catalog)
-		}
+		cats = append(cats, [2]string{c.Alias, string(c.Catalog)})
+	}
+	if err := checkAliasTargets(op, prefix, "catalogs", "catalog", "CatalogService", cats); err != nil {
+		return err
+	}
+	// SQL binding structural rules (ADR-0233): alias is a DNS-1123 label, unique within SQL; database is a
+	// DNS-1123 name. The database's existence is reconcile-time (SQLDatabaseNotFound).
+	dbs := make([][2]string, 0, len(s.SQL))
+	for _, b := range s.SQL {
+		dbs = append(dbs, [2]string{b.Alias, string(b.Database)})
+	}
+	if err := checkAliasTargets(op, prefix, "sql", "database", "SQLDatabase", dbs); err != nil {
+		return err
 	}
 	// Config binding structural rules (ADR-0093): each names a ConfigMap in this namespace and
 	// must be a valid DNS-1123 ObjectName (mirrors CatalogService.spec.config). Cross-resource
@@ -328,3 +341,23 @@ func (s *FunctionSpec) validateBindings(op, prefix string) error {
 
 // GetStatus returns the shared Status pointer, implementing StatusObject.
 func (f *Function) GetStatus() *Status { return &f.Status.Status }
+
+// checkAliasTargets checks a binding list of (alias, target) pairs: each alias a DNS-1123 label, unique in the list,
+// and each target a DNS-1123 name of kind.
+func checkAliasTargets(op, prefix, section, field, kind string, pairs [][2]string) error {
+	seen := make(map[string]bool, len(pairs))
+	for _, p := range pairs {
+		alias, target := p[0], p[1]
+		if !dnsLabel.MatchString(alias) {
+			return fault.Invalidf(op, "%s.%s alias %q is not a valid DNS-1123 label", prefix, section, alias)
+		}
+		if seen[alias] {
+			return fault.Invalidf(op, "%s.%s alias %q is duplicated", prefix, section, alias)
+		}
+		seen[alias] = true
+		if !dnsLabel.MatchString(target) {
+			return fault.Invalidf(op, "%s.%s[%s].%s %q is not a valid %s name", prefix, section, alias, field, target, kind)
+		}
+	}
+	return nil
+}
