@@ -397,13 +397,13 @@ func TestScenarioScheduleAppliesLive(t *testing.T) {
 		c, ok := got.Status.Conditions.Get("Ready")
 		return ok && got.Generation == 2 && c.ObservedGeneration == 2
 	}, 10*time.Second, 10*time.Millisecond, "Ready follows the new generation")
-	three := nextSlot(t, "0 3 * * *", time.Time(s.CreationTime))
-	four := nextSlot(t, "0 4 * * *", three)
-	r.advanceTo(three)
-	r.still(func() bool { return len(r.backups()) == 0 }, "03:00 is no slot any more")
+	// past a 04:00 slot first, so the 03:00 checked next is never the creation day's, which the time of day decides
+	four := nextSlot(t, "0 4 * * *", time.Time(s.CreationTime))
 	r.advanceTo(four)
 	b := r.waitBackup(v1.BackupSlotName("orders-nightly", four), v1.RunSucceeded)
 	require.False(t, time.Time(*b.Status.StartTime).Before(four), "the run starts at 04:00")
+	r.advanceTo(nextSlot(t, "0 3 * * *", four))
+	r.still(func() bool { return len(r.backups()) == 1 }, "03:00 is no slot any more")
 }
 
 // scenario: catch-up-once-no-overlap — funcd down across three slots creates one Backup when it starts; a Backup still
