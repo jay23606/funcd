@@ -246,13 +246,15 @@ type Config struct {
 			StopGrace string `json:"stopGrace,omitempty" env:"FUNCD_PROCESS_STOP_GRACE"`
 		} `json:"process,omitempty"`
 		Containerd struct {
-			Socket        string            `json:"socket,omitempty" env:"FUNCD_CONTAINERD_SOCKET"`
-			Root          string            `json:"root,omitempty" env:"FUNCD_CONTAINERD_ROOT"`
-			Snapshotter   string            `json:"snapshotter,omitempty" env:"FUNCD_SNAPSHOTTER"`
-			CNIBinDir     string            `json:"cniBinDir,omitempty" env:"FUNCD_CNI_BIN_DIR"`
-			CNIConfDir    string            `json:"cniConfDir,omitempty" env:"FUNCD_CNI_CONF_DIR"`
-			StateDir      string            `json:"stateDir,omitempty" env:"FUNCD_CONTAINERD_STATE_DIR"`
-			SubnetCIDR    string            `json:"subnetCIDR,omitempty" env:"FUNCD_SUBNET_CIDR"`
+			Socket      string `json:"socket,omitempty" env:"FUNCD_CONTAINERD_SOCKET"`
+			Root        string `json:"root,omitempty" env:"FUNCD_CONTAINERD_ROOT"`
+			Snapshotter string `json:"snapshotter,omitempty" env:"FUNCD_SNAPSHOTTER"`
+			CNIBinDir   string `json:"cniBinDir,omitempty" env:"FUNCD_CNI_BIN_DIR"`
+			CNIConfDir  string `json:"cniConfDir,omitempty" env:"FUNCD_CNI_CONF_DIR"`
+			StateDir    string `json:"stateDir,omitempty" env:"FUNCD_CONTAINERD_STATE_DIR"`
+			SubnetCIDR  string `json:"subnetCIDR,omitempty" env:"FUNCD_SUBNET_CIDR"`
+			// BridgeAddress is funcd's address on its container bridge (ADR-0238); empty ⇒ the subnet's network address + 1.
+			BridgeAddress string            `json:"bridgeAddress,omitempty" env:"FUNCD_BRIDGE_ADDRESS"`
 			ImagePrefix   string            `json:"imagePrefix,omitempty" env:"FUNCD_IMAGE_PREFIX"`
 			ImageOverride map[string]string `json:"imageOverride,omitempty" env:"FUNCD_IMAGE_OVERRIDE" envSeparator:"," envKeyValSeparator:"="`
 		} `json:"containerd,omitempty"`
@@ -301,14 +303,9 @@ type Config struct {
 		MasterSecretFile string `json:"masterSecretFile,omitempty" env:"FUNCD_S3GATEWAY_MASTER_SECRET_FILE"`
 	} `json:"s3gateway,omitempty"`
 
-	// Catalog tunes the per-CatalogService catalog::query PEP proxies (ADR-0137). ProxyHost is the
-	// netns-reachable host each proxy publishes into a function's FUNCD_CATALOG_<ALIAS>_URL — the
-	// query-path analog of S3Gateway.Endpoint's host. Under containerd a worker runs in its own netns
-	// and cannot reach the daemon's 127.0.0.1, so this MUST be a node address the sandbox can reach (the
-	// CNI bridge gateway IP, e.g. 10.63.0.1); the proxy then binds 0.0.0.0. Empty ⇒ 127.0.0.1 (the
-	// process-runtime/dev default, shared loopback).
+	// Catalog tunes the per-CatalogService catalog::query PEP proxies (ADR-0137); they bind the bridge address
+	// (runtime.containerd.bridgeAddress, ADR-0238).
 	Catalog struct {
-		ProxyHost string `json:"proxyHost,omitempty" env:"FUNCD_CATALOG_PROXY_HOST"`
 		// EnginePollInterval and EngineProbeTimeout pace the wait for an engine's readiness probe (ADR-0163).
 		EnginePollInterval string `json:"enginePollInterval,omitempty" env:"FUNCD_CATALOG_ENGINE_POLL_INTERVAL"`
 		EngineProbeTimeout string `json:"engineProbeTimeout,omitempty" env:"FUNCD_CATALOG_ENGINE_PROBE_TIMEOUT"`
@@ -391,8 +388,8 @@ type Config struct {
 	SQL struct {
 		MaxDatabasesPerNamespace int    `json:"maxDatabasesPerNamespace,omitempty" env:"FUNCD_SQL_MAX_DATABASES_PER_NAMESPACE"`
 		CallTimeout              string `json:"callTimeout,omitempty" env:"FUNCD_SQL_CALL_TIMEOUT"`
-		// ChangeFeedPort is the port the engines post their changes to (ADR-0235), on the catalog proxies' host
-		// (catalog.proxyHost, else loopback); 0 ⇒ 7075.
+		// ChangeFeedPort is the port the engines post their changes to (ADR-0235), on the bridge address (ADR-0238);
+		// 0 ⇒ 7075.
 		ChangeFeedPort int `json:"changeFeedPort,omitempty" env:"FUNCD_SQL_CHANGE_FEED_PORT" validate:"min=0,max=65535"`
 	} `json:"sql,omitempty"`
 
@@ -655,7 +652,7 @@ func (c Config) Validate() error {
 		if err := c.validateCredentials(op); err != nil {
 			return err
 		}
-		for _, fs := range [][]Finding{c.CheckBackup(), c.CheckBlob()} {
+		for _, fs := range [][]Finding{c.CheckBackup(), c.CheckBlob(), c.CheckBridge()} {
 			if len(fs) > 0 && fs[0].Error {
 				return fault.Invalidf(op, "%s", fs[0].Message)
 			}

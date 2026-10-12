@@ -429,12 +429,7 @@ func buildOptions(ctx context.Context, cfg config.Config, root *slog.Logger, hel
 				return nil, noopClose, nil, "", fmt.Errorf("egress isolation: parse dnsResolver %q: %w", n.DNSResolver, err)
 			}
 		}
-		internal := slices.Clone(n.InternalAllow)
-		if cfg.Catalog.ProxyHost != "" {
-			// ADR-0235 Decision 2: the engines post their changes to the feed on the bridge address.
-			internal = append(internal, net.JoinHostPort(cfg.Catalog.ProxyHost, strconv.Itoa(cmp.Or(cfg.SQL.ChangeFeedPort, 7075))))
-		}
-		for _, s := range internal {
+		for _, s := range internalAllow(cfg) {
 			ap, err := netip.ParseAddrPort(s)
 			if err != nil {
 				return nil, noopClose, nil, "", fmt.Errorf("egress isolation: parse internalAllow %q: %w", s, err)
@@ -469,14 +464,14 @@ func buildOptions(ctx context.Context, cfg config.Config, root *slog.Logger, hel
 	// S3 gateway (ADR-0080/0085): opt-in S3-protocol frontend over the blob substrate.
 	if cfg.S3Gateway.Enabled {
 		opts = append(opts, funcd.WithS3Gateway(
-			cfg.S3Gateway.ListenAddr, cfg.S3Gateway.Endpoint, cfg.S3Gateway.MaxUploadBytes,
+			cfg.S3Gateway.ListenAddr, s3Endpoint(cfg), cfg.S3Gateway.MaxUploadBytes,
 			cfg.S3Gateway.MasterSecretFile, cfg.Storage.DataDir))
 	}
 
-	// Catalog PEP proxy (ADR-0137): under containerd, publish the proxy on a netns-reachable host (the
-	// CNI bridge gateway IP) so a worker in its own netns can reach it; empty ⇒ 127.0.0.1 (process/dev).
-	if cfg.Catalog.ProxyHost != "" {
-		opts = append(opts, funcd.WithCatalogProxyHost(cfg.Catalog.ProxyHost))
+	// The catalog proxies and the SQL change feed bind and publish the bridge address, where a worker or an engine in
+	// its own netns reaches them (ADR-0238); without one (the process runtime) they keep the shared loopback.
+	if bridge, ok := bridgeAddress(cfg); ok {
+		opts = append(opts, funcd.WithBridgeAddress(bridge))
 	}
 
 	// Workflow engine (ADR-0094): durable run state in its own Badger instance at Workflow.DataDir
@@ -1016,12 +1011,53 @@ func checkSecretsDecode(st store.Store, keyed bool) error {
 // repeated here.
 func logBackupFindings(cfg config.Config, log *slog.Logger) {
 	sealed := cfg.Backup.Target != ""
-	for _, f := range append(cfg.CheckBackup(), cfg.CheckBlob()...) {
+	for _, f := range slices.Concat(cfg.CheckBackup(), cfg.CheckBlob(), cfg.CheckBridge()) {
 		if f.Error || sealed && (f.Key == "backup.encryption.none" || f.Key == "backup.encryption.recipients") {
 			continue
 		}
 		log.Warn(f.Message, "key", f.Key)
 	}
+}
+
+// bridgeAddress is the address the catalog proxies, the SQL change feed and a derived S3 endpoint use (ADR-0238): the
+// config's bridge address under containerd; false for the process runtime, which keeps the shared loopback.
+func bridgeAddress(cfg config.Config) (netip.Addr, bool) {
+	if cfg.Runtime.Mode != "containerd" {
+		return netip.Addr{}, false
+	}
+	a, err := cfg.BridgeAddress()
+	return a, err == nil
+}
+
+// internalAllow is the egress internal allow list: the configured entries and, where the engines run, the change
+// feed on the bridge address (ADR-0235 Decision 2, ADR-0238).
+func internalAllow(cfg config.Config) []string {
+	internal := slices.Clone(cfg.Server.Network.InternalAllow)
+	if bridge, ok := bridgeAddress(cfg); ok {
+		internal = append(internal, net.JoinHostPort(bridge.String(), strconv.Itoa(cmp.Or(cfg.SQL.ChangeFeedPort, 7075))))
+	}
+	return internal
+}
+
+// s3Endpoint is the S3 URL a worker is given (ADR-0085 as ADR-0238 supersedes it in part): s3gateway.endpoint when set;
+// else http://<bridge address>:<port> when the gateway listens on an empty or unspecified host or on the bridge address
+// itself; else "", for the library's http://<listenAddr>.
+func s3Endpoint(cfg config.Config) string {
+	if cfg.S3Gateway.Endpoint != "" {
+		return cfg.S3Gateway.Endpoint
+	}
+	bridge, ok := bridgeAddress(cfg)
+	if !ok {
+		return ""
+	}
+	host, port, err := net.SplitHostPort(cfg.S3Gateway.ListenAddr)
+	if err != nil {
+		return ""
+	}
+	if a, perr := netip.ParseAddr(host); host != "" && (perr != nil || !a.IsUnspecified() && a != bridge) {
+		return ""
+	}
+	return "http://" + net.JoinHostPort(bridge.String(), port)
 }
 
 // backupRunner builds the backup runner when the platform backup (backup.target with storage.mode file) or the KV
