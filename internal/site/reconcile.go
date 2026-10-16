@@ -159,7 +159,44 @@ func (r *Reconciler) Reconcile(ctx context.Context, req controller.Request) (con
 		}
 	}
 
-	rt, err = r.ensureRoute(ctx, s, rt, target, index)
+	// ADR-0239 Decision 10: with baseHref the bundle rule serves a copy of the index carrying the mount, written into the
+	// digest folder before the Route, under a key that names the mount, so a new digest or mount switches with the Route.
+	served := index
+	if s.Spec.Ingress.BaseHref {
+		rel := indexCopyRel(s, index)
+		reason, msg, werr := writeIndexCopy(ctx, view, sp, index, rel, baseHrefOf(s))
+		if werr != nil {
+			return controller.Result{}, werr
+		}
+		if reason != "" {
+			return r.publish(ctx, s, outcome{digest: serving, view: view, cond: notReady(reason, msg)})
+		}
+		served = rel
+	}
+
+	// ADR-0239 Decision 7: the config step runs once the bundle is complete and before the Route. A config failure
+	// rewrites nothing and never holds the bundle back; the rule is compiled exactly when the object exists. Removal
+	// deletes the object first, while the current Route still carries the rule.
+	config, cfgReason, cfgMsg := false, "", ""
+	switch {
+	case s.Spec.RuntimeConfig != nil:
+		reason, msg, werr := r.writeRuntimeConfig(ctx, s, view)
+		if werr != nil {
+			return controller.Result{}, werr
+		}
+		cfgReason, cfgMsg, config = reason, msg, reason == ""
+		if !config {
+			if config, err = view.Exists(ctx, runtimeConfigKey(s)); err != nil {
+				return controller.Result{}, fault.Wrapf(err, fault.KindOf(err), op, "probe %q", runtimeConfigKey(s))
+			}
+		}
+	case servesRuntimeConfig(rt, s):
+		if derr := dropRuntimeConfig(ctx, s, view); derr != nil {
+			return controller.Result{}, derr
+		}
+	}
+
+	rt, err = r.ensureRoute(ctx, s, rt, target, served, config)
 	if err != nil {
 		return controller.Result{}, err
 	}
@@ -171,6 +208,8 @@ func (r *Reconciler) Reconcile(ctx context.Context, req controller.Request) (con
 		out.result = controller.Result{RequeueAfter: r.routeRequeue}
 	case cnd.Status != v1.ConditionTrue:
 		out.cond = notReady("RouteNotReady", fmt.Sprintf("route %q: %s: %s", rt.Name, cnd.Reason, cnd.Message))
+	case cfgReason != "":
+		out.cond = notReady(cfgReason, cfgMsg)
 	default:
 		out.cond = v1.Condition{Type: condReady, Status: v1.ConditionTrue, Reason: "Materialized"}
 	}
@@ -287,6 +326,9 @@ func (r *Reconciler) unpack(ctx context.Context, view blob.Bucket, s *v1.Site, d
 	if !slices.Contains(files, index) {
 		return "IndexMissing", fmt.Sprintf("bundle %s has no %q; nothing materialized", digest, index), nil
 	}
+	if i := slices.IndexFunc(files, isRuntimeEntry); i >= 0 {
+		return "MaterializeFailed", fmt.Sprintf("bundle %s holds %q, under the _runtime/ that funcd reserves for a Site's generated files (ADR-0239); nothing materialized", digest, files[i]), nil
+	}
 	slices.Sort(files)
 	put := func(rel string) (reason, message string, err error) {
 		data, rerr := os.ReadFile(filepath.Join(tmp, filepath.FromSlash(rel))) //nolint:gosec // rel is a walked entry under the scratch dir
@@ -321,8 +363,8 @@ func (r *Reconciler) unpack(ctx context.Context, view blob.Bucket, s *v1.Site, d
 
 // ensureRoute creates the owned Route (always stamped with the OwnerReference) or updates its spec to
 // the compiled desired state and its group to the Site's when either drifted; an unchanged Route is left alone.
-func (r *Reconciler) ensureRoute(ctx context.Context, s *v1.Site, rt *v1.Route, digest, index string) (*v1.Route, error) {
-	spec := compileRoute(s, digest, index)
+func (r *Reconciler) ensureRoute(ctx context.Context, s *v1.Site, rt *v1.Route, digest, index string, config bool) (*v1.Route, error) {
+	spec := compileRoute(s, digest, index, config)
 	if rt == nil {
 		nr := &v1.Route{TypeMeta: v1.TypeMeta{APIVersion: v1.KindRoute.GVK().APIVersion(), Kind: v1.KindRoute}}
 		nr.Name, nr.Namespace, nr.ResourceGroup = s.Name, s.Namespace, s.ResourceGroup
@@ -357,8 +399,11 @@ func (r *Reconciler) publish(ctx context.Context, s *v1.Site, out outcome) (cont
 			if lerr != nil {
 				return controller.Result{}, fault.Wrapf(lerr, fault.KindOf(lerr), op, "list %q", s.Status.ServingPrefix)
 			}
-			s.Status.Objects = len(attrs)
 			for _, a := range attrs {
+				if isRuntimeEntry(strings.TrimPrefix(a.Key, s.Status.ServingPrefix)) {
+					continue // a Site's generated copies are not the bundle (ADR-0239 Decision 10)
+				}
+				s.Status.Objects++
 				s.Status.Bytes += a.Size
 			}
 		}

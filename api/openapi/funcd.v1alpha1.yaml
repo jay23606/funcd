@@ -754,6 +754,9 @@ components:
                 minLength: 1
                 pattern: ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$
                 type: string
+              runtimeConfig:
+                $ref: "#/components/schemas/SiteRuntimeConfig"
+                description: "Values each deployment sets without a rebuild, served as config.json beside the bundle. The file is public: never put a secret in it."
               spa:
                 type: boolean
             type: object
@@ -3633,6 +3636,9 @@ components:
       properties:
         auth:
           $ref: "#/components/schemas/RouteAuth"
+        baseHref:
+          description: Serve a copy of the bundle's index whose <base href> is the Site's mount, so a bundle built with relative URLs runs at any path, deep links included.
+          type: boolean
         host:
           type: string
         path:
@@ -3663,6 +3669,19 @@ components:
         - path
         - prefix
       type: object
+    SiteRuntimeConfig:
+      additionalProperties: false
+      properties:
+        configMap:
+          maxLength: 63
+          minLength: 1
+          pattern: ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$
+          type: string
+        values:
+          additionalProperties:
+            type: string
+          type: object
+      type: object
     SiteSpec:
       additionalProperties: false
       properties:
@@ -3677,6 +3696,9 @@ components:
         prefix:
           pattern: ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$
           type: string
+        runtimeConfig:
+          $ref: "#/components/schemas/SiteRuntimeConfig"
+          description: "Values each deployment sets without a rebuild, served as config.json beside the bundle. The file is public: never put a secret in it."
         spa:
           type: boolean
       required:
