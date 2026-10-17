@@ -63,10 +63,42 @@ func resolveManifest(path string) (*sdk.Manifest, string, error) {
 	return nil, "", nil
 }
 
+// manifestEntry resolves a manifest's bundle root + entry file. With the wrangler-style `main` set (a
+// handler file relative to the manifest dir), the handler's OWN dir is the bundle root — its siblings
+// (SQL, vendored deps under a bundle/) resolve and FUNCD_BUNDLE_DIR points there — so it runs IN PLACE.
+// Without `main`, it's the flat stem/generic convention: defaultEntry co-located with the manifest,
+// isolated per defaultIsolate.
+func manifestEntry(m *sdk.Manifest, dir, defaultEntry string, defaultIsolate bool) (srcDir, entry string, isolate bool) {
+	if strings.TrimSpace(m.Main) != "" {
+		full := filepath.Join(dir, m.Main)
+		return filepath.Dir(full), filepath.Base(full), false
+	}
+	return dir, defaultEntry, defaultIsolate
+}
+
+// defaultEntry is the conventional handler entry file for a runtime family: handler.py for the python
+// family, handler.mjs otherwise. Overridable with --entry.
+func defaultEntry(rt v1.RuntimeName) string {
+	if strings.HasPrefix(string(rt), "python") {
+		return "handler.py"
+	}
+	return "handler.mjs"
+}
+
+// pushEntry is the bundle entry of a push that m governs: --entry when the command line sets it, else the
+// handler funcdctl dev runs for m (its main, else the runtime's default entry), relative to the bundle root.
+func pushEntry(cmd *cobra.Command, entry string, m *sdk.Manifest) string {
+	if cmd.Flags().Changed("entry") {
+		return entry
+	}
+	srcDir, file, _ := manifestEntry(m, ".", defaultEntry(m.Runtime), false)
+	return filepath.ToSlash(filepath.Join(srcDir, file))
+}
+
 // pushFromManifest packages a push whose contract and runtime come from a funcdctl.yaml (ADR-0122):
 // it gates each schema side against the funcd profile (contract.Check), then bakes the schema-only
 // contract and pushes — recording the runtime annotation, with no language toolchain invoked.
-func (a *cli) pushFromManifest(ctx context.Context, path, ref string, m *sdk.Manifest, entryFlag string, platform v1.OCIPlatform) error {
+func (a *cli) pushFromManifest(ctx context.Context, path, ref string, m *sdk.Manifest, entry string, platform v1.OCIPlatform) error {
 	const op = "funcdctl push"
 	// An http Function has no I/O contract (ADR-0243 Decision 7): its artifact carries none.
 	var input, output []byte
@@ -88,14 +120,14 @@ func (a *cli) pushFromManifest(ctx context.Context, path, ref string, m *sdk.Man
 			if rerr := os.Remove(filepath.Join(path, bundleContractName)); rerr != nil && !errors.Is(rerr, fs.ErrNotExist) {
 				return fault.Internalf(op, "remove %s: %v", bundleContractName, rerr)
 			}
-			digest, perr = artifact.PushBundleNoContract(ctx, ref, path, entryFlag, runtime, platform)
+			digest, perr = artifact.PushBundleNoContract(ctx, ref, path, entry, runtime, platform)
 		} else {
 			// funcdctl.yaml is primary for the bundle: compile its inline contract into the bundle's
 			// __funcd_contract.json so PushBundle (which re-gates + promotes it) bakes the manifest's schema.
 			if werr := writeBundleContract(op, path, input, output); werr != nil {
 				return werr
 			}
-			digest, perr = artifact.PushBundle(ctx, ref, path, entryFlag, runtime, platform)
+			digest, perr = artifact.PushBundle(ctx, ref, path, entry, runtime, platform)
 		}
 		if perr != nil {
 			return perr

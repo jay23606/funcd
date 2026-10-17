@@ -11548,5 +11548,20 @@
     "dod_total": 15,
     "report": "docs/reviews/adr-0242-implementation-claude-opus-5-5.md",
     "notes": "pass; minors: no test for written-rule precedence/config method filter (model), SiteNotReady message one text for all cases (model), stale union doc comments (model), RouteStatus reasons list (model), funcdctl help has no surface (adr)"
+  },
+  {
+    "date": "2026-10-18",
+    "issue": "1049",
+    "phase": "fix",
+    "model": "claude-opus-5-5",
+    "verdict": "pass",
+    "blockers": 0,
+    "majors": 0,
+    "minors": 3,
+    "model_attributed": 2,
+    "dod_passed": 12,
+    "dod_total": 12,
+    "report": "docs/reviews/issue-1049-fix-claude-opus-5-5.md",
+    "notes": "pass; self-reviewed (no review agent, per the decider); m1 model: pushFromManifest keeps the entryFlag name so it merges cleanly with the ADR-0243 branch; m2 model: pushEntry also runs for a single-file push; m3 adr: funcdctl dev ranks --entry below main, push above it"
   }
 ]
