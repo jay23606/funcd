@@ -559,8 +559,11 @@ func (a *cli) bootDev(ctx context.Context, op string, pfs []plannedFunc, wf *dev
 	if perr != nil {
 		return nil, perr
 	}
-	// The durable state dirs change while the session runs, so the hot-reload watcher never walks them.
-	stateDirs := []string{plan.storeDir, plan.kvDir, plan.blobDir, plan.catalogDir, plan.sqlDir}
+	processDir, derr := devStateDir(cfg, filepath.Dir(pfs[0].manifestPath))
+	if derr != nil {
+		return nil, derr
+	}
+	stateDirs := plan.watchSkips(processDir)
 
 	inst := &devInstance{runErr: make(chan error, 1), logger: logger}
 	for _, pf := range pfs {
@@ -573,7 +576,9 @@ func (a *cli) bootDev(ctx context.Context, op string, pfs []plannedFunc, wf *dev
 		}
 	}()
 
-	fnObjs, handlers, herr := prepareHandlers(op, pfs, stateDirs, inst)
+	// The bundles and contracts are delivered before the platform starts: over a durable metastore it starts the stored
+	// Functions' replicas at once, and a replica started without its contract file runs unvalidated (#1053).
+	fnObjs, handlers, herr := prepareHandlers(op, pfs, plan.bundleDir, stateDirs, inst)
 	if herr != nil {
 		return nil, herr
 	}
@@ -644,10 +649,10 @@ func (a *cli) startPlatform(ctx context.Context, op string, pfs []plannedFunc, p
 
 // prepareHandlers delivers each function's bundle + ADR-0123 contract and synthesizes its Function (run from
 // source, links restored), registering each bundle's cleanup on inst. A stem/workflow function is isolated in a
-// private temp bundle so per-function contracts never collide when several single-file functions share a dir
-// (ADR-0124). Admission enforces link-target existence, so the Functions come back in link order: a link's target
-// before the caller that binds it.
-func prepareHandlers(op string, pfs []plannedFunc, stateDirs []string, inst *devInstance) ([]v1.Object, []*devHandler, error) {
+// private bundle under bundleRoot (a temp dir when it is empty) so per-function contracts never collide when several
+// single-file functions share a dir (ADR-0124). Admission enforces link-target existence, so the Functions come back
+// in link order: a link's target before the caller that binds it.
+func prepareHandlers(op string, pfs []plannedFunc, bundleRoot string, stateDirs []string, inst *devInstance) ([]v1.Object, []*devHandler, error) {
 	var fnObjs []v1.Object
 	handlers := make([]*devHandler, 0, len(pfs))
 	for _, pf := range pfs {
@@ -658,7 +663,7 @@ func prepareHandlers(op string, pfs []plannedFunc, stateDirs []string, inst *dev
 		// Fingerprint before the bundle is read, so an edit racing the boot still triggers a reload.
 		h := &devHandler{pf: pf}
 		fp, ferr := h.fingerprint(stateDirs)
-		imagePath, cleanup, berr := prepareBundle(op, pf, contractBlob)
+		imagePath, cleanup, berr := prepareBundle(op, pf, bundleRoot, contractBlob)
 		if berr != nil {
 			return nil, nil, berr
 		}
@@ -991,6 +996,13 @@ type persistPlan struct {
 	blobDir    string // durable blob (fileblob); "" ⇒ mem://
 	catalogDir string // durable DuckLake SQLite catalog root (devengine); "" ⇒ ephemeral temp
 	sqlDir     string // durable SQL engines' data root (ADR-0237); "" ⇒ ephemeral temp
+	bundleDir  string // isolated functions' bundles, the same path on every run (#1053); "" ⇒ a temp dir per run
+}
+
+// watchSkips are the dirs the hot-reload watcher never walks, since the session writes them while it runs: the durable
+// state, the isolated bundles and processDir.
+func (p persistPlan) watchSkips(processDir string) []string {
+	return []string{p.storeDir, p.kvDir, p.blobDir, p.catalogDir, p.sqlDir, p.bundleDir, processDir}
 }
 
 // devStateDir is where `funcdctl dev` saves the workers and catalog engines it starts (ADR-0167): <persist-to>/process
@@ -1045,6 +1057,7 @@ func resolvePersistPlan(cfg devConfig, m *sdk.Manifest) (persistPlan, error) {
 		p.storeDir = filepath.Join(absRoot, "metastore")
 		p.catalogDir = filepath.Join(absRoot, "catalog")
 		p.sqlDir = filepath.Join(absRoot, "sql")
+		p.bundleDir = filepath.Join(absRoot, "bundles")
 	}
 
 	kvDir, kerr := resolveBackendDir(op, m.Dev.Backends.KV, cfg.persist, absRoot, "kv")
@@ -1152,7 +1165,7 @@ func buildPersistDrivers(op string, cfg devConfig, m *sdk.Manifest) (opts []func
 }
 
 // plannedFunc is one function `funcdctl dev` will run from source, resolved from the path arg (a dir of
-// manifests, a stem, a single file, or a workflow step). isolate ⇒ materialize into a private temp bundle
+// manifests, a stem, a single file, or a workflow step). isolate ⇒ materialize into a private bundle
 // (a single-file function, so per-function contracts never collide when several share a dir, ADR-0124);
 // !isolate ⇒ run in place in srcDir (the generic-funcdctl.yaml bundle path, Phase 1/2).
 type plannedFunc struct {
@@ -1560,9 +1573,9 @@ func synthesizeFunction(pf plannedFunc, imagePath string) *v1.Function {
 // prepareBundle delivers the ADR-0123 contract for one function and returns the file:// image path the
 // Function points at. In place (!isolate) the bundle root is srcDir and the contract is the dotfile there
 // (removed on stop unless the user already committed one — never clobbered). Isolated, the single handler
-// file is copied into a private temp bundle with its own contract (so several single-file functions in one
-// dir never collide on the shared dotfile) and a best-effort node_modules symlink lets its imports resolve.
-func prepareBundle(op string, pf plannedFunc, contractBlob []byte) (imagePath string, cleanup func(), err error) {
+// file is copied into a private bundle (privateBundleDir) with its own contract (so several single-file functions in
+// one dir never collide on the shared dotfile) and a best-effort node_modules symlink lets its imports resolve.
+func prepareBundle(op string, pf plannedFunc, bundleRoot string, contractBlob []byte) (imagePath string, cleanup func(), err error) {
 	src := filepath.Join(pf.srcDir, pf.entry)
 	if _, serr := os.Stat(src); serr != nil {
 		return "", nil, fault.NotFoundf(op, "handler entry %q not found in %q (set --entry): %v", pf.entry, pf.srcDir, serr)
@@ -1580,11 +1593,14 @@ func prepareBundle(op string, pf plannedFunc, contractBlob []byte) (imagePath st
 		return src, cleanup, nil
 	}
 
-	tmp, terr := os.MkdirTemp("", "funcdctl-dev-fn-")
+	tmp, kept, terr := privateBundleDir(op, bundleRoot, pf.name, pf.srcDir)
 	if terr != nil {
-		return "", nil, fault.Wrapf(terr, fault.Internal, op, "create bundle temp dir")
+		return "", nil, terr
 	}
 	cleanup = func() { _ = os.RemoveAll(tmp) }
+	if kept {
+		cleanup = func() {}
+	}
 	if pf.linkSrc {
 		if lerr := linkSources(op, pf.srcDir, tmp); lerr != nil {
 			cleanup()
@@ -1600,6 +1616,29 @@ func prepareBundle(op string, pf plannedFunc, contractBlob []byte) (imagePath st
 	return filepath.Join(tmp, pf.entry), cleanup, nil
 }
 
+// privateBundleDir returns the dir of an isolated function's bundle: a new temp dir, or under --persist (bundleRoot
+// set) bundleRoot/<name>-<first 8 hex digits of the sha256 of the absolute srcDir>, kept across runs as state, since
+// a later run's serving Revision still names it (#1053). The digest keeps two projects that share a --persist-to
+// apart, so a session that fails on the other's lock never rewrites its bundle.
+func privateBundleDir(op, bundleRoot string, name v1.ObjectName, srcDir string) (dir string, kept bool, err error) {
+	if bundleRoot == "" {
+		if dir, err = os.MkdirTemp("", "funcdctl-dev-fn-"); err != nil {
+			return "", false, fault.Wrapf(err, fault.Internal, op, "create bundle temp dir")
+		}
+		return dir, false, nil
+	}
+	abs, err := filepath.Abs(srcDir)
+	if err != nil {
+		return "", false, fault.Wrapf(err, fault.Internal, op, "resolve %s", srcDir)
+	}
+	sum := sha256.Sum256([]byte(abs))
+	dir = filepath.Join(bundleRoot, string(name)+"-"+hex.EncodeToString(sum[:])[:8])
+	if err = os.MkdirAll(dir, 0o700); err != nil {
+		return "", false, fault.Wrapf(err, fault.Internal, op, "create bundle dir %q", dir)
+	}
+	return dir, true, nil
+}
+
 // deliverBundle writes one function's ADR-0123 contract into its bundle dir and, for an isolated bundle, copies
 // the handler entry beside it — at boot, and again on each hot-reload.
 func deliverBundle(op string, pf plannedFunc, bundleDir string, contractBlob []byte) error {
@@ -1608,7 +1647,15 @@ func deliverBundle(op string, pf plannedFunc, bundleDir string, contractBlob []b
 		if rerr != nil {
 			return fault.Wrapf(rerr, fault.NotFound, op, "read handler entry %q", pf.entry)
 		}
-		if werr := os.WriteFile(filepath.Join(bundleDir, pf.entry), data, 0o600); werr != nil {
+		dst := filepath.Join(bundleDir, pf.entry)
+		// A bundle kept across runs (--persist) may hold the link an earlier, linked run made: replace it rather than
+		// write through it into the source.
+		if fi, lerr := os.Lstat(dst); lerr == nil && fi.Mode()&fs.ModeSymlink != 0 {
+			if rerr := os.Remove(dst); rerr != nil {
+				return fault.Wrapf(rerr, fault.Internal, op, "replace link %q", dst)
+			}
+		}
+		if werr := os.WriteFile(dst, data, 0o600); werr != nil {
 			return fault.Wrapf(werr, fault.Internal, op, "copy handler into bundle")
 		}
 	}
@@ -1636,7 +1683,8 @@ func devContract(m *sdk.Manifest) ([]byte, error) {
 }
 
 // linkSources links every file of srcDir but its contract dotfile into bundleDir, by absolute path, since srcDir is
-// relative to the working directory when the project is named as `.`.
+// relative to the working directory when the project is named as `.`. A link a kept bundle (--persist) already holds
+// stays; any other file at its name is replaced.
 func linkSources(op, srcDir, bundleDir string) error {
 	srcDir, err := filepath.Abs(srcDir)
 	if err != nil {
@@ -1650,7 +1698,12 @@ func linkSources(op, srcDir, bundleDir string) error {
 		if e.Name() == devContractFile {
 			continue
 		}
-		if lerr := os.Symlink(filepath.Join(srcDir, e.Name()), filepath.Join(bundleDir, e.Name())); lerr != nil {
+		target, link := filepath.Join(srcDir, e.Name()), filepath.Join(bundleDir, e.Name())
+		if cur, rerr := os.Readlink(link); rerr == nil && cur == target {
+			continue
+		}
+		_ = os.Remove(link)
+		if lerr := os.Symlink(target, link); lerr != nil {
 			return fault.Wrapf(lerr, fault.Internal, op, "link %s into the bundle", e.Name())
 		}
 	}
