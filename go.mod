@@ -8,6 +8,7 @@ require (
 	filippo.io/age v1.3.2
 	fortio.org/fortio v1.75.3
 	fortio.org/log v1.18.3
+	github.com/BurntSushi/toml v1.6.0
 	github.com/Masterminds/semver/v3 v3.5.0
 	github.com/aws/aws-sdk-go-v2 v1.47.2
 	github.com/aws/aws-sdk-go-v2/config v1.33.8
@@ -39,9 +40,9 @@ require (
 	github.com/opencontainers/image-spec v1.1.1
 	github.com/opencontainers/runtime-spec v1.3.0
 	github.com/parquet-go/parquet-go v0.32.0
-	github.com/pyvvo/funcd-functions v0.18.0
-	github.com/pyvvo/funcd-python v0.13.0
-	github.com/pyvvo/funcd-typescript v0.18.0
+	github.com/pyvvo/funcd-functions v0.19.0
+	github.com/pyvvo/funcd-python v0.14.0
+	github.com/pyvvo/funcd-typescript v0.19.2
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3
 	github.com/shirou/gopsutil/v4 v4.26.9
 	github.com/spf13/cobra v1.10.2
@@ -99,7 +100,6 @@ require (
 	github.com/Antonboom/nilnil v1.1.1 // indirect
 	github.com/Antonboom/testifylint v1.6.4 // indirect
 	github.com/Azure/go-ntlmssp v0.1.1 // indirect
-	github.com/BurntSushi/toml v1.6.0 // indirect
 	github.com/ClickHouse/clickhouse-go-linter v1.2.0 // indirect
 	github.com/DataDog/datadog-go/v5 v5.9.1 // indirect
 	github.com/Djarvur/go-err113 v0.1.1 // indirect

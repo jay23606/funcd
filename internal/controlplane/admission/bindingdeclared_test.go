@@ -29,12 +29,11 @@ func TestBindingDeclaredFunction(t *testing.T) {
 	a := admission.NewBindingDeclaredAdmission(nil)
 	require.Equal(t, "binding-declared", a.Name())
 	require.Equal(t, admission.Validating, a.Phase())
-	for _, k := range []v1.Kind{v1.KindFunction, v1.KindWorkflow} {
+	for _, k := range []v1.Kind{v1.KindFunction, v1.KindWorkflow, v1.KindCatalogService} {
 		require.True(t, a.Handles(k.GVK(), admission.Create))
 		require.True(t, a.Handles(k.GVK(), admission.Update))
 		require.False(t, a.Handles(k.GVK(), admission.Delete))
 	}
-	require.False(t, a.Handles(v1.KindCatalogService.GVK(), admission.Create), "a standalone CatalogService is the second exception")
 	ctx := context.Background()
 	admit := func(fn *v1.Function, d *admission.Declared) error {
 		_, err := a.Admit(ctx, admission.Request{Operation: admission.Create, GVK: v1.KindFunction.GVK(), Object: fn, Declared: d})
@@ -94,8 +93,8 @@ func TestBindingDeclaredFunction(t *testing.T) {
 	require.Error(t, admit(part, nil), "the same Function on its own does not")
 }
 
-// ADR-0248 Decision 2: an image step binds only KV stores and buckets its Workflow declares; a ref step and the
-// first exception's bindings (sql, catalog, config, secret) are not checked.
+// ADR-0248 Decision 2 and ADR-0250 Decision 2: an image step binds only what its Workflow declares, every kind of
+// binding; a ref step is not checked.
 func TestBindingDeclaredWorkflow(t *testing.T) {
 	t.Parallel()
 	a := admission.NewBindingDeclaredAdmission(nil)
@@ -104,14 +103,19 @@ func TestBindingDeclaredWorkflow(t *testing.T) {
 		w.Name, w.Namespace, w.ResourceGroup = "w", "default", "rg1"
 		w.Spec.KVStores = []v1.KVStoreEntry{{Name: "own"}, {Ref: "shared"}}
 		w.Spec.Buckets = []v1.BucketEntry{{Name: "files"}}
+		w.Spec.SQLDatabases = []v1.SQLDatabaseEntry{{Ref: "notes"}}
+		w.Spec.CatalogServices = []v1.CatalogEntry{{Ref: "lake"}}
+		w.Spec.ConfigMaps = []v1.ConfigMapEntry{{Name: "settings"}}
+		w.Spec.SecretDeclarations = []v1.SecretDeclaration{{Name: "api-keys", Keys: []string{"K"}}}
 		w.Spec.Steps = []v1.WorkflowStep{
 			{Name: "r", Function: &v1.FunctionStep{Ref: "f", Bindings: v1.StepBindings{KV: []v1.FunctionKV{{Alias: "e", Store: "elsewhere", Table: "t"}}}}},
 			{Name: "s", Function: &v1.FunctionStep{Image: "oci:s", Bindings: v1.StepBindings{
-				KV:     []v1.FunctionKV{{Alias: "o", Store: "own", Table: "t"}, {Alias: "sh", Store: "shared", Table: "t"}},
-				Blob:   []v1.FunctionBlob{{Alias: "f", Bucket: "files", Prefix: "p"}},
-				SQL:    []v1.FunctionSQL{{Alias: "db", Database: "notes"}},
-				Config: []v1.ObjectName{"settings"},
-				Secret: []v1.ObjectName{"api-keys"},
+				KV:      []v1.FunctionKV{{Alias: "o", Store: "own", Table: "t"}, {Alias: "sh", Store: "shared", Table: "t"}},
+				Blob:    []v1.FunctionBlob{{Alias: "f", Bucket: "files", Prefix: "p"}},
+				SQL:     []v1.FunctionSQL{{Alias: "db", Database: "notes"}},
+				Catalog: []v1.FunctionCatalog{{Alias: "lake", Catalog: "lake"}},
+				Config:  []v1.ObjectName{"settings"},
+				Secret:  []v1.ObjectName{"api-keys"},
 			}}},
 		}
 		if mutate != nil {
@@ -129,6 +133,17 @@ func TestBindingDeclaredWorkflow(t *testing.T) {
 		`admission.binding-declared: spec.steps[1].function.bindings.kv[1]: KVStore "shared" is not declared in spec.kv`)
 	require.EqualError(t, admit(wf(func(s *v1.WorkflowSpec) { s.Buckets = nil })),
 		`admission.binding-declared: spec.steps[1].function.bindings.blob[0]: Bucket "files" is not declared in spec.buckets`)
+	for name, tc := range map[string]struct {
+		mutate func(*v1.WorkflowSpec)
+		want   string
+	}{
+		"sql":     {func(s *v1.WorkflowSpec) { s.SQLDatabases = nil }, `spec.steps[1].function.bindings.sql[0]: SQLDatabase "notes" is not declared in spec.sql`},
+		"catalog": {func(s *v1.WorkflowSpec) { s.CatalogServices = nil }, `spec.steps[1].function.bindings.catalog[0]: CatalogService "lake" is not declared in spec.catalogs`},
+		"config":  {func(s *v1.WorkflowSpec) { s.ConfigMaps = nil }, `spec.steps[1].function.bindings.config[0]: ConfigMap "settings" is not declared in spec.configMaps`},
+		"secret":  {func(s *v1.WorkflowSpec) { s.SecretDeclarations = nil }, `spec.steps[1].function.bindings.secret[0]: Secret "api-keys" is not declared in spec.secrets`},
+	} {
+		require.EqualError(t, admit(wf(tc.mutate)), "admission.binding-declared: "+tc.want, name)
+	}
 }
 
 // ADR-0248 Decisions 4 and 5: function-store-owner writes the Function in as the omitted owner of what it defines, and
@@ -183,6 +198,7 @@ func TestBindingDeclaredReadsTheController(t *testing.T) {
 	wf := &v1.Workflow{TypeMeta: v1.TypeMeta{APIVersion: v1.KindWorkflow.GVK().APIVersion(), Kind: v1.KindWorkflow}}
 	wf.Name, wf.Namespace, wf.UID = "plan", "default", "wf-uid"
 	wf.Spec.KVStores = []v1.KVStoreEntry{{Name: "plan-kv"}}
+	wf.Spec.SQLDatabases = []v1.SQLDatabaseEntry{{Ref: "notes"}}
 	wf.OwnerReferences = []v1.OwnerReference{{ObjectRef: v1.ObjectRef{Kind: v1.KindApp, Name: "todo"}, UID: "app-uid", Controller: true}}
 	a := admission.NewBindingDeclaredAdmission(listed{app, wf})
 	controlled := func(kind v1.Kind, name v1.ObjectName, uid v1.UID, b v1.FunctionBindings) *v1.Function {
@@ -203,4 +219,62 @@ func TestBindingDeclaredReadsTheController(t *testing.T) {
 	require.NoError(t, admit(controlled(v1.KindWorkflow, "plan", "wf-uid", step)), "a step binds its Workflow's and its App's stores")
 	require.EqualError(t, admit(controlled(v1.KindWorkflow, "plan", "wf-uid", v1.FunctionBindings{KV: kv("ghost")})),
 		`admission.binding-declared: spec.bindings.kv[0]: KVStore "ghost" is not declared in its Workflow's spec.kv`)
+	require.EqualError(t, admit(controlled(v1.KindWorkflow, "plan", "wf-uid", v1.FunctionBindings{SQL: []v1.FunctionSQL{{Alias: "db", Database: "ghost"}}})),
+		`admission.binding-declared: spec.bindings.sql[0]: SQLDatabase "ghost" is not declared in its Workflow's spec.sql`)
+}
+
+// ADR-0251 Decisions 1 and 4: catalog-store-owner, function-store-owner's twin, writes the CatalogService into an
+// omitted prefix owner of a bucket it defines and points a config binding at the stored ConfigMap; a ref is untouched.
+func TestCatalogStoreOwner(t *testing.T) {
+	t.Parallel()
+	a := admission.NewCatalogStoreOwnerAdmission()
+	require.Equal(t, "catalog-store-owner", a.Name())
+	require.Equal(t, admission.Mutating, a.Phase())
+	require.True(t, a.Handles(v1.KindCatalogService.GVK(), admission.Update))
+	require.False(t, a.Handles(v1.KindFunction.GVK(), admission.Create))
+
+	data := v1.ConfigMapSpec{Data: map[string]string{"DUCKDB_THREADS": "2"}}
+	cs := &v1.CatalogService{TypeMeta: v1.TypeMeta{APIVersion: v1.KindCatalogService.GVK().APIVersion(), Kind: v1.KindCatalogService}}
+	cs.Name, cs.Namespace = "lake", "default"
+	cs.Spec.Buckets = []v1.BucketEntry{
+		{Name: "lakehouse", BucketSpec: v1.BucketSpec{Prefixes: []v1.BucketPrefix{{Name: "lake"}, {Name: "raw", Owner: "ingest"}}}},
+		{Ref: "landing"},
+	}
+	cs.Spec.ConfigMaps = []v1.ConfigMapEntry{{Name: "tuning", ConfigMapSpec: data}}
+	cs.Spec.Bindings.Config = []v1.ObjectName{"tuning"}
+	out, err := a.Admit(context.Background(), admission.Request{Operation: admission.Create, GVK: v1.KindCatalogService.GVK(), Object: cs})
+	require.NoError(t, err)
+	s := out.(*v1.CatalogService).Spec
+	require.Equal(t, []v1.BucketPrefix{{Name: "lake", Owner: "lake"}, {Name: "raw", Owner: "ingest"}}, s.Buckets[0].Prefixes)
+	require.Equal(t, []v1.ObjectName{v1.AppConfigMapName("tuning", data)}, s.Bindings.Config)
+}
+
+// ADR-0251 Decision 2: a standalone CatalogService binds only what its root declares; an App's catalog checks only its
+// buckets against the App's root, since an App's ConfigMaps and Secrets are declared for its Functions (ADR-0248).
+func TestBindingDeclaredCatalogService(t *testing.T) {
+	t.Parallel()
+	a := admission.NewBindingDeclaredAdmission(nil)
+	admit := func(s v1.CatalogServiceSpec, d *admission.Declared) error {
+		cs := &v1.CatalogService{Spec: s}
+		_, err := a.Admit(context.Background(), admission.Request{Operation: admission.Create, GVK: v1.KindCatalogService.GVK(), Object: cs, Declared: d})
+		return err
+	}
+	bound := v1.CatalogServiceSpec{Bindings: v1.CatalogServiceBindings{
+		Blob: []v1.FunctionBlob{{Alias: "lake", Bucket: "lakehouse", Prefix: "lake"}}, Config: []v1.ObjectName{"tuning"}, Secret: []v1.ObjectName{"quack"}}}
+	declared := bound
+	declared.Buckets = []v1.BucketEntry{{Ref: "lakehouse"}}
+	declared.ConfigMaps = []v1.ConfigMapEntry{{Ref: "tuning"}}
+	declared.SecretDeclarations = []v1.SecretDeclaration{{Name: "quack", Keys: []string{"QUACK_TOKEN"}}}
+	require.NoError(t, admit(declared, nil))
+	require.ErrorContains(t, admit(bound, nil), `spec.bindings.blob[0]: Bucket "lakehouse" is not declared in spec.buckets`)
+	noConfig := declared
+	noConfig.ConfigMaps = nil
+	require.ErrorContains(t, admit(noConfig, nil), `spec.bindings.config[0]: ConfigMap "tuning" is not declared in spec.configMaps`)
+	noSecret := declared
+	noSecret.SecretDeclarations = nil
+	require.ErrorContains(t, admit(noSecret, nil), `spec.bindings.secret[0]: Secret "quack" is not declared in spec.secrets`)
+
+	app := admission.RootDeclared(nil, []v1.BucketEntry{{Name: "lakehouse"}}, nil, nil, nil, nil)
+	require.NoError(t, admit(bound, app), "an App's catalog: its config and secret are not the App's root's to declare")
+	require.ErrorContains(t, admit(bound, admission.RootDeclared(nil, nil, nil, nil, nil, nil)), `Bucket "lakehouse" is not declared`)
 }
