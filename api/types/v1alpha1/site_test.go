@@ -13,10 +13,10 @@ func site(mutate func(*Site)) *Site {
 		TypeMeta:   TypeMeta{APIVersion: KindSite.GVK().APIVersion(), Kind: KindSite},
 		ObjectMeta: ObjectMeta{Name: "bi", Namespace: "default", ResourceGroup: "rg1"},
 		Spec: SiteSpec{
-			Image:   "oci-layout:///tmp/layout:bi",
-			Bucket:  SiteBucket{Name: "reports"},
-			Prefix:  "bi",
-			Ingress: SiteIngress{Ingress: Ingress{Host: "bi.example.com"}, Rules: []SiteRule{{Path: "/data", Prefix: "gold"}}},
+			Image:    "oci-layout:///tmp/layout:bi",
+			Buckets:  []BucketEntry{{Name: "reports"}},
+			Bindings: SiteBindings{Blob: []BlobRef{{Bucket: "reports", Prefix: "bi"}}},
+			Ingress:  SiteIngress{Ingress: Ingress{Host: "bi.example.com"}, Rules: []SiteRule{{Path: "/data", Prefix: "gold"}}},
 		},
 	}
 	if mutate != nil {
@@ -31,7 +31,7 @@ func TestSiteRoundtrip(t *testing.T) {
 	s := site(func(s *Site) {
 		s.Spec.SPA = true
 		s.Spec.Ingress.Auth = &RouteAuth{Mode: AuthOpen}
-		s.Spec.Bucket.Prefixes = []BucketPrefix{{Name: "gold", Owner: "etl"}}
+		s.Spec.Buckets[0].Prefixes = []BucketPrefix{{Name: "gold", Owner: "etl"}}
 		s.Status.Digest = "sha256:" + strings.Repeat("a", 64)
 		s.Status.ServingPrefix = "bi/sha256-" + strings.Repeat("a", 64) + "/"
 	})
@@ -43,7 +43,7 @@ func TestSiteRoundtrip(t *testing.T) {
 	if err := json.Unmarshal(data, &s2); err != nil {
 		t.Fatalf("unmarshal Site: %v", err)
 	}
-	if s2.Spec.Image != s.Spec.Image || s2.Spec.Prefix != "bi" || !s2.Spec.SPA || s2.Spec.Bucket.Name != "reports" {
+	if s2.Spec.Image != s.Spec.Image || s2.Spec.Bindings.Blob[0].Prefix != "bi" || !s2.Spec.SPA || s2.Spec.Buckets[0].Name != "reports" {
 		t.Errorf("Site spec roundtrip mismatch: %+v", s2.Spec)
 	}
 	if len(s2.Spec.Ingress.Rules) != 1 || s2.Spec.Ingress.Rules[0].Path != "/data" || s2.Spec.Ingress.Auth == nil || s2.Spec.Ingress.Auth.Mode != AuthOpen {
@@ -64,7 +64,7 @@ func TestSiteValidate(t *testing.T) {
 	if err := site(nil).Validate(); err != nil {
 		t.Fatalf("valid Site rejected: %v", err)
 	}
-	if err := site(func(s *Site) { s.Spec.Bucket.Deletion = DeletionRetain; s.Spec.Ingress = SiteIngress{} }).Validate(); err != nil {
+	if err := site(func(s *Site) { s.Spec.Buckets[0].Deletion = DeletionRetain; s.Spec.Ingress = SiteIngress{} }).Validate(); err != nil {
 		t.Fatalf("retain + a zero ingress (any host, bundle only) must validate: %v", err)
 	}
 	cases := []struct {
@@ -72,16 +72,16 @@ func TestSiteValidate(t *testing.T) {
 		mutate func(*Site)
 		want   string // a substring of the Invalid message
 	}{
-		{"delete-cascade-rejected", func(s *Site) { s.Spec.Bucket.Deletion = DeletionDelete }, "not implemented in V1"},
-		{"unknown deletion", func(s *Site) { s.Spec.Bucket.Deletion = "purge" }, "spec.bucket.deletion"},
+		{"delete-cascade-rejected", func(s *Site) { s.Spec.Buckets[0].Deletion = DeletionDelete }, "not implemented in V1"},
+		{"unknown deletion", func(s *Site) { s.Spec.Buckets[0].Deletion = "purge" }, "spec.buckets[0].deletion"},
 		{"bad auth mode", func(s *Site) { s.Spec.Ingress.Auth = &RouteAuth{Mode: "sometimes"} }, "auth.mode"},
 		{"missing image", func(s *Site) { s.Spec.Image = "" }, "spec.image"},
-		{"bad prefix", func(s *Site) { s.Spec.Prefix = "Bad_Prefix" }, "spec.prefix"},
+		{"bad prefix", func(s *Site) { s.Spec.Bindings.Blob[0].Prefix = "Bad_Prefix" }, "spec.bindings.blob[0].prefix"},
 		{"absolute index", func(s *Site) { s.Spec.Index = "/index.html" }, "spec.index"},
-		{"bad bucket name", func(s *Site) { s.Spec.Bucket.Name = "Bad_Bucket" }, "spec.bucket.name"},
-		{"prefixes repeat spec.prefix", func(s *Site) { s.Spec.Bucket.Prefixes = []BucketPrefix{{Name: "bi"}} }, "must not repeat spec.prefix"},
-		{"duplicate declared prefix", func(s *Site) { s.Spec.Bucket.Prefixes = []BucketPrefix{{Name: "gold"}, {Name: "gold"}} }, "duplicated"},
-		{"bad declared prefix", func(s *Site) { s.Spec.Bucket.Prefixes = []BucketPrefix{{Name: "Gold!"}} }, "spec.bucket.prefixes"},
+		{"bad bucket name", func(s *Site) { s.Spec.Buckets[0].Name = "Bad_Bucket" }, "spec.buckets[0]"},
+		{"prefixes repeat spec.prefix", func(s *Site) { s.Spec.Buckets[0].Prefixes = []BucketPrefix{{Name: "bi"}} }, "must not repeat the served prefix"},
+		{"duplicate declared prefix", func(s *Site) { s.Spec.Buckets[0].Prefixes = []BucketPrefix{{Name: "gold"}, {Name: "gold"}} }, "duplicated"},
+		{"bad declared prefix", func(s *Site) { s.Spec.Buckets[0].Prefixes = []BucketPrefix{{Name: "Gold!"}} }, "spec.buckets[0].prefixes"},
 		{"rule path without slash", func(s *Site) { s.Spec.Ingress.Rules = []SiteRule{{Path: "data", Prefix: "gold"}} }, "must begin with '/'"},
 		{"rule path is root", func(s *Site) { s.Spec.Ingress.Rules = []SiteRule{{Path: "/", Prefix: "gold"}} }, "must not be \"/\""},
 		{"duplicate rule path", func(s *Site) {

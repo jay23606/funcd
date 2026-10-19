@@ -29,19 +29,50 @@ func TestScenario_binding_kind_refused(t *testing.T) {
 	}
 }
 
-// TestScenario_old_field_refused covers scenario: old-field-refused (ADR-0246) — a Function's spec.links, or a spec.kv
-// entry with alias, is refused by the closed schema, naming the field.
+// TestScenario_old_field_refused covers scenario: old-field-refused (ADR-0246) — every binding field moved under
+// spec.bindings is refused at its old place by the closed schema, naming the field: a Function's seven, an image
+// step's six and a standalone CatalogService's three, and a CatalogService's bindings.catalog and bindings.links.
 func TestScenario_old_field_refused(t *testing.T) {
 	t.Parallel()
 	srv := newServer(t)
-	for field, spec := range map[string]string{
-		"links": `"links":[{"alias":"greeter","target":"greeter"}]`,
-		"kv":    `"kv":[{"alias":"c","store":"counters","table":"counts"}]`,
-	} {
-		body := `{"apiVersion":"funcd.io/v1alpha1","kind":"Function",` + bindingsMeta +
-			`,"spec":{"runtime":"nodejs22","handler":"handle","image":"oci:x",` + spec + `}}`
-		rec := do(t, srv, http.MethodPost, "/apis/funcd.io/v1alpha1/namespaces/team-a/functions", devToken, []byte(body))
-		require.Equal(t, http.StatusUnprocessableEntity, rec.Code, "%s: %s", field, rec.Body.String())
-		require.Contains(t, rec.Body.String(), field, field)
+	old := map[string]string{
+		"kv":       `"kv":[{"alias":"c","store":"counters","table":"counts"}]`,
+		"blob":     `"blob":[{"alias":"f","bucket":"files","prefix":"p"}]`,
+		"sql":      `"sql":[{"alias":"db","database":"notes"}]`,
+		"catalogs": `"catalogs":[{"alias":"lake","catalog":"lake"}]`,
+		"config":   `"config":["settings"]`,
+		"secrets":  `"secrets":["api-keys"]`,
+	}
+	function := func(field string) string {
+		return `{"apiVersion":"funcd.io/v1alpha1","kind":"Function",` + bindingsMeta +
+			`,"spec":{"runtime":"nodejs22","handler":"handle","image":"oci:x",` + field + `}}`
+	}
+	step := func(field string) string {
+		return `{"apiVersion":"funcd.io/v1alpha1","kind":"Workflow",` + bindingsMeta +
+			`,"spec":{"steps":[{"name":"s","function":{"image":"oci:s",` + field + `}}]}}`
+	}
+	catalog := func(field string) string {
+		return `{"apiVersion":"funcd.io/v1alpha1","kind":"CatalogService",` + bindingsMeta +
+			`,"spec":{"catalog":{"bucket":"b","prefix":"p"},"bindings":{"blob":[]},` + field + `}}`
+	}
+	type shape struct{ plural, body, field string }
+	shapes := map[string]shape{
+		"function links": {"functions", function(`"links":[{"alias":"greeter","target":"greeter"}]`), "links"},
+		"catalog bindings.catalog": {"catalogservices", `{"apiVersion":"funcd.io/v1alpha1","kind":"CatalogService",` + bindingsMeta +
+			`,"spec":{"catalog":{"bucket":"b","prefix":"p"},"bindings":{"blob":[],"catalog":[{"alias":"l","catalog":"l"}]}}}`, "catalog"},
+		"catalog bindings.links": {"catalogservices", `{"apiVersion":"funcd.io/v1alpha1","kind":"CatalogService",` + bindingsMeta +
+			`,"spec":{"catalog":{"bucket":"b","prefix":"p"},"bindings":{"blob":[],"links":[{"alias":"a","target":"b"}]}}}`, "links"},
+	}
+	for field, body := range old {
+		shapes["function "+field] = shape{"functions", function(body), field}
+		shapes["step "+field] = shape{"workflows", step(body), field}
+	}
+	for _, field := range []string{"blob", "config", "secrets"} {
+		shapes["catalog "+field] = shape{"catalogservices", catalog(old[field]), field}
+	}
+	for name, c := range shapes {
+		rec := do(t, srv, http.MethodPost, "/apis/funcd.io/v1alpha1/namespaces/team-a/"+c.plural, devToken, []byte(c.body))
+		require.Equal(t, http.StatusUnprocessableEntity, rec.Code, "%s: %s", name, rec.Body.String())
+		require.Contains(t, rec.Body.String(), c.field, name)
 	}
 }

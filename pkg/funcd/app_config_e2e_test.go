@@ -41,8 +41,8 @@ func (e *gcEnv) imageEnv(t *testing.T, tag string) string {
 func configTodo(t *testing.T, e *gcEnv) *v1.App {
 	t.Helper()
 	a := todoApp(t, e)
-	a.Spec.ConfigMaps = []v1.AppConfigMap{{Name: "todo-settings", ConfigMapSpec: v1.ConfigMapSpec{Data: map[string]string{"TZ": "Europe/Paris"}}}}
-	a.Spec.Secrets = []v1.AppSecret{{Name: "todo-stripe-key", Description: "Stripe API access for billing", Keys: []string{"STRIPE_API_KEY"}}}
+	a.Spec.ConfigMaps = []v1.ConfigMapEntry{{Name: "todo-settings", ConfigMapSpec: v1.ConfigMapSpec{Data: map[string]string{"TZ": "Europe/Paris"}}}}
+	a.Spec.Secrets = []v1.SecretDeclaration{{Name: "todo-stripe-key", Description: "Stripe API access for billing", Keys: []string{"STRIPE_API_KEY"}}}
 	fn := &a.Spec.Functions[0]
 	fn.Image, fn.Bindings.Config, fn.Bindings.Secret = e.imageEnv(t, "env"), []v1.ObjectName{"todo-settings"}, []v1.ObjectName{"todo-stripe-key"}
 	return a
@@ -279,7 +279,7 @@ spec:
 	require.ErrorContains(t, err, "data", "funcdctl's strict decoding refuses data in a secrets entry")
 }
 
-// scenario: app-config-change-rolls
+// scenario: app-config-change-rolls (as amended by ADR-0252: the hand-made ConfigMap shared is declared by ref)
 func TestScenarioAppConfigChangeRolls(t *testing.T) {
 	st := store.New(memory.New())
 	e := startGC(t, funcd.WithStore(st))
@@ -287,6 +287,7 @@ func TestScenarioAppConfigChangeRolls(t *testing.T) {
 	e.stripeKey(t, map[string]string{"STRIPE_API_KEY": "sk-test-1"})
 	a := configTodo(t, e)
 	a.Spec.Functions[0].Bindings.Config = append(a.Spec.Functions[0].Bindings.Config, "shared")
+	a.Spec.ConfigMaps = append(a.Spec.ConfigMaps, v1.ConfigMapEntry{Ref: "shared"})
 	e.apply(t, a)
 	e.waitCurrent(t, "todo-1")
 	e.waitApp(t, "todo", v1.ConditionTrue, "", appWithin)
@@ -353,7 +354,7 @@ func TestScenarioAppPreF116App(t *testing.T) {
 
 	a = e.app(t, "todo")
 	a.Spec.Version = "2.0.0"
-	a.Spec.Secrets = []v1.AppSecret{{Name: "todo-billing", Keys: []string{"BILLING_KEY"}}}
+	a.Spec.Secrets = []v1.SecretDeclaration{{Name: "todo-billing", Keys: []string{"BILLING_KEY"}}}
 	e.apply(t, a)
 	e.waitCurrent(t, "todo-2")
 	e.waitApp(t, "todo", v1.ConditionTrue, "", appWithin)

@@ -42,7 +42,14 @@ func startSite(t *testing.T, files map[string]string, objs ...v1.Object) (store.
 
 	s := &v1.Site{TypeMeta: v1.TypeMeta{APIVersion: v1.KindSite.GVK().APIVersion(), Kind: v1.KindSite}}
 	s.Name, s.Namespace, s.ResourceGroup = "bi", "default", "rg1"
-	s.Spec = v1.SiteSpec{Image: ref, Bucket: v1.SiteBucket{Name: "reports"}, Prefix: "bi", Ingress: v1.SiteIngress{Ingress: v1.Ingress{Host: "bi.example.com"}}}
+	s.Spec = v1.SiteSpec{Image: ref, Buckets: []v1.BucketEntry{{Name: "reports"}}, Bindings: v1.SiteBindings{Blob: []v1.BlobRef{{Bucket: "reports", Prefix: "bi"}}}, Ingress: v1.SiteIngress{Ingress: v1.Ingress{Host: "bi.example.com"}}}
+	for _, o := range objs {
+		if b, ok := o.(*v1.Bucket); ok && b.Name == "reports" {
+			// a Bucket the test made: the Site binds it by ref, over its ownerless served prefix (ADR-0248)
+			b.Spec.Prefixes = append(b.Spec.Prefixes, v1.BucketPrefix{Name: "bi"})
+			s.Spec.Buckets = []v1.BucketEntry{{Ref: "reports"}}
+		}
+	}
 	for _, o := range append(objs, s) {
 		_, err = st.Create(ctx, o)
 		require.NoError(t, err)

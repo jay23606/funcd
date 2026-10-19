@@ -353,7 +353,7 @@ func TestRenderRefuses(t *testing.T) {
 	t.Parallel()
 	const img, lit = "${{ images.api }}", "registry.example/todo-api:1.0.0"
 	step := "workflows:\n  - name: w\n    steps:\n      - name: s\n        function:\n          image: registry.example/shop-api:1.0.0\n"
-	site := "sites:\n  - name: web\n    image: shop-web:1.0.0\n    bucket:\n      name: web\n"
+	site := "sites:\n  - name: web\n    image: shop-web:1.0.0\n    bindings:\n      blob:\n        - bucket: web\n          prefix: web\n"
 	for name, tc := range map[string]struct {
 		files map[string]string
 		vals  []string
@@ -441,7 +441,7 @@ func TestRenderRefusesSubstitutedImage(t *testing.T) {
 			[]string{"resources/a.yaml:1: functions", "sets functions[0].image"}},
 		"step function": {"workflows:\n  - name: w\n    steps:\n      - name: s\n        function: ${{ values.obj }}\n", "obj:\n  image: " + evil + "\n",
 			[]string{"resources/a.yaml:5: workflows[0].steps[0].function", "sets workflows[0].steps[0].function.image"}},
-		"site object": {"sites:\n  - ${{ values.obj }}\n", "obj:\n  name: web\n  image: " + evil + "\n  bucket:\n    name: web\n",
+		"site object": {"sites:\n  - ${{ values.obj }}\n", "obj:\n  name: web\n  image: " + evil + "\n  bindings:\n    blob:\n      - bucket: web\n        prefix: web\n",
 			[]string{"resources/a.yaml:2: sites[0]", "sets sites[0].image"}},
 		"key case": {"functions:\n  - ${{ values.obj }}\n", strings.Replace(fn, "image:", "IMAGE:", 1),
 			[]string{"resources/a.yaml:2: functions[0]", "sets functions[0].IMAGE"}},

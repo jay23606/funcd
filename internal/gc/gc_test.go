@@ -71,7 +71,8 @@ func object(t testing.TB, kind v1.Kind, name v1.ObjectName) v1.Object {
 		o.Spec.Function = v1.ObjectRef{Kind: v1.KindFunction, Namespace: ns, Name: "fn"}
 		o.Spec.Number, o.Spec.Runtime, o.Spec.Handler, o.Spec.Image = 1, "nodejs22", "handle", "file:///tmp/x.mjs"
 	case *v1.Site:
-		o.Spec.Image, o.Spec.Prefix, o.Spec.Bucket.Name = "oci-layout://x:web", "web", "assets"
+		o.Spec.Image, o.Spec.Buckets = "oci-layout://x:web", []v1.BucketEntry{{Name: "assets"}}
+		o.Spec.Bindings = v1.SiteBindings{Blob: []v1.BlobRef{{Bucket: "assets", Prefix: "web"}}}
 	case *v1.Identity:
 		o.Spec.Type = v1.IdentityTypeExternal
 	case *v1.Secret:
@@ -389,6 +390,17 @@ func appPairs() []gc.Pair {
 	return out
 }
 
+// rootEntryPairs is the pairs ownedstore.Refs stamps under deletion: delete for what a Function, Site or Workflow
+// declares at its root (ADR-0248 Decision 8).
+func rootEntryPairs() []gc.Pair {
+	return []gc.Pair{
+		{Owner: v1.KindFunction, Child: v1.KindCatalogService}, {Owner: v1.KindFunction, Child: v1.KindKVStore},
+		{Owner: v1.KindFunction, Child: v1.KindSQLDatabase}, {Owner: v1.KindFunction, Child: v1.KindBucket},
+		{Owner: v1.KindFunction, Child: v1.KindConfigMap}, {Owner: v1.KindSite, Child: v1.KindBucket},
+		{Owner: v1.KindWorkflow, Child: v1.KindBucket},
+	}
+}
+
 func TestPairsCoverEveryControllerRef(t *testing.T) {
 	root := filepath.Join("..", "..")
 	var found []string
@@ -419,7 +431,7 @@ func TestPairsCoverEveryControllerRef(t *testing.T) {
 		return nil
 	}))
 	var known []string
-	want := appPairs()
+	want := append(appPairs(), rootEntryPairs()...)
 	for f, pairs := range writers() {
 		known = append(known, f)
 		want = append(want, pairs...)
@@ -527,7 +539,7 @@ func TestScenarioUpgradeRefusesOlderStoreAndCollectorKeepsIt(t *testing.T) {
 	time.Sleep(2 * time.Millisecond)
 	wf := object(t, v1.KindWorkflow, "w").(*v1.Workflow)
 	wf.Spec.Steps = []v1.WorkflowStep{{Name: "s1", Function: &v1.FunctionStep{Image: "oci:s1"}}}
-	wf.Spec.KV = []v1.WorkflowKVStore{{Name: "shared", Deletion: v1.DeletionDelete, Tables: []v1.KVTable{{Name: "t"}}}}
+	wf.Spec.KVStores = []v1.KVStoreEntry{{Name: "shared", Deletion: v1.DeletionDelete, KVStoreSpec: v1.KVStoreSpec{Tables: []v1.KVTable{{Name: "t"}}}}}
 	obj, err := st.Create(ctx, wf)
 	require.NoError(t, err)
 	wf = obj.(*v1.Workflow)
@@ -831,6 +843,37 @@ func TestAppStoreInUseWaitsForALaterSweep(t *testing.T) {
 		require.NoError(t, err)
 		require.NoError(t, c.CollectNamespace(ctx, ns))
 		require.False(t, exists(t, st, v1.KindKVStore, "todo-cache"), "the next sweep after the binding goes collects it")
+	})
+	t.Run("a step Function of the App's Workflow", func(t *testing.T) {
+		st := store.New(memory.New())
+		app := create(t, st, v1.KindApp, "todo", nil)
+		put(t, st, ownedBy(object(t, v1.KindKVStore, "todo-plans"), app, true, true))
+		wf := put(t, st, ownedBy(object(t, v1.KindWorkflow, "todo-plan"), app, true, false))
+		rank := object(t, v1.KindFunction, "todo-plan-rank").(*v1.Function)
+		rank.Spec.Bindings.KV = []v1.FunctionKV{{Alias: "plans", Store: "todo-plans", Table: "plans"}}
+		put(t, st, ownedBy(rank, wf, true, false))
+		put(t, st, ownedBy(object(t, v1.KindKVStore, "todo-notes"), app, true, true))
+		lookalike := object(t, v1.KindFunction, "todo-plan-collect").(*v1.Function)
+		lookalike.Spec.Bindings.KV = []v1.FunctionKV{{Alias: "notes", Store: "todo-notes", Table: "notes"}}
+		put(t, st, lookalike)
+		del(t, st, v1.KindApp, "todo")
+
+		require.NoError(t, newCollector(t, st, 0).CollectNamespace(ctx, ns))
+		require.False(t, exists(t, st, v1.KindKVStore, "todo-plans"), "the App's Workflow part binds it, so the store goes with the App in one sweep")
+		require.True(t, exists(t, st, v1.KindKVStore, "todo-notes"), "a Function named like a step, with no controller, is a user outside the App")
+	})
+	t.Run("a Route of the App's Site", func(t *testing.T) {
+		st := store.New(memory.New())
+		app := create(t, st, v1.KindApp, "todo", nil)
+		put(t, st, ownedBy(object(t, v1.KindBucket, "todo-web"), app, true, true))
+		site := put(t, st, ownedBy(object(t, v1.KindSite, "todo-web"), app, true, false))
+		rt := object(t, v1.KindRoute, "todo-web").(*v1.Route)
+		rt.Spec.Rules = []v1.RouteRule{{Path: "/", Backend: v1.RouteBackend{Static: &v1.StaticBackend{Bucket: "todo-web", Prefix: "web/"}}}}
+		put(t, st, ownedBy(rt, site, true, false))
+		del(t, st, v1.KindApp, "todo")
+
+		require.NoError(t, newCollector(t, st, 0).CollectNamespace(ctx, ns))
+		require.False(t, exists(t, st, v1.KindBucket, "todo-web"), "the Site part's Route serves it, so the Bucket goes with the App in one sweep")
 	})
 	t.Run("a held Function of the App", func(t *testing.T) {
 		st := store.New(memory.New())

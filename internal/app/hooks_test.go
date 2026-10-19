@@ -580,7 +580,7 @@ func TestAppStoppedPassStartsNoHookCall(t *testing.T) {
 		},
 		"SecretNotFound": func(h *hooked) {
 			h.edit(func(a *v1.App) {
-				a.Spec.Secrets = []v1.AppSecret{{Name: "todo-stripe-key", Keys: []string{"STRIPE_API_KEY"}}}
+				a.Spec.Secrets = []v1.SecretDeclaration{{Name: "todo-stripe-key", Keys: []string{"STRIPE_API_KEY"}}}
 				a.Spec.Functions[0].Bindings.Secret = []v1.ObjectName{"todo-stripe-key"}
 			})
 		},
@@ -641,7 +641,7 @@ func TestAppDeadlineFailedRevisionCallsNoHook(t *testing.T) {
 	h.markReady(v1.KindFunction, "todo-migrate")
 	h.converge("todo-1")
 	h.edit(func(a *v1.App) {
-		a.Spec.Secrets = []v1.AppSecret{{Name: "todo-stripe-key", Keys: []string{"STRIPE_API_KEY"}}}
+		a.Spec.Secrets = []v1.SecretDeclaration{{Name: "todo-stripe-key", Keys: []string{"STRIPE_API_KEY"}}}
 		a.Spec.Functions[0].Bindings.Secret = []v1.ObjectName{"todo-stripe-key"}
 	})
 	h.reconcile()
@@ -847,8 +847,8 @@ func TestAppHookCallBounds(t *testing.T) {
 func TestAppPreHookPartsFirst(t *testing.T) {
 	h := newHooked(t, nil)
 	h.create(hookedTodo("3.0.0", func(a *v1.App) {
-		a.Spec.ConfigMaps = []v1.AppConfigMap{{Name: "todo-settings", ConfigMapSpec: paris()}}
-		a.Spec.Catalogs = []v1.AppCatalog{{Name: "todo-lake", CatalogServiceSpec: v1.CatalogServiceSpec{
+		a.Spec.ConfigMaps = []v1.ConfigMapEntry{{Name: "todo-settings", ConfigMapSpec: paris()}}
+		a.Spec.Catalogs = []v1.CatalogEntry{{Name: "todo-lake", CatalogServiceSpec: v1.CatalogServiceSpec{
 			Catalog:  v1.CatalogRef{Bucket: "todo-files", Prefix: "lake"},
 			Bindings: v1.CatalogServiceBindings{Blob: []v1.FunctionBlob{{Alias: "lake", Bucket: "todo-files", Prefix: "lake"}}},
 		}}}

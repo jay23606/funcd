@@ -1,6 +1,6 @@
-# Venom e2e suite for the env-echo containerd lane (ADR-0093 spec.config + ADR-0057 spec.secrets) — the
+# Venom e2e suite for the env-echo containerd lane (ADR-0093 spec.bindings.config + ADR-0057 spec.bindings.secret) — the
 # declarative invoke phase of `just lima-example-env-echo`, run host-side AFTER the self-deploying Lima VM
-# is Ready. It proves that a Function binding BOTH a ConfigMap (spec.config) and a Secret (spec.secrets)
+# is Ready. It proves that a Function binding BOTH a ConfigMap (spec.bindings.config) and a Secret (spec.bindings.secret)
 # receives BOTH sets of Data as worker env at runtime, by invoking a void-input handler that echoes them:
 #   1. env-echo is Ready — Ready requires BOTH bindings to resolve (fail-closed), so this already proves
 #      resolution reconcile-side.
@@ -52,8 +52,8 @@ testcases:
         info: "invoke → status {{.result.statuscode}} body {{.result.body}}"
         assertions:
           - result.statuscode ShouldEqual 200
-          - result.bodyjson.config ShouldEqual prod          # spec.config ConfigMap value → env
-          - result.bodyjson.secret ShouldEqual s3cr3t        # spec.secrets Secret value → env
+          - result.bodyjson.config ShouldEqual prod          # spec.bindings.config ConfigMap value → env
+          - result.bodyjson.secret ShouldEqual s3cr3t        # spec.bindings.secret Secret value → env
           - result.bodyjson.shared ShouldEqual from-secret   # in both: the secret wins (config-then-secrets)
 
   # ADR-0110 (F79): the declarative front door. A Route exposes env-echo at path /echo (host-less);

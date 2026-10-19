@@ -211,7 +211,7 @@ func TestScenarioAppBackupIncludesDatabase(t *testing.T) {
 	r := sqlRig(t, engines)
 	spec := r.schedule("x", "0 3 * * *", func(s *v1.BackupScheduleSpec) { s.Scope = v1.BackupScope{} }).Spec
 	r.create(r.dev, &v1.App{TypeMeta: tmeta(v1.KindApp), ObjectMeta: ordersMeta("todo"), Spec: v1.AppSpec{
-		SQL:             []v1.AppSQLDatabase{{Name: "todo-db"}},
+		SQL:             []v1.SQLDatabaseEntry{{Name: "todo-db"}},
 		BackupSchedules: []v1.AppBackupSchedule{{Name: "todo-nightly", BackupScheduleSpec: spec}},
 	}})
 	r.waitSQLReady("todo-db")

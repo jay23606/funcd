@@ -27,8 +27,8 @@ func TestScenario_step_bindings(t *testing.T) {
 		TypeMeta:   v1.TypeMeta{APIVersion: v1.KindWorkflow.GVK().APIVersion(), Kind: v1.KindWorkflow},
 		ObjectMeta: v1.ObjectMeta{Name: "orders", Namespace: "default", ResourceGroup: "rg1", UID: "wf-uid"},
 		Spec: v1.WorkflowSpec{
-			KV:    []v1.WorkflowKVStore{{Name: "counters-kv", Tables: []v1.KVTable{{Name: "t", Owner: "ingest"}}}},
-			Steps: []v1.WorkflowStep{{Name: "ingest", Function: &v1.FunctionStep{Image: "oci:ingest-v1", Bindings: bindings}}},
+			KVStores: []v1.KVStoreEntry{{Name: "counters-kv", KVStoreSpec: v1.KVStoreSpec{Tables: []v1.KVTable{{Name: "t", Owner: "ingest"}}}}},
+			Steps:    []v1.WorkflowStep{{Name: "ingest", Function: &v1.FunctionStep{Image: "oci:ingest-v1", Bindings: bindings}}},
 		},
 	}
 	require.NoError(t, m.Materialize(ctx, wf))

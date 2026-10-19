@@ -197,12 +197,12 @@ func engineDown() gateCase {
 	return g
 }
 
-func secretDeleted() gateCase {
+func configDeleted() gateCase {
 	return gateCase{
-		setup:   func(t *testing.T, r *asleepRig) { r.secret(t) },
-		bind:    bindCreds,
-		trigger: func(t *testing.T, r *asleepRig) { r.del(t, v1.KindSecret, "creds") },
-		phase:   v1.PhaseFailed, reason: "SecretResolveFailed",
+		setup:   func(t *testing.T, r *asleepRig) { r.settings(t) },
+		bind:    bindSettings,
+		trigger: func(t *testing.T, r *asleepRig) { r.del(t, v1.KindConfigMap, "settings") },
+		phase:   v1.PhaseFailed, reason: "ConfigResolveFailed",
 	}
 }
 
@@ -246,7 +246,7 @@ func TestIssue796(t *testing.T) {
 	t.Parallel()
 	t.Run("alone", func(t *testing.T) {
 		t.Parallel()
-		for name, g := range map[string]gateCase{"catalog-deleted": catalogDeleted(), "engine-down": engineDown(), "secret-deleted": secretDeleted()} {
+		for name, g := range map[string]gateCase{"catalog-deleted": catalogDeleted(), "engine-down": engineDown(), "config-deleted": configDeleted()} {
 			t.Run(name, func(t *testing.T) {
 				t.Parallel()
 				newPooledRig(t, 0, 0).asleepAlone(t, g)
@@ -255,7 +255,7 @@ func TestIssue796(t *testing.T) {
 	})
 	t.Run("sibling", func(t *testing.T) {
 		t.Parallel()
-		for name, g := range map[string]gateCase{"catalog-deleted": catalogDeleted(), "secret-deleted": secretDeleted()} {
+		for name, g := range map[string]gateCase{"catalog-deleted": catalogDeleted(), "config-deleted": configDeleted()} {
 			t.Run(name, func(t *testing.T) {
 				t.Parallel()
 				newPooledRig(t, 0, 0).asleepBesideWriter(t, g)

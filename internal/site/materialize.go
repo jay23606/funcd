@@ -1,6 +1,7 @@
 package site
 
 import (
+	"github.com/pyvvo/funcd/internal/ownedstore"
 	"strings"
 
 	v1 "github.com/pyvvo/funcd/api/types/v1alpha1"
@@ -28,33 +29,34 @@ func indexOf(s *v1.Site, configured string) string {
 	return defaultIndex
 }
 
-// newBucket compiles the Bucket a Site creates when none exists: the site prefix with NO owner plus every
-// declared prefix verbatim. Never stamped with an OwnerReference in V1 (retain-only).
+// newBucket compiles the Bucket a Site creates by name (ADR-0248 Decision 7): the served prefix with NO owner plus every
+// declared prefix verbatim, with the Site's marker; never a controller reference, since deletion is always retain.
 func newBucket(s *v1.Site) *v1.Bucket {
 	b := &v1.Bucket{TypeMeta: v1.TypeMeta{APIVersion: v1.KindBucket.GVK().APIVersion(), Kind: v1.KindBucket}}
-	b.Name, b.Namespace, b.ResourceGroup = s.Spec.Bucket.Name, s.Namespace, s.ResourceGroup
-	b.Spec.Prefixes = append([]v1.BucketPrefix{{Name: s.Spec.Prefix}}, s.Spec.Bucket.Prefixes...)
+	b.Name, b.Namespace, b.ResourceGroup = s.Spec.ServedBucket(), s.Namespace, s.ResourceGroup
+	b.OwnerReferences = ownedstore.Refs(s, v1.DeletionRetain)
+	b.Spec.Prefixes = append([]v1.BucketPrefix{{Name: s.Spec.ServedPrefix()}}, s.Spec.BucketEntry().Prefixes...)
 	return b
 }
 
-// adoptBucket bounds what the reconciler may touch on an adopted Bucket (Decision §5): it only ADDS the
+// fillOwnBucket bounds what the reconciler may touch on the Bucket it made (Decision §5): it only ADDS the
 // site prefix (ownerless) and the declared prefixes that are absent, never removing or rewriting an
 // entry it did not add. It reports whether the Bucket changed, and prefixOwned when the Bucket already
 // declares the site prefix with an owner — the one collision, resolved in favour of the existing writer.
-func adoptBucket(b *v1.Bucket, s *v1.Site) (changed, prefixOwned bool) {
+func fillOwnBucket(b *v1.Bucket, s *v1.Site) (changed, prefixOwned bool) {
 	have := make(map[string]v1.BucketPrefix, len(b.Spec.Prefixes))
 	for _, p := range b.Spec.Prefixes {
 		have[p.Name] = p
 	}
-	if p, ok := have[s.Spec.Prefix]; ok {
+	if p, ok := have[s.Spec.ServedPrefix()]; ok {
 		if p.Owner != "" {
 			return false, true
 		}
 	} else {
-		b.Spec.Prefixes = append(b.Spec.Prefixes, v1.BucketPrefix{Name: s.Spec.Prefix})
+		b.Spec.Prefixes = append(b.Spec.Prefixes, v1.BucketPrefix{Name: s.Spec.ServedPrefix()})
 		changed = true
 	}
-	for _, p := range s.Spec.Bucket.Prefixes {
+	for _, p := range s.Spec.BucketEntry().Prefixes {
 		if _, ok := have[p.Name]; ok {
 			continue
 		}
@@ -75,7 +77,7 @@ func compileRoute(s *v1.Site, digest, index string, config bool) v1.RouteSpec {
 	for _, r := range ing.Rules {
 		bucket := r.Bucket
 		if bucket == "" {
-			bucket = s.Spec.Bucket.Name
+			bucket = s.Spec.ServedBucket()
 		}
 		rules = append(rules, v1.RouteRule{
 			Path:    r.Path,
@@ -84,14 +86,14 @@ func compileRoute(s *v1.Site, digest, index string, config bool) v1.RouteSpec {
 	}
 	rules = append(rules, v1.RouteRule{
 		Path:    s.EffectivePath(),
-		Backend: v1.RouteBackend{Static: &v1.StaticBackend{Bucket: s.Spec.Bucket.Name, Prefix: servingPrefix(s.Spec.Prefix, digest), Index: index, SPA: s.Spec.SPA}},
+		Backend: v1.RouteBackend{Static: &v1.StaticBackend{Bucket: s.Spec.ServedBucket(), Prefix: servingPrefix(s.Spec.ServedPrefix(), digest), Index: index, SPA: s.Spec.SPA}},
 	})
 	if config {
 		rules = append(rules, v1.RouteRule{
 			Path:     s.RuntimeConfigPath(),
 			PathType: v1.PathTypeExact,
 			Methods:  []v1.HTTPMethod{v1.MethodGet, v1.MethodHead},
-			Backend:  v1.RouteBackend{Static: &v1.StaticBackend{Bucket: s.Spec.Bucket.Name, Prefix: s.RuntimeConfigPrefix(), Index: v1.SiteRuntimeConfigFile}},
+			Backend:  v1.RouteBackend{Static: &v1.StaticBackend{Bucket: s.Spec.ServedBucket(), Prefix: s.RuntimeConfigPrefix(), Index: v1.SiteRuntimeConfigFile}},
 		})
 	}
 	spec := v1.RouteSpec{Host: ing.Host, Rules: rules, Enabled: ing.Enabled}
@@ -109,5 +111,5 @@ func servingDigest(rt *v1.Route, s *v1.Site) string {
 	if !ok {
 		return ""
 	}
-	return v1.SlugDigest(strings.TrimSuffix(strings.TrimPrefix(bundle.Prefix, s.Spec.Prefix+"/"), "/"))
+	return v1.SlugDigest(strings.TrimSuffix(strings.TrimPrefix(bundle.Prefix, s.Spec.ServedPrefix()+"/"), "/"))
 }

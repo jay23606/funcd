@@ -454,7 +454,7 @@ func TestScenarioBackupOutlivesApp(t *testing.T) {
 		s.Scope, s.TTL = v1.BackupScope{}, v1.Duration(2*time.Hour)
 	}).Spec
 	r.create(r.dev, &v1.App{TypeMeta: tmeta(v1.KindApp), ObjectMeta: ordersMeta("shop"), Spec: v1.AppSpec{
-		KV: []v1.AppKVStore{{Ref: "orders-state"}}, BackupSchedules: []v1.AppBackupSchedule{{Name: "shop-nightly", BackupScheduleSpec: spec}}}})
+		KV: []v1.KVStoreEntry{{Ref: "orders-state"}}, BackupSchedules: []v1.AppBackupSchedule{{Name: "shop-nightly", BackupScheduleSpec: spec}}}})
 	require.Eventually(t, func() bool {
 		_, err := r.st.Get(r.ctx, v1.KindBackupSchedule.GVK(), "orders", "shop-nightly")
 		return err == nil

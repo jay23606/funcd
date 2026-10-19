@@ -14,7 +14,7 @@ import (
 func mkSite(prefix, digest string) *v1.Site {
 	s := &v1.Site{TypeMeta: v1.TypeMeta{APIVersion: v1.KindSite.GVK().APIVersion(), Kind: v1.KindSite}}
 	s.Name, s.Namespace, s.ResourceGroup = "bi", "default", "rg1"
-	s.Spec = v1.SiteSpec{Image: "oci-layout:///layout:bi", Bucket: v1.SiteBucket{Name: "reports"}, Prefix: prefix}
+	s.Spec = v1.SiteSpec{Image: "oci-layout:///layout:bi", Buckets: []v1.BucketEntry{{Name: "reports"}}, Bindings: v1.SiteBindings{Blob: []v1.BlobRef{{Bucket: "reports", Prefix: prefix}}}}
 	s.Status.Digest = digest
 	return s
 }
@@ -35,7 +35,7 @@ func TestScenarioSitePrefixIsImmutable(t *testing.T) {
 	for _, oldDigest := range []string{digest, ""} {
 		_, err := adm.Admit(context.Background(), admission.Request{Operation: admission.Update, GVK: gvk, Old: mkSite("bi", oldDigest), Object: mkSite("reports", "")})
 		require.Equal(t, fault.Invalid, fault.KindOf(err), "a changed prefix is Invalid (old digest %q)", oldDigest)
-		require.Contains(t, err.Error(), "spec.prefix is immutable")
+		require.Contains(t, err.Error(), "spec.bindings.blob[0].prefix is immutable")
 	}
 
 	changedImage := mkSite("bi", "")

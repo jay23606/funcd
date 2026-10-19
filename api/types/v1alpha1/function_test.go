@@ -2,6 +2,7 @@ package v1alpha1
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -106,5 +107,36 @@ func TestScenarioWaitLiteralCheckedAtApply(t *testing.T) {
 	}
 	for _, ok := range []string{"1s500ms", "0s", "${{ input.wait }}", "  ${{ input.wait }}"} {
 		require.NoError(t, wait(ok).Validate(), ok)
+	}
+}
+
+// ADR-0248 Decision 1: a Function's root entries are checked as an App's: a name or only a ref, no name used twice,
+// each defined object valid as its kind, and the Secret declarations.
+func TestFunctionRootEntriesValidate(t *testing.T) {
+	fn := func(mutate func(*FunctionSpec)) *Function {
+		f := &Function{TypeMeta: TypeMeta{APIVersion: KindFunction.GVK().APIVersion(), Kind: KindFunction}}
+		f.Name, f.Namespace, f.ResourceGroup = "counter", "default", "rg1"
+		f.Spec.KVStores = []KVStoreEntry{{Name: "counters", KVStoreSpec: KVStoreSpec{Tables: []KVTable{{Name: "counts"}}}}, {Ref: "sessions"}}
+		mutate(&f.Spec)
+		return f
+	}
+	if err := fn(func(*FunctionSpec) {}).Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	for name, tc := range map[string]struct {
+		mutate func(*FunctionSpec)
+		want   string
+	}{
+		"neither":      {func(s *FunctionSpec) { s.Buckets = []BucketEntry{{}} }, "spec.buckets[0] sets neither name nor ref"},
+		"ref and spec": {func(s *FunctionSpec) { s.KVStores[1].Tables = []KVTable{{Name: "t"}} }, "spec.kv[1] sets ref and another field"},
+		"repeat":       {func(s *FunctionSpec) { s.KVStores[1] = KVStoreEntry{Ref: "counters"} }, `spec.kv[1] repeats the name "counters" of spec.kv[0]`},
+		"bad table":    {func(s *FunctionSpec) { s.KVStores[0].Tables[0].Name = "Bad_Name" }, "spec.kv[0].tables[0].name"},
+		"bad deletion": {func(s *FunctionSpec) { s.SQLDatabases = []SQLDatabaseEntry{{Name: "notes", Deletion: "purge"}} }, `spec.sql[0].deletion "purge"`},
+		"secret keys":  {func(s *FunctionSpec) { s.SecretDeclarations = []SecretDeclaration{{Name: "api-keys"}} }, "spec.secrets[0].keys is empty"},
+	} {
+		err := fn(tc.mutate).Validate()
+		if fault.KindOf(err) != fault.Invalid || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: Validate = %v, want an Invalid fault containing %q", name, err, tc.want)
+		}
 	}
 }

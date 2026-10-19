@@ -54,3 +54,14 @@ type CatalogServiceBindings struct {
 func (b StepBindings) FunctionBindings() FunctionBindings {
 	return FunctionBindings{KV: b.KV, Blob: b.Blob, SQL: b.SQL, Catalog: b.Catalog, Config: b.Config, Secret: b.Secret}
 }
+
+// SiteBindings are a Site's bindings (ADR-0248 Decision 7): its served prefix, one alias-free entry.
+type SiteBindings struct {
+	Blob []BlobRef `json:"blob"` // exactly one
+}
+
+// BlobRef names a (bucket, prefix) sub-domain without an alias.
+type BlobRef struct {
+	Bucket ObjectName `json:"bucket"`
+	Prefix string     `json:"prefix" pattern:"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$"`
+}

@@ -161,7 +161,7 @@ func TestEveryRunnerConsultsHold(t *testing.T) {
 		}},
 		{name: "App", seed: func(t *testing.T, p *Platform) {
 			seedObjects(t, st, &v1.App{TypeMeta: tmeta(v1.KindApp), ObjectMeta: teamMeta("app"),
-				Spec: v1.AppSpec{KV: []v1.AppKVStore{{Name: "appstore"}}}})
+				Spec: v1.AppSpec{KV: []v1.KVStoreEntry{{Name: "appstore"}}}})
 		}, still: func(t *testing.T, p *Platform) {
 			_, err := st.Get(ctx, v1.KindKVStore.GVK(), "team", "appstore")
 			require.Equal(t, fault.NotFound, fault.KindOf(err), "a held App wrote a part")
@@ -250,7 +250,7 @@ func TestEveryRunnerConsultsHoldInNamespace(t *testing.T) {
 			&v1.EventSource{TypeMeta: tmeta(v1.KindEventSource), ObjectMeta: nsMeta(ns, "files"), Spec: v1.EventSourceSpec{
 				Blob: &v1.BlobSource{Bucket: "inbox", Events: []v1.BlobEvent{{Name: "new"}}}}},
 			&v1.WorkflowRun{TypeMeta: tmeta(v1.KindWorkflowRun), ObjectMeta: nsMeta(ns, "r1"), Spec: v1.WorkflowRunSpec{Workflow: "wf"}},
-			&v1.App{TypeMeta: tmeta(v1.KindApp), ObjectMeta: nsMeta(ns, "app"), Spec: v1.AppSpec{KV: []v1.AppKVStore{{Name: "appstore"}}}},
+			&v1.App{TypeMeta: tmeta(v1.KindApp), ObjectMeta: nsMeta(ns, "app"), Spec: v1.AppSpec{KV: []v1.KVStoreEntry{{Name: "appstore"}}}},
 			&v1.BackupSchedule{TypeMeta: tmeta(v1.KindBackupSchedule), ObjectMeta: nsMeta(ns, "every-minute"), Spec: v1.BackupScheduleSpec{
 				Schedule: "* * * * *", Scope: v1.BackupScope{KVStores: []v1.ObjectName{"appstore"}},
 				Target: v1.BackupTarget{URL: "s3://unreachable", CredentialsSecret: "none"}, Encryption: v1.BackupEncryption{Recipients: []string{"a", "b"}}}},

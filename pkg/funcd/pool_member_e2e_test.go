@@ -129,6 +129,7 @@ func (h *shimRig) samePool(t *testing.T, names ...string) string {
 }
 
 func bindTable(fn *v1.Function) {
+	fn.Spec.KVStores = []v1.KVStoreEntry{{Ref: "s"}}
 	fn.Spec.Bindings.KV = []v1.FunctionKV{{Alias: "t", Store: "s", Table: "t"}}
 }
 

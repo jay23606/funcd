@@ -18,7 +18,7 @@ import (
 	"github.com/pyvvo/funcd/internal/artifact"
 )
 
-func (e *gcEnv) boundWorkflow(t *testing.T, store v1.WorkflowKVStore) {
+func (e *gcEnv) boundWorkflow(t *testing.T, store v1.KVStoreEntry) {
 	t.Helper()
 	writeStep(t, e.src, "reader", `export async function handle(ctx) { return { v: await ctx.kv.getText("keep", "k") }; }`)
 	blob, err := artifact.ContractBlob([]byte(`{}`), []byte(`{}`))
@@ -30,7 +30,7 @@ func (e *gcEnv) boundWorkflow(t *testing.T, store v1.WorkflowKVStore) {
 		TypeMeta:   v1.TypeMeta{APIVersion: v1.KindWorkflow.GVK().APIVersion(), Kind: v1.KindWorkflow},
 		ObjectMeta: v1.ObjectMeta{Name: "w", Namespace: "default", ResourceGroup: "rg1"},
 		Spec: v1.WorkflowSpec{
-			KV: []v1.WorkflowKVStore{store},
+			KVStores: []v1.KVStoreEntry{store},
 			Steps: []v1.WorkflowStep{{Name: "s", Function: &v1.FunctionStep{
 				Image:    img,
 				Bindings: v1.StepBindings{KV: []v1.FunctionKV{{Alias: "keep", Store: store.Name, Table: "t"}}},

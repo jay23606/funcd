@@ -22,8 +22,8 @@ func paris() v1.ConfigMapSpec { return v1.ConfigMapSpec{Data: map[string]string{
 // STRIPE_API_KEY), both named by todo-api.
 func configApp(mutate func(*v1.App)) *v1.App {
 	return todoApp(func(a *v1.App) {
-		a.Spec.ConfigMaps = []v1.AppConfigMap{{Name: "todo-settings", ConfigMapSpec: paris()}}
-		a.Spec.Secrets = []v1.AppSecret{{Name: "todo-stripe-key", Description: "Stripe API access", Keys: []string{"STRIPE_API_KEY"}}}
+		a.Spec.ConfigMaps = []v1.ConfigMapEntry{{Name: "todo-settings", ConfigMapSpec: paris()}}
+		a.Spec.Secrets = []v1.SecretDeclaration{{Name: "todo-stripe-key", Description: "Stripe API access", Keys: []string{"STRIPE_API_KEY"}}}
 		a.Spec.Functions[0].Bindings.Config = []v1.ObjectName{"todo-settings"}
 		a.Spec.Functions[0].Bindings.Secret = []v1.ObjectName{"todo-stripe-key"}
 		if mutate != nil {
@@ -109,7 +109,7 @@ func TestAppSecretCheckOrder(t *testing.T) {
 		h := newHarness(t, nil)
 		h.create(configApp(func(a *v1.App) {
 			a.Spec.Secrets[0].Keys = []string{"STRIPE_API_KEY", "STRIPE_WEBHOOK_SECRET", "STRIPE_ACCOUNT"}
-			a.Spec.Secrets = append(a.Spec.Secrets, v1.AppSecret{Name: "todo-mail", Keys: []string{"SMTP_URL"}})
+			a.Spec.Secrets = append(a.Spec.Secrets, v1.SecretDeclaration{Name: "todo-mail", Keys: []string{"SMTP_URL"}})
 		}))
 		h.putSecret(stripeKey("v1"))
 		h.reconcile()
@@ -241,7 +241,7 @@ func TestMapSecret(t *testing.T) {
 	h.create(configApp(nil))
 	h.create(configApp(func(a *v1.App) {
 		a.Name = "other"
-		a.Spec = v1.AppSpec{Secrets: []v1.AppSecret{{Name: "other-key", Keys: []string{"K"}}}}
+		a.Spec = v1.AppSpec{Secrets: []v1.SecretDeclaration{{Name: "other-key", Keys: []string{"K"}}}}
 	}))
 	elsewhere := configApp(nil)
 	elsewhere.Namespace = "staging"
@@ -354,7 +354,7 @@ func TestAppConfigChangeRolls(t *testing.T) {
 		h.install(configApp(nil))
 		h.create(&v1.Site{TypeMeta: v1.TypeMeta{APIVersion: v1.KindSite.GVK().APIVersion(), Kind: v1.KindSite},
 			ObjectMeta: v1.ObjectMeta{Name: "web", Namespace: ns, ResourceGroup: "rg1"},
-			Spec: v1.SiteSpec{Image: "oci-layout://web:1", Bucket: v1.SiteBucket{Name: "web-files"}, Prefix: "web",
+			Spec: v1.SiteSpec{Image: "oci-layout://web:1", Buckets: []v1.BucketEntry{{Name: "web-files"}}, Bindings: v1.SiteBindings{Blob: []v1.BlobRef{{Bucket: "web-files", Prefix: "web"}}},
 				Ingress:       v1.SiteIngress{Ingress: v1.Ingress{Host: "web.example"}},
 				RuntimeConfig: &v1.SiteRuntimeConfig{ConfigMap: storedSettings(paris())}}})
 		h.edit(setTZ(utc))
@@ -387,7 +387,7 @@ func TestAdmissionRefusesUndeclaredSecret(t *testing.T) {
 	billing := []v1.ObjectName{"todo-billing"}
 	lake := func(secrets []v1.ObjectName) func(*v1.App) {
 		return func(a *v1.App) {
-			a.Spec.Catalogs = []v1.AppCatalog{{Name: "todo-lake", CatalogServiceSpec: v1.CatalogServiceSpec{
+			a.Spec.Catalogs = []v1.CatalogEntry{{Name: "todo-lake", CatalogServiceSpec: v1.CatalogServiceSpec{
 				Catalog:  v1.CatalogRef{Bucket: "todo-files", Prefix: "lake"},
 				Bindings: v1.CatalogServiceBindings{Blob: []v1.FunctionBlob{{Alias: "lake", Bucket: "todo-files", Prefix: "lake"}}, Secret: secrets},
 			}}}

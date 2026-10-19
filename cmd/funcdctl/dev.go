@@ -1567,7 +1567,56 @@ func synthesizeFunction(pf plannedFunc, imagePath string) *v1.Function {
 	fn.Spec.Bindings.Config = pf.m.Bindings.Config
 	fn.Spec.Bindings.Secret = pf.m.Bindings.Secrets
 	fn.Spec.Bindings.Links = pf.m.Bindings.Links
+	declareRoots(&fn.Spec, pf.m.Dev.Secrets)
 	return fn
+}
+
+// declareRoots declares at fn's root, by ref, every store, catalog and ConfigMap its bindings name, which dev creates
+// itself, and every Secret it binds with the keys dev gives it, so the binding-declared admission admits it (ADR-0248's
+// temporary workaround until ADR-0247). A Secret dev gives no key is left undeclared, and the admission names it.
+func declareRoots(s *v1.FunctionSpec, secrets map[string]map[string]string) {
+	refs := func(names []v1.ObjectName) []v1.ObjectName {
+		var out []v1.ObjectName
+		for _, n := range names {
+			if !slices.Contains(out, n) {
+				out = append(out, n)
+			}
+		}
+		return out
+	}
+	var kv, buckets, sql, catalogs []v1.ObjectName
+	for _, b := range s.Bindings.KV {
+		kv = append(kv, b.Store)
+	}
+	for _, b := range s.Bindings.Blob {
+		buckets = append(buckets, b.Bucket)
+	}
+	for _, b := range s.Bindings.SQL {
+		sql = append(sql, b.Database)
+	}
+	for _, b := range s.Bindings.Catalog {
+		catalogs = append(catalogs, b.Catalog)
+	}
+	for _, n := range refs(kv) {
+		s.KVStores = append(s.KVStores, v1.KVStoreEntry{Ref: n})
+	}
+	for _, n := range refs(buckets) {
+		s.Buckets = append(s.Buckets, v1.BucketEntry{Ref: n})
+	}
+	for _, n := range refs(sql) {
+		s.SQLDatabases = append(s.SQLDatabases, v1.SQLDatabaseEntry{Ref: n})
+	}
+	for _, n := range refs(catalogs) {
+		s.CatalogServices = append(s.CatalogServices, v1.CatalogEntry{Ref: n})
+	}
+	for _, n := range refs(s.Bindings.Config) {
+		s.ConfigMaps = append(s.ConfigMaps, v1.ConfigMapEntry{Ref: n})
+	}
+	for _, n := range refs(s.Bindings.Secret) {
+		if keys := slices.Sorted(maps.Keys(secrets[string(n)])); len(keys) > 0 {
+			s.SecretDeclarations = append(s.SecretDeclarations, v1.SecretDeclaration{Name: n, Keys: keys})
+		}
+	}
 }
 
 // prepareBundle delivers the ADR-0123 contract for one function and returns the file:// image path the

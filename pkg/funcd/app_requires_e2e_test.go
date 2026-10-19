@@ -43,7 +43,7 @@ func requiresApp(name v1.ObjectName, version string, reqs ...v1.AppRequirement) 
 // catalog lake: a CatalogService needs the duckdb provider container, which this platform does not run.
 func lakehouseApp(version string, reqs ...v1.AppRequirement) *v1.App {
 	a := requiresApp("lakehouse", version, reqs...)
-	a.Spec.Buckets = []v1.AppBucket{{Name: "lake"}}
+	a.Spec.Buckets = []v1.BucketEntry{{Name: "lake"}}
 	return a
 }
 
@@ -53,7 +53,7 @@ func billingApp(t *testing.T, e *gcEnv, rng string) *v1.App {
 	t.Helper()
 	a := requiresApp("billing", "1.3.0", v1.AppRequirement{App: "lakehouse", Version: rng})
 	a.Spec.Functions = []v1.AppFunction{{Name: "invoice", FunctionSpec: v1.FunctionSpec{Runtime: "nodejs22", Handler: "handle", Image: e.image(t)}}}
-	a.Spec.Buckets = []v1.AppBucket{{Ref: "lake"}}
+	a.Spec.Buckets = []v1.BucketEntry{{Ref: "lake"}}
 	return a
 }
 
@@ -226,7 +226,7 @@ func TestScenarioAppRequiresUpgradeRefused(t *testing.T) {
 		e := startGC(t, requiresPacing())
 		stuck := func(version string) *v1.App {
 			a := lakehouseApp(version)
-			a.Spec.Buckets = append(a.Spec.Buckets, v1.AppBucket{Ref: "missing"})
+			a.Spec.Buckets = append(a.Spec.Buckets, v1.BucketEntry{Ref: "missing"})
 			return a
 		}
 		e.apply(t, stuck("2.1.0"))

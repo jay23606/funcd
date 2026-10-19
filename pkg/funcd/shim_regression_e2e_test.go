@@ -34,6 +34,7 @@ import (
 	"github.com/pyvvo/funcd/internal/runtime/process"
 	"github.com/pyvvo/funcd/internal/store"
 	"github.com/pyvvo/funcd/internal/store/memory"
+	"github.com/pyvvo/funcd/internal/testkit/bound"
 	"github.com/pyvvo/funcd/internal/testkit/langmod"
 	"github.com/pyvvo/funcd/pkg/funcd"
 	"github.com/pyvvo/funcd/pkg/sdk"
@@ -238,6 +239,7 @@ func (h *shimRig) deploy(t *testing.T, name string, f shimFn) {
 	if f.change != nil {
 		f.change(fn)
 	}
+	bound.Declare(fn)
 	_, err = h.c.Apply(context.Background(), fn)
 	require.NoError(t, err)
 }

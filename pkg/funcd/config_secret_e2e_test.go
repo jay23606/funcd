@@ -71,6 +71,8 @@ func TestScenarioFunctionConfigAndSecretEnvInjected(t *testing.T) {
 	fn.Spec.Scaling = v1.Scaling{MinReplicas: 1}
 	fn.Spec.Bindings.Config = []v1.ObjectName{"app-config"} // ADR-0093
 	fn.Spec.Bindings.Secret = []v1.ObjectName{"app-secret"} // ADR-0057
+	fn.Spec.ConfigMaps = []v1.ConfigMapEntry{{Ref: "app-config"}}
+	fn.Spec.SecretDeclarations = []v1.SecretDeclaration{{Name: "app-secret", Keys: []string{"API_KEY", "SHARED"}}}
 	_, err := c.Apply(context.Background(), fn)
 	require.NoError(t, err)
 

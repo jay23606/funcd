@@ -42,22 +42,22 @@ type AppSpec struct {
 	Paused bool `json:"paused,omitempty"`
 	// Requires names the shared Apps of this namespace that this App needs before it rolls out (ADR-0219).
 	Requires []AppRequirement `json:"requires,omitempty"`
-	KV       []AppKVStore     `json:"kv,omitempty"`
-	Buckets  []AppBucket      `json:"buckets,omitempty"`
+	KV       []KVStoreEntry   `json:"kv,omitempty"`
+	Buckets  []BucketEntry    `json:"buckets,omitempty"`
 	// SQL declares the App's SQL databases (ADR-0236), stores like kv and buckets.
-	SQL          []AppSQLDatabase `json:"sql,omitempty"`
-	Functions    []AppFunction    `json:"functions,omitempty"`
-	Workflows    []AppWorkflow    `json:"workflows,omitempty"`
-	EventSources []AppEventSource `json:"eventSources,omitempty"`
-	Sensors      []AppSensor      `json:"sensors,omitempty"`
-	Routes       []AppRoute       `json:"routes,omitempty"`
-	Sites        []AppSite        `json:"sites,omitempty"`
-	Catalogs     []AppCatalog     `json:"catalogs,omitempty"`
-	ConfigMaps   []AppConfigMap   `json:"configMaps,omitempty"`
+	SQL          []SQLDatabaseEntry `json:"sql,omitempty"`
+	Functions    []AppFunction      `json:"functions,omitempty"`
+	Workflows    []AppWorkflow      `json:"workflows,omitempty"`
+	EventSources []AppEventSource   `json:"eventSources,omitempty"`
+	Sensors      []AppSensor        `json:"sensors,omitempty"`
+	Routes       []AppRoute         `json:"routes,omitempty"`
+	Sites        []AppSite          `json:"sites,omitempty"`
+	Catalogs     []CatalogEntry     `json:"catalogs,omitempty"`
+	ConfigMaps   []ConfigMapEntry   `json:"configMaps,omitempty"`
 	// BackupSchedules backs up the App's stores (ADR-0222 Decision 2); an entry with an empty scope backs up this App.
 	BackupSchedules []AppBackupSchedule `json:"backupSchedules,omitempty"`
 	// Secrets declares the Secrets the parts name, never their values (ADR-0213 Decision 6).
-	Secrets []AppSecret `json:"secrets,omitempty"`
+	Secrets []SecretDeclaration `json:"secrets,omitempty"`
 	// Hooks names the Functions of this App called before its parts change and after a new revision is current
 	// (ADR-0214).
 	Hooks *AppHooks `json:"hooks,omitempty"`
@@ -113,8 +113,9 @@ func (s AppSpec) WithoutPause() AppSpec {
 	return s
 }
 
-// AppKVStore is a kv entry: a KVStore the App declares by name, or only the ref of an existing one.
-type AppKVStore struct {
+// KVStoreEntry is a kv entry: a KVStore a resource declares by name at its root, or only the ref of an existing one
+// (ADR-0248).
+type KVStoreEntry struct {
 	Name ObjectName `json:"name,omitempty"`
 	Ref  ObjectName `json:"ref,omitempty"`
 	// Deletion is retain (or empty, the default: the store and its data outlive the App) or delete.
@@ -122,8 +123,9 @@ type AppKVStore struct {
 	KVStoreSpec `json:",inline"`
 }
 
-// AppBucket is a buckets entry: a Bucket the App declares by name, or only the ref of an existing one.
-type AppBucket struct {
+// BucketEntry is a buckets entry: a Bucket a resource declares by name at its root, or only the ref of an existing one
+// (ADR-0248).
+type BucketEntry struct {
 	Name ObjectName `json:"name,omitempty"`
 	Ref  ObjectName `json:"ref,omitempty"`
 	// Deletion is retain (or empty, the default: the Bucket and its objects outlive the App) or delete.
@@ -131,9 +133,9 @@ type AppBucket struct {
 	BucketSpec `json:",inline"`
 }
 
-// AppSQLDatabase is a sql entry: a SQLDatabase the App declares by name, or only the ref of an existing one
-// (ADR-0236).
-type AppSQLDatabase struct {
+// SQLDatabaseEntry is a sql entry: a SQLDatabase a resource declares by name at its root, or only the ref of an existing
+// one (ADR-0236, ADR-0248).
+type SQLDatabaseEntry struct {
 	Name ObjectName `json:"name,omitempty"`
 	Ref  ObjectName `json:"ref,omitempty"`
 	// Deletion is retain (or empty, the default: the database and its data outlive the App) or delete.
@@ -183,24 +185,25 @@ type AppSite struct {
 	SiteSpec `json:",inline"`
 }
 
-// AppCatalog is a catalogs entry: a CatalogService the App declares by name, or only the ref of an existing one.
-type AppCatalog struct {
+// CatalogEntry is a catalogs entry: a CatalogService a resource declares by name at its root, or only the ref of an
+// existing one (ADR-0248).
+type CatalogEntry struct {
 	Name               ObjectName `json:"name,omitempty"`
 	Ref                ObjectName `json:"ref,omitempty"`
 	CatalogServiceSpec `json:",inline"`
 }
 
-// AppConfigMap is a configMaps entry: a ConfigMap the App defines, stored as AppConfigMapName(name, spec), or only the
+// ConfigMapEntry is a configMaps entry: a ConfigMap a resource defines, stored as AppConfigMapName(name, spec), or only the
 // ref of an existing one (ADR-0213 Decision 2).
-type AppConfigMap struct {
+type ConfigMapEntry struct {
 	Name          ObjectName `json:"name,omitempty"`
 	Ref           ObjectName `json:"ref,omitempty"`
 	ConfigMapSpec `json:",inline"`
 }
 
-// AppSecret declares a Secret of the App's namespace that a part names, and the keys the parts read (ADR-0213
-// Decision 6). The App never holds, writes or owns the Secret.
-type AppSecret struct {
+// SecretDeclaration declares a Secret of the namespace that a resource or its parts name, and the keys they read (ADR-0213
+// Decision 6, ADR-0248 Decision 6). No resource ever holds, writes or owns the Secret.
+type SecretDeclaration struct {
 	Name        ObjectName `json:"name"`
 	Description string     `json:"description,omitempty"`
 	Keys        []string   `json:"keys"`
@@ -216,7 +219,7 @@ func AppConfigMapName(name ObjectName, spec ConfigMapSpec) ObjectName {
 }
 
 // Schema is ConfigMapSpec's schema plus name and ref (see entrySchema).
-func (AppConfigMap) Schema(r huma.Registry) *huma.Schema {
+func (ConfigMapEntry) Schema(r huma.Registry) *huma.Schema {
 	s := entrySchema(r, reflect.TypeFor[ConfigMapSpec](), false)
 	s.Properties["name"].Description = "The ConfigMap's name, at most 52 characters. It is stored as <name>-<hash of data>, " +
 		"and the config of each part that names it is set to that stored name."
@@ -224,7 +227,7 @@ func (AppConfigMap) Schema(r huma.Registry) *huma.Schema {
 }
 
 // Schema is closed: name and at least one key, each an env-var name; description is free text (ADR-0213 Decision 6).
-func (AppSecret) Schema(huma.Registry) *huma.Schema {
+func (SecretDeclaration) Schema(huma.Registry) *huma.Schema {
 	one := 1
 	name := dnsLabelSchema()
 	name.Description = "The name of a Secret in the App's namespace. The platform holds its value; the App never writes it."
@@ -246,17 +249,17 @@ func (AppSecret) Schema(huma.Registry) *huma.Schema {
 }
 
 // Schema is KVStoreSpec's schema plus name, ref and deletion (see entrySchema).
-func (AppKVStore) Schema(r huma.Registry) *huma.Schema {
+func (KVStoreEntry) Schema(r huma.Registry) *huma.Schema {
 	return entrySchema(r, reflect.TypeFor[KVStoreSpec](), true)
 }
 
 // Schema is BucketSpec's schema plus name, ref and deletion (see entrySchema).
-func (AppBucket) Schema(r huma.Registry) *huma.Schema {
+func (BucketEntry) Schema(r huma.Registry) *huma.Schema {
 	return entrySchema(r, reflect.TypeFor[BucketSpec](), true)
 }
 
 // Schema is SQLDatabaseSpec's schema plus name, ref and deletion (see entrySchema).
-func (AppSQLDatabase) Schema(r huma.Registry) *huma.Schema {
+func (SQLDatabaseEntry) Schema(r huma.Registry) *huma.Schema {
 	return entrySchema(r, reflect.TypeFor[SQLDatabaseSpec](), true)
 }
 
@@ -291,7 +294,7 @@ func (AppSite) Schema(r huma.Registry) *huma.Schema {
 }
 
 // Schema is CatalogServiceSpec's schema plus name and ref (see entrySchema).
-func (AppCatalog) Schema(r huma.Registry) *huma.Schema {
+func (CatalogEntry) Schema(r huma.Registry) *huma.Schema {
 	return entrySchema(r, reflect.TypeFor[CatalogServiceSpec](), false)
 }
 
@@ -306,22 +309,22 @@ func (e AppBackupSchedule) MarshalJSON() ([]byte, error) {
 }
 
 // MarshalJSON writes a ref entry as its ref alone (see marshalEntry).
-func (e AppConfigMap) MarshalJSON() ([]byte, error) {
+func (e ConfigMapEntry) MarshalJSON() ([]byte, error) {
 	return marshalEntry(entryHead{Name: e.Name, Ref: e.Ref}, e.ConfigMapSpec)
 }
 
 // MarshalJSON writes a ref entry as its ref alone (see marshalEntry).
-func (e AppKVStore) MarshalJSON() ([]byte, error) {
+func (e KVStoreEntry) MarshalJSON() ([]byte, error) {
 	return marshalEntry(entryHead{e.Name, e.Ref, e.Deletion}, e.KVStoreSpec)
 }
 
 // MarshalJSON writes a ref entry as its ref alone (see marshalEntry).
-func (e AppBucket) MarshalJSON() ([]byte, error) {
+func (e BucketEntry) MarshalJSON() ([]byte, error) {
 	return marshalEntry(entryHead{e.Name, e.Ref, e.Deletion}, e.BucketSpec)
 }
 
 // MarshalJSON writes a ref entry as its ref alone (see marshalEntry).
-func (e AppSQLDatabase) MarshalJSON() ([]byte, error) {
+func (e SQLDatabaseEntry) MarshalJSON() ([]byte, error) {
 	return marshalEntry(entryHead{e.Name, e.Ref, e.Deletion}, e.SQLDatabaseSpec)
 }
 
@@ -356,7 +359,7 @@ func (e AppSite) MarshalJSON() ([]byte, error) {
 }
 
 // MarshalJSON writes a ref entry as its ref alone (see marshalEntry).
-func (e AppCatalog) MarshalJSON() ([]byte, error) {
+func (e CatalogEntry) MarshalJSON() ([]byte, error) {
 	return marshalEntry(entryHead{Name: e.Name, Ref: e.Ref}, e.CatalogServiceSpec)
 }
 
@@ -470,6 +473,41 @@ func (a *App) Parts() []Object {
 	return out
 }
 
+// validatePartRoots refuses a part that declares stores, catalogs, ConfigMaps or Secrets of its own (ADR-0248 Decision
+// 2): an App's parts bind what the App declares at its root.
+func (a *App) validatePartRoots(op string) error {
+	refuse := func(path, field string) error {
+		return fault.Invalidf(op, "%s.%s: an App's part declares nothing at its root; declare it at the App's root", path, field)
+	}
+	for i := range a.Spec.Functions {
+		f, path := &a.Spec.Functions[i], fmt.Sprintf("spec.functions[%d]", i)
+		for _, c := range []struct {
+			field string
+			n     int
+		}{{"kv", len(f.KVStores)}, {"buckets", len(f.Buckets)}, {"sql", len(f.SQLDatabases)},
+			{"catalogs", len(f.CatalogServices)}, {"configMaps", len(f.ConfigMaps)}, {"secrets", len(f.SecretDeclarations)}} {
+			if c.n > 0 {
+				return refuse(path, c.field)
+			}
+		}
+	}
+	for i := range a.Spec.Workflows {
+		w, path := &a.Spec.Workflows[i], fmt.Sprintf("spec.workflows[%d]", i)
+		if len(w.KVStores) > 0 {
+			return refuse(path, "kv")
+		}
+		if len(w.Buckets) > 0 {
+			return refuse(path, "buckets")
+		}
+	}
+	for i := range a.Spec.Sites {
+		if len(a.Spec.Sites[i].Buckets) > 0 {
+			return refuse(fmt.Sprintf("spec.sites[%d]", i), "buckets")
+		}
+	}
+	return nil
+}
+
 // Refs returns the object each ref entry names, in section order.
 func (a *App) Refs() []ObjectRef {
 	var out []ObjectRef
@@ -494,6 +532,9 @@ func (a *App) Validate() error {
 	}
 	if len(a.Name) > maxAppNameLength {
 		return fault.Invalidf(op, "metadata.name %q is longer than %d characters", a.Name, maxAppNameLength)
+	}
+	if err := a.validatePartRoots(op); err != nil {
+		return err
 	}
 	seen := make(map[ObjectRef]string)
 	stored := make(map[ObjectRef]string)
@@ -605,48 +646,20 @@ func (a *App) validateHooks(op string) error {
 
 // validateSecrets refuses a secrets entry whose name is not a DNS label or repeats another's, or whose keys are empty,
 // repeat a key or hold one that is not an env-var name (ADR-0213 Decision 6).
-func (a *App) validateSecrets(op string) error {
-	names := make(map[ObjectName]string, len(a.Spec.Secrets))
-	for i, s := range a.Spec.Secrets {
-		path := fmt.Sprintf("spec.secrets[%d]", i)
-		if !dnsLabel.MatchString(string(s.Name)) {
-			return fault.Invalidf(op, "%s.name %q is not a valid DNS-1123 label", path, s.Name)
-		}
-		if prev, dup := names[s.Name]; dup {
-			return fault.Invalidf(op, "%s repeats the name %q of %s", path, s.Name, prev)
-		}
-		names[s.Name] = path
-		if len(s.Keys) == 0 {
-			return fault.Invalidf(op, "%s.keys is empty: declare at least one key the parts read", path)
-		}
-		keys := make(map[string]string, len(s.Keys))
-		for j, k := range s.Keys {
-			field := fmt.Sprintf("%s.keys[%d]", path, j)
-			if err := validateEnvKey(op, field, k); err != nil {
-				return err
-			}
-			if prev, dup := keys[k]; dup {
-				return fault.Invalidf(op, "%s repeats the key %q of %s", field, k, prev)
-			}
-			keys[k] = field
-		}
-	}
-	return nil
-}
+func (a *App) validateSecrets(op string) error { return validateSecretDeclarations(op, a.Spec.Secrets) }
 
 // validateWriters refuses two writers of one object, since they would overwrite each other (Decision 3, amended in
-// place for #924): an entry named like an object another part's reconciler writes, a Site's Route (<site>) and Bucket
-// (bucket.name), a Workflow's step Function (<workflow>-<step>) and kv stores, and two such objects of one kind and
-// name. Sites may name one Bucket: a Site adopts an existing Bucket and adds only its own prefix (ADR-0139). declared
-// maps each declared entry's object to its path.
+// place for #924): an entry named like an object another part's reconciler writes, a Site's Route (<site>) and a
+// Workflow's step Function (<workflow>-<step>), and two such objects of one kind and name. A part declares no store
+// of its own (validatePartRoots), so none is checked here. declared maps each declared entry's object to its path.
 func (a *App) validateWriters(op string, declared map[ObjectRef]string) error {
 	made := make(map[ObjectRef]string)
-	clash := func(field string, kind Kind, name ObjectName, shared bool) error {
+	clash := func(field string, kind Kind, name ObjectName) error {
 		obj := ObjectRef{Kind: kind, Name: name}
 		if p, ok := declared[obj]; ok {
 			return fault.Invalidf(op, "%s and %s.name both write %s/%s: one object would have two writers", field, p, kind, name)
 		}
-		if p, ok := made[obj]; ok && !shared {
+		if p, ok := made[obj]; ok {
 			return fault.Invalidf(op, "%s and %s both write %s/%s: one object would have two writers", p, field, kind, name)
 		}
 		made[obj] = field
@@ -657,10 +670,7 @@ func (a *App) validateWriters(op string, declared map[ObjectRef]string) error {
 		if s.Ref != "" {
 			continue
 		}
-		if err := clash(fmt.Sprintf("spec.sites[%d].name", i), KindRoute, s.Name, false); err != nil {
-			return err
-		}
-		if err := clash(fmt.Sprintf("spec.sites[%d].bucket.name", i), KindBucket, s.Bucket.Name, true); err != nil {
+		if err := clash(fmt.Sprintf("spec.sites[%d].name", i), KindRoute, s.Name); err != nil {
 			return err
 		}
 	}
@@ -674,12 +684,7 @@ func (a *App) validateWriters(op string, declared map[ObjectRef]string) error {
 			if st.Function == nil || st.Function.Image == "" {
 				continue
 			}
-			if err := clash(fmt.Sprintf("spec.workflows[%d].steps[%d].name", i, j), KindFunction, StepFunctionName(w.Name, st.Name), false); err != nil {
-				return err
-			}
-		}
-		for j := range w.KV {
-			if err := clash(fmt.Sprintf("spec.workflows[%d].kv[%d].name", i, j), KindKVStore, w.KV[j].Name, false); err != nil {
+			if err := clash(fmt.Sprintf("spec.workflows[%d].steps[%d].name", i, j), KindFunction, StepFunctionName(w.Name, st.Name)); err != nil {
 				return err
 			}
 		}
@@ -753,6 +758,10 @@ func (a *App) entries() []appEntry {
 	for i, e := range s.Sites {
 		spec := e.SiteSpec
 		spec.RuntimeConfig = repointRuntimeConfig(spec.RuntimeConfig, stored)
+		if len(spec.Buckets) == 0 && spec.ServedBucket() != "" {
+			// a part binds the App's Bucket (ADR-0248 Decision 2), so its Site refers to it and never edits it
+			spec.Buckets = []BucketEntry{{Ref: spec.ServedBucket()}}
+		}
 		out = append(out, newEntry("sites", i, entryHead{Name: e.Name, Ref: e.Ref}, e.SiteSpec,
 			&Site{TypeMeta: typeMetaFor(KindSite), ObjectMeta: meta(e.Name), Spec: spec}))
 	}

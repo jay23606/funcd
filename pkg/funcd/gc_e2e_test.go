@@ -81,12 +81,12 @@ func startGC(t *testing.T, opts ...funcd.Option) *gcEnv {
 
 func (e *gcEnv) image(t *testing.T) string { return pushStepImage(t, e.layout, e.src, "echo") }
 
-func (e *gcEnv) workflow(t *testing.T, name, group string, steps []string, kv ...v1.WorkflowKVStore) {
+func (e *gcEnv) workflow(t *testing.T, name, group string, steps []string, kv ...v1.KVStoreEntry) {
 	t.Helper()
 	wf := &v1.Workflow{
 		TypeMeta:   v1.TypeMeta{APIVersion: v1.KindWorkflow.GVK().APIVersion(), Kind: v1.KindWorkflow},
 		ObjectMeta: v1.ObjectMeta{Name: v1.ObjectName(name), Namespace: "default", ResourceGroup: v1.ResourceGroupName(group)},
-		Spec:       v1.WorkflowSpec{KV: kv},
+		Spec:       v1.WorkflowSpec{KVStores: kv},
 	}
 	img := e.image(t)
 	for _, s := range steps {
@@ -170,8 +170,8 @@ func (e *gcEnv) hasKey(t *testing.T, store string) bool {
 	return found
 }
 
-func kvStore(name string, deletion v1.DeletionPolicy) v1.WorkflowKVStore {
-	return v1.WorkflowKVStore{Name: v1.ObjectName(name), Deletion: deletion, Tables: []v1.KVTable{{Name: "t"}}}
+func kvStore(name string, deletion v1.DeletionPolicy) v1.KVStoreEntry {
+	return v1.KVStoreEntry{Name: v1.ObjectName(name), Deletion: deletion, KVStoreSpec: v1.KVStoreSpec{Tables: []v1.KVTable{{Name: "t"}}}}
 }
 
 func readyReason(t *testing.T, e *gcEnv, kind v1.Kind, name string) string {
@@ -289,10 +289,10 @@ func TestScenarioSiteDeleteCollectsRoute(t *testing.T) {
 		TypeMeta:   v1.TypeMeta{APIVersion: v1.KindSite.GVK().APIVersion(), Kind: v1.KindSite},
 		ObjectMeta: v1.ObjectMeta{Name: "web", Namespace: "default", ResourceGroup: "rg1"},
 		Spec: v1.SiteSpec{
-			Image:   ref,
-			Bucket:  v1.SiteBucket{Name: "web-assets"},
-			Prefix:  "web",
-			Ingress: v1.SiteIngress{Ingress: v1.Ingress{Host: "web.example.com", Auth: &v1.RouteAuth{Mode: v1.AuthOpen}}},
+			Image:    ref,
+			Buckets:  []v1.BucketEntry{{Name: "web-assets"}},
+			Bindings: v1.SiteBindings{Blob: []v1.BlobRef{{Bucket: "web-assets", Prefix: "web"}}},
+			Ingress:  v1.SiteIngress{Ingress: v1.Ingress{Host: "web.example.com", Auth: &v1.RouteAuth{Mode: v1.AuthOpen}}},
 		},
 	})
 	host := func() int {

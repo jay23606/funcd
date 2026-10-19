@@ -78,7 +78,7 @@ func TestScenarioAppStoreDeletionFlip(t *testing.T) {
 	e.putAppKey(t, cacheKey)
 
 	cache := a.Spec.KV[1]
-	a.Spec.KV[1] = v1.AppKVStore{Ref: "todo-cache"}
+	a.Spec.KV[1] = v1.KVStoreEntry{Ref: "todo-cache"}
 	_, err := e.c.Apply(e.ctx, a)
 	require.Equal(t, fault.Invalid, fault.KindOf(err), "%v", err)
 	require.ErrorContains(t, err, "spec.kv[1].ref")
@@ -89,7 +89,7 @@ func TestScenarioAppStoreDeletionFlip(t *testing.T) {
 	e.apply(t, a)
 	require.Eventually(t, func() bool { return onlyMarked(e.object(t, v1.KindKVStore, "todo-cache"), live) }, appWithin, 50*time.Millisecond, "todo-cache keeps only the marker")
 
-	a.Spec.KV[1] = v1.AppKVStore{Ref: "todo-cache"}
+	a.Spec.KV[1] = v1.KVStoreEntry{Ref: "todo-cache"}
 	e.apply(t, a)
 	e.waitApp(t, "todo", v1.ConditionTrue, "", appWithin)
 
@@ -101,7 +101,26 @@ func TestScenarioAppStoreDeletionFlip(t *testing.T) {
 	require.True(t, e.hasAppKey(t, cacheKey), "todo-cache keeps its keys")
 }
 
-// scenario: app-prune-dropped-part
+// scenario: app-drop-bound-store-refused (ADR-0252) — an App that drops a store entry while its part todo-api still
+// binds the store is refused at apply, naming the binding, and nothing changes.
+func TestScenarioAppDropBoundStoreRefused(t *testing.T) {
+	t.Parallel()
+	e := startGC(t)
+	a := todoApp(t, e)
+	e.apply(t, a)
+	e.waitApp(t, "todo", v1.ConditionTrue, "", appWithin)
+	before := e.app(t, "todo").Generation
+
+	a.Spec.KV = a.Spec.KV[1:]
+	_, err := e.c.Apply(e.ctx, a)
+	require.Equal(t, fault.Invalid, fault.KindOf(err), "%v", err)
+	require.ErrorContains(t, err, `spec.functions[0] (Function/todo-api): admission.binding-declared: spec.bindings.kv[0]: KVStore "todo-store" is not declared in spec.kv`)
+	require.Equal(t, before, e.app(t, "todo").Generation, "the App is not written")
+	require.True(t, e.exists(t, v1.KindKVStore, "todo-store"))
+}
+
+// scenario: app-prune-dropped-part (as amended by ADR-0252) — Route todo-api and store todo-store, dropped with
+// todo-api's binding to it, ⇒ once no part is Pending the Route is deleted; todo-store stays with its data and marker.
 func TestScenarioAppPruneDroppedPart(t *testing.T) {
 	e := startGC(t)
 	a := todoApp(t, e)
@@ -110,6 +129,7 @@ func TestScenarioAppPruneDroppedPart(t *testing.T) {
 	e.putAppKey(t, storeKey)
 
 	a.Spec.Routes, a.Spec.KV = nil, a.Spec.KV[1:]
+	a.Spec.Functions[0].Bindings.KV = a.Spec.Functions[0].Bindings.KV[1:]
 	e.apply(t, a)
 	require.Eventually(t, func() bool { return !e.exists(t, v1.KindRoute, "todo-api") }, appWithin, 20*time.Millisecond, "Route/todo-api is pruned")
 	got := e.waitApp(t, "todo", v1.ConditionTrue, "", appWithin)
@@ -120,27 +140,42 @@ func TestScenarioAppPruneDroppedPart(t *testing.T) {
 	require.True(t, e.hasAppKey(t, storeKey), "todo-store keeps its data")
 }
 
-// scenario: app-store-in-use-kept
+// scenario: app-store-in-use-kept (as amended by ADR-0252) — todo-cache, dropped with todo-api's binding while Function
+// audit outside the App binds it by ref, stays Pruning InUse naming Function/audit, the App Ready; once audit unbinds
+// it, it goes with its keys. With audit binding it, an App delete leaves todo-cache until that binding goes.
 func TestScenarioAppStoreInUseKept(t *testing.T) {
 	e := startGC(t, funcd.WithGCSweepInterval(time.Second))
 	a := todoApp(t, e)
 	e.apply(t, a)
 	e.waitApp(t, "todo", v1.ConditionTrue, "", appWithin)
+	audit := &v1.Function{
+		TypeMeta:   v1.TypeMeta{APIVersion: v1.KindFunction.GVK().APIVersion(), Kind: v1.KindFunction},
+		ObjectMeta: v1.ObjectMeta{Name: "audit", Namespace: "default", ResourceGroup: "rg1"},
+		Spec: v1.FunctionSpec{
+			Runtime:  "nodejs22",
+			Handler:  "handle",
+			Image:    e.image(t),
+			KVStores: []v1.KVStoreEntry{{Ref: "todo-cache"}},
+			Bindings: v1.FunctionBindings{KV: []v1.FunctionKV{{Alias: "cache", Store: "todo-cache", Table: "entries"}}},
+		},
+	}
+	e.apply(t, audit)
 	e.putAppKey(t, cacheKey)
 
 	a.Spec.KV = a.Spec.KV[:1]
+	a.Spec.Functions[0].Bindings.KV = a.Spec.Functions[0].Bindings.KV[:1]
 	e.apply(t, a)
 	require.Eventually(t, func() bool {
 		c, ok := pruningChild(e.app(t, "todo"), v1.KindKVStore, "todo-cache")
-		return ok && strings.HasPrefix(c.Reason, "InUse") && strings.Contains(c.Reason, "Function/todo-api")
-	}, appWithin, 50*time.Millisecond, "todo-cache is Pruning InUse naming Function/todo-api")
+		return ok && strings.HasPrefix(c.Reason, "InUse") && strings.Contains(c.Reason, "Function/audit")
+	}, appWithin, 50*time.Millisecond, "todo-cache is Pruning InUse naming Function/audit")
 	got := e.waitApp(t, "todo", v1.ConditionTrue, "", appWithin)
 	require.Equal(t, v1.PhaseReady, got.Status.Phase)
 	require.True(t, e.exists(t, v1.KindKVStore, "todo-cache"))
 	require.True(t, e.hasAppKey(t, cacheKey))
 
-	a.Spec.Functions[0].Bindings.KV = a.Spec.Functions[0].Bindings.KV[:1]
-	e.apply(t, a)
+	audit.Spec.Bindings.KV = nil
+	e.apply(t, audit)
 	require.Eventually(t, func() bool {
 		return !e.exists(t, v1.KindKVStore, "todo-cache") && !e.hasAppKey(t, cacheKey)
 	}, appWithin, 50*time.Millisecond, "todo-cache goes with its keys once unbound")
@@ -152,16 +187,7 @@ func TestScenarioAppStoreInUseKept(t *testing.T) {
 
 	e.apply(t, todoApp(t, e))
 	e.waitApp(t, "todo", v1.ConditionTrue, "", appWithin)
-	audit := &v1.Function{
-		TypeMeta:   v1.TypeMeta{APIVersion: v1.KindFunction.GVK().APIVersion(), Kind: v1.KindFunction},
-		ObjectMeta: v1.ObjectMeta{Name: "audit", Namespace: "default", ResourceGroup: "rg1"},
-		Spec: v1.FunctionSpec{
-			Runtime:  "nodejs22",
-			Handler:  "handle",
-			Image:    e.image(t),
-			Bindings: v1.FunctionBindings{KV: []v1.FunctionKV{{Alias: "cache", Store: "todo-cache", Table: "entries"}}},
-		},
-	}
+	audit.Spec.Bindings.KV = []v1.FunctionKV{{Alias: "cache", Store: "todo-cache", Table: "entries"}}
 	e.apply(t, audit)
 	e.putAppKey(t, cacheKey)
 
@@ -223,8 +249,8 @@ func TestScenarioAppRefKeptStore(t *testing.T) {
 	store := e.object(t, v1.KindKVStore, "todo-store").(*v1.KVStore)
 	files := e.object(t, v1.KindBucket, "todo-files").(*v1.Bucket)
 
-	a.Spec.KV[0] = v1.AppKVStore{Ref: "todo-store"}
-	a.Spec.Buckets[0] = v1.AppBucket{Ref: "todo-files"}
+	a.Spec.KV[0] = v1.KVStoreEntry{Ref: "todo-store"}
+	a.Spec.Buckets[0] = v1.BucketEntry{Ref: "todo-files"}
 	e.apply(t, a)
 	e.waitApp(t, "todo", v1.ConditionTrue, "", appWithin)
 	require.Eventually(t, func() bool { return e.readKey(t, "todo-api") == "v" }, appWithin, 100*time.Millisecond, "todo-api reads the kept key")

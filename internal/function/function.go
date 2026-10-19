@@ -691,6 +691,9 @@ func (r *Reconciler) reconcileFunction(ctx context.Context, fn *v1.Function) (co
 		return controller.Result{}, convergeError{err}
 	}
 	res, err := r.finish(ctx, fn, v, drainAfter)
+	if err == nil && fn.Status.Phase == v1.PhaseReady {
+		err = r.pruneConfigMaps(ctx, fn)
+	}
 	return afterHeld(res, err, herr)
 }
 
@@ -704,6 +707,11 @@ type boundEnv struct {
 
 // bindings resolves fn's current bindings, or returns the first binding gate that fails.
 func (r *Reconciler) bindings(ctx context.Context, fn *v1.Function) (boundEnv, error) {
+	// 3b-bis. root entries (ADR-0248): what fn defines at its root exists, as fn's, before a binding resolves to it.
+	if g, err := r.ensureRootEntries(ctx, fn); err != nil || g != nil {
+		return boundEnv{gate: g}, err
+	}
+
 	// 3c. secret injection gate (ADR-0057, F15 last mile): resolve the function's bound secrets
 	// into an env map BEFORE provisioning any worker. A PDP-deny / missing Secret / unconfigured
 	// resolver fails the function CLOSED (SecretResolveFailed, no worker) — never a worker

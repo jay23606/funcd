@@ -821,7 +821,7 @@ func (r *Reconciler) MapSecret(ctx context.Context, obj v1.Object) []controller.
 	var reqs []controller.Request
 	for _, o := range res.Items {
 		a, ok := o.(*v1.App)
-		if ok && slices.ContainsFunc(a.Spec.Secrets, func(s v1.AppSecret) bool { return s.Name == m.Name }) {
+		if ok && slices.ContainsFunc(a.Spec.Secrets, func(s v1.SecretDeclaration) bool { return s.Name == m.Name }) {
 			reqs = append(reqs, controller.Request{GVK: v1.KindApp.GVK(), Namespace: m.Namespace, Name: a.Name})
 		}
 	}

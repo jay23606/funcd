@@ -131,12 +131,8 @@ func TestScenarioSiteConfigRuntimeReserved(t *testing.T) {
 func TestSiteConfigBaseHrefCopyOverBucketCap(t *testing.T) {
 	h := newHarness(t)
 	h.push("v1", map[string]string{"index.html": "<head></head>" + strings.Repeat("x", 17)})
-	pre := &v1.Bucket{TypeMeta: v1.TypeMeta{APIVersion: v1.KindBucket.GVK().APIVersion(), Kind: v1.KindBucket}}
-	pre.Name, pre.Namespace, pre.ResourceGroup = bucket, ns, "rg1"
-	pre.Spec.MaxObjectBytes = 35
-	_, err := h.st.Create(h.ctx, pre)
-	require.NoError(t, err)
-	h.seedSite("bi", "v1", func(s *v1.Site) { s.Spec.Ingress.Rules = nil })
+	h.seedBucket(35, "bi")
+	h.seedSite("bi", "v1", func(s *v1.Site) { byRef(s); s.Spec.Ingress.Rules = nil })
 	h.deploy("bi")
 	digest := h.site("bi").Status.Digest
 

@@ -22,7 +22,7 @@ func appBody(t *testing.T, name v1.ObjectName, mutate func(*v1.AppSpec)) []byte 
 		TypeMeta:   v1.TypeMeta{APIVersion: v1.KindApp.GVK().APIVersion(), Kind: v1.KindApp},
 		ObjectMeta: v1.ObjectMeta{Name: name, Namespace: "team-a", ResourceGroup: "rg1"},
 		Spec: v1.AppSpec{
-			KV: []v1.AppKVStore{{Name: "todo-store", KVStoreSpec: v1.KVStoreSpec{Tables: []v1.KVTable{{Name: "todos"}}}}},
+			KV: []v1.KVStoreEntry{{Name: "todo-store", KVStoreSpec: v1.KVStoreSpec{Tables: []v1.KVTable{{Name: "todos"}}}}},
 			Functions: []v1.AppFunction{
 				{Name: "todo-api", FunctionSpec: v1.FunctionSpec{Runtime: "nodejs22", Handler: "index.handler", Image: "oci-layout://todo-api:1"}},
 				{Ref: "mailer"},
@@ -85,7 +85,7 @@ func TestKVStoreGuardsCoverALiveApp(t *testing.T) {
 	obj, err := st.Create(ctx, &v1.App{
 		TypeMeta:   v1.TypeMeta{APIVersion: v1.KindApp.GVK().APIVersion(), Kind: v1.KindApp},
 		ObjectMeta: v1.ObjectMeta{Name: "todo", Namespace: kvNS, ResourceGroup: "rg1"},
-		Spec:       v1.AppSpec{KV: []v1.AppKVStore{{Name: "todo-store", KVStoreSpec: v1.KVStoreSpec{Tables: []v1.KVTable{{Name: "t"}}}}}},
+		Spec:       v1.AppSpec{KV: []v1.KVStoreEntry{{Name: "todo-store", KVStoreSpec: v1.KVStoreSpec{Tables: []v1.KVTable{{Name: "t"}}}}}},
 	})
 	require.NoError(t, err)
 	kvWorkflow(t, st, "todo-store", v1.DeletionRetain)

@@ -375,6 +375,27 @@ func TestScenario_dev_still_runs(t *testing.T) {
 	require.Equal(t, 1, fn.Spec.Scaling.MinReplicas, "MinReplicas=1 so it serves immediately")
 }
 
+// ADR-0248's temporary workaround: dev declares by ref what it creates for a Function's bindings, and each Secret with
+// the keys dev gives it, so binding-declared admits the Function; a Secret dev gives no key stays undeclared.
+func TestDevDeclaresRootEntries(t *testing.T) {
+	m := &sdk.Manifest{Runtime: "nodejs22", Handler: "handle", Bindings: sdk.Bindings{
+		KV:       []v1.FunctionKV{{Alias: "a", Store: "counters", Table: "a"}, {Alias: "b", Store: "counters", Table: "b"}},
+		Blob:     []v1.FunctionBlob{{Alias: "files", Bucket: "files", Prefix: "uploads"}},
+		SQL:      []v1.FunctionSQL{{Alias: "db", Database: "todo-db"}},
+		Catalogs: []v1.FunctionCatalog{{Alias: "lake", Catalog: "lake"}},
+		Config:   []v1.ObjectName{"settings"},
+		Secrets:  []v1.ObjectName{"api-keys", "empty"},
+	}}
+	m.Dev.Secrets = map[string]map[string]string{"api-keys": {"STRIPE_KEY": "${STRIPE_KEY}", "A_KEY": "x"}}
+	s := synthesizeFunction(plannedFunc{m: m, name: "front"}, "/tmp/front.mjs").Spec
+	require.Equal(t, []v1.KVStoreEntry{{Ref: "counters"}}, s.KVStores, "one entry per store")
+	require.Equal(t, []v1.BucketEntry{{Ref: "files"}}, s.Buckets)
+	require.Equal(t, []v1.SQLDatabaseEntry{{Ref: "todo-db"}}, s.SQLDatabases)
+	require.Equal(t, []v1.CatalogEntry{{Ref: "lake"}}, s.CatalogServices)
+	require.Equal(t, []v1.ConfigMapEntry{{Ref: "settings"}}, s.ConfigMaps)
+	require.Equal(t, []v1.SecretDeclaration{{Name: "api-keys", Keys: []string{"A_KEY", "STRIPE_KEY"}}}, s.SecretDeclarations)
+}
+
 // TestResolveDevFunctionsNameFlagOverridesGeneric — --name names the single generic function (the
 // manifest-stem-else-flag rule); a <stem>.funcdctl.yaml still names by stem and ignores --name.
 func TestResolveDevFunctionsNameFlagOverridesGeneric(t *testing.T) {

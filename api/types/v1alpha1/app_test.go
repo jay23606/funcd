@@ -22,11 +22,11 @@ func todoApp(mutate func(*App)) *App {
 		ObjectMeta: ObjectMeta{Name: "todo", Namespace: "default", ResourceGroup: "todo-rg"},
 		Spec: AppSpec{
 			Version: "1.0.0",
-			KV: []AppKVStore{
+			KV: []KVStoreEntry{
 				{Name: "todo-store", KVStoreSpec: KVStoreSpec{Tables: []KVTable{{Name: "todos", Owner: "todo-api"}}}},
 				{Name: "todo-cache", Deletion: DeletionDelete, KVStoreSpec: KVStoreSpec{Tables: []KVTable{{Name: "entries", Owner: "todo-api"}}}},
 			},
-			Buckets: []AppBucket{
+			Buckets: []BucketEntry{
 				{Name: "todo-files", BucketSpec: BucketSpec{Prefixes: []BucketPrefix{{Name: "attachments", Owner: "todo-api"}}}},
 				{Name: "todo-tmp", Deletion: DeletionDelete},
 			},
@@ -60,7 +60,7 @@ func todoApp(mutate func(*App)) *App {
 // fullApp extends todoApp with a part in every other section and a ref entry in four sections.
 func fullApp() *App {
 	return todoApp(func(a *App) {
-		a.Spec.KV = append(a.Spec.KV, AppKVStore{Ref: "shared-store"})
+		a.Spec.KV = append(a.Spec.KV, KVStoreEntry{Ref: "shared-store"})
 		a.Spec.Functions = append(a.Spec.Functions, AppFunction{Ref: "mailer"})
 		a.Spec.EventSources = []AppEventSource{{Name: "todo-tick", EventSourceSpec: EventSourceSpec{
 			Timer: &TimerSource{Events: []TimerEvent{{Name: "hourly", Interval: Duration(time.Hour)}}},
@@ -71,14 +71,13 @@ func fullApp() *App {
 		}}}
 		a.Spec.Sites = []AppSite{
 			{Name: "todo-web", SiteSpec: SiteSpec{
-				Image:   "oci-layout://todo-web:1",
-				Bucket:  SiteBucket{Name: "todo-web"},
-				Prefix:  "web",
-				Ingress: SiteIngress{Ingress: Ingress{Path: "/todo"}},
+				Image:    "oci-layout://todo-web:1",
+				Bindings: SiteBindings{Blob: []BlobRef{{Bucket: "todo-web", Prefix: "web"}}},
+				Ingress:  SiteIngress{Ingress: Ingress{Path: "/todo"}},
 			}},
 			{Ref: "docs"},
 		}
-		a.Spec.Catalogs = []AppCatalog{
+		a.Spec.Catalogs = []CatalogEntry{
 			{Name: "todo-lake", CatalogServiceSpec: CatalogServiceSpec{
 				Catalog:  CatalogRef{Bucket: "todo-files", Prefix: "lake"},
 				Bindings: CatalogServiceBindings{Blob: []FunctionBlob{{Alias: "lake", Bucket: "todo-files", Prefix: "lake"}}},
@@ -103,7 +102,7 @@ func TestAppValidateAcceptsFixtures(t *testing.T) {
 			a.Spec.Sites = []AppSite{{Ref: "todo-api"}}
 		}),
 		"one name in two sections": todoApp(func(a *App) {
-			a.Spec.Buckets = append(a.Spec.Buckets, AppBucket{Name: "todo-api"})
+			a.Spec.Buckets = append(a.Spec.Buckets, BucketEntry{Name: "todo-api"})
 		}),
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -129,12 +128,12 @@ func TestAppValidateRefusals(t *testing.T) {
 		{"ref entry with an image", func(a *App) {
 			a.Spec.Functions[0] = AppFunction{Ref: "todo-api", FunctionSpec: FunctionSpec{Image: "oci-layout://x:1"}}
 		}, "spec.functions[0] sets ref and another field"},
-		{"ref entry with a name", func(a *App) { a.Spec.Buckets = append(a.Spec.Buckets, AppBucket{Name: "a", Ref: "b"}) },
+		{"ref entry with a name", func(a *App) { a.Spec.Buckets = append(a.Spec.Buckets, BucketEntry{Name: "a", Ref: "b"}) },
 			"spec.buckets[2] sets ref and another field"},
-		{"ref entry with deletion", func(a *App) { a.Spec.KV[1] = AppKVStore{Ref: "todo-cache", Deletion: DeletionRetain} },
+		{"ref entry with deletion", func(a *App) { a.Spec.KV[1] = KVStoreEntry{Ref: "todo-cache", Deletion: DeletionRetain} },
 			"spec.kv[1] sets ref and another field"},
 		{"ref entry with an empty list", func(a *App) {
-			a.Spec.KV[1] = AppKVStore{Ref: "todo-cache", KVStoreSpec: KVStoreSpec{Tables: []KVTable{}}}
+			a.Spec.KV[1] = KVStoreEntry{Ref: "todo-cache", KVStoreSpec: KVStoreSpec{Tables: []KVTable{}}}
 		},
 			"spec.kv[1] sets ref and another field"},
 		{"ref not a DNS label", func(a *App) { a.Spec.Routes[0] = AppRoute{Ref: "Todo"} }, "spec.routes[0].ref"},
@@ -142,7 +141,7 @@ func TestAppValidateRefusals(t *testing.T) {
 		{"unknown deletion", func(a *App) { a.Spec.KV[0].Deletion = "keep" }, "spec.kv[0].deletion"},
 		{"name repeated within a section", func(a *App) { a.Spec.Functions = append(a.Spec.Functions, a.Spec.Functions[0]) },
 			`spec.functions[1] repeats the name "todo-api" of spec.functions[0]`},
-		{"ref repeating a declared name", func(a *App) { a.Spec.Buckets = append(a.Spec.Buckets, AppBucket{Ref: "todo-files"}) },
+		{"ref repeating a declared name", func(a *App) { a.Spec.Buckets = append(a.Spec.Buckets, BucketEntry{Ref: "todo-files"}) },
 			`spec.buckets[2] repeats the name "todo-files" of spec.buckets[0]`},
 		{"table name not a DNS label", func(a *App) { a.Spec.KV[0].Tables[0].Name = "Bad_Name" },
 			`spec.kv[0].tables[0].name "Bad_Name"`},
@@ -150,21 +149,21 @@ func TestAppValidateRefusals(t *testing.T) {
 		{"part refusal without a path", func(a *App) {
 			a.Spec.Workflows[0].Steps = append(a.Spec.Workflows[0].Steps, a.Spec.Workflows[0].Steps[0])
 		}, `spec.workflows[0]: duplicate step name "due"`},
-		{"site bucket is a buckets entry", func(a *App) {
+		{"site part with a buckets entry", func(a *App) {
 			a.Spec.Sites = []AppSite{{Name: "todo-web", SiteSpec: SiteSpec{
-				Image: "oci-layout://todo-web:1", Bucket: SiteBucket{Name: "todo-files"}, Prefix: "web",
+				Image: "oci-layout://todo-web:1", Buckets: []BucketEntry{{Name: "todo-files"}}, Bindings: SiteBindings{Blob: []BlobRef{{Bucket: "todo-files", Prefix: "web"}}},
 			}}}
-		}, "spec.sites[0].bucket.name and spec.buckets[0].name both write Bucket/todo-files"},
+		}, "spec.sites[0].buckets: an App's part declares nothing at its root"},
 		{"site named like a route entry", func(a *App) {
 			a.Spec.Sites = []AppSite{{Name: "todo-api", SiteSpec: SiteSpec{
-				Image: "oci-layout://todo-web:1", Bucket: SiteBucket{Name: "todo-web"}, Prefix: "web",
+				Image: "oci-layout://todo-web:1", Bindings: SiteBindings{Blob: []BlobRef{{Bucket: "todo-web", Prefix: "web"}}},
 			}}}
 		}, "spec.sites[0].name and spec.routes[0].name both write Route/todo-api"},
 		{"function named like a step function", func(a *App) {
 			a.Spec.Functions = append(a.Spec.Functions, AppFunction{Name: "todo-plan-due"})
 		}, "spec.workflows[0].steps[0].name and spec.functions[1].name both write Function/todo-plan-due"},
-		{"workflow store is a kv entry", func(a *App) { a.Spec.Workflows[0].KV = []WorkflowKVStore{{Name: "todo-store"}} },
-			"spec.workflows[0].kv[0].name and spec.kv[0].name both write KVStore/todo-store"},
+		{"workflow part with a kv entry", func(a *App) { a.Spec.Workflows[0].KVStores = []KVStoreEntry{{Name: "todo-store"}} },
+			"spec.workflows[0].kv: an App's part declares nothing at its root"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			err := todoApp(tc.mutate).Validate()
@@ -187,20 +186,11 @@ func TestIssue924_TwoPartsMakeOneObject(t *testing.T) {
 	step := func(name ObjectName) WorkflowStep {
 		return WorkflowStep{Name: name, Function: &FunctionStep{Image: "oci-layout://todo-due:1"}}
 	}
-	store := func(owner ObjectName) []WorkflowKVStore {
-		return []WorkflowKVStore{{Name: "plan-cache", Tables: []KVTable{{Name: "rows", Owner: owner}}}}
-	}
 	for _, tc := range []struct {
 		name   string
 		mutate func(*App)
 		want   string
 	}{
-		{"two workflows declare one kv store", func(a *App) {
-			a.Spec.Workflows[0].KV = store("due")
-			a.Spec.Workflows = append(a.Spec.Workflows, AppWorkflow{Name: "todo-report", WorkflowSpec: WorkflowSpec{
-				Steps: []WorkflowStep{step("sum")}, KV: store("sum"),
-			}})
-		}, "spec.workflows[0].kv[0].name and spec.workflows[1].kv[0].name both write KVStore/plan-cache"},
 		{"two workflows make one step function", func(a *App) {
 			a.Spec.Workflows = append(a.Spec.Workflows,
 				AppWorkflow{Name: "a", WorkflowSpec: WorkflowSpec{Steps: []WorkflowStep{step("b-c")}}},
@@ -217,7 +207,7 @@ func TestIssue924_TwoPartsMakeOneObject(t *testing.T) {
 	t.Run("two sites name one bucket", func(t *testing.T) {
 		site := func(name ObjectName, prefix string) AppSite {
 			return AppSite{Name: name, SiteSpec: SiteSpec{
-				Image: "oci-layout://todo-web:1", Bucket: SiteBucket{Name: "todo-web"}, Prefix: prefix,
+				Image: "oci-layout://todo-web:1", Bindings: SiteBindings{Blob: []BlobRef{{Bucket: "todo-web", Prefix: prefix}}},
 			}}
 		}
 		a := todoApp(func(a *App) { a.Spec.Sites = []AppSite{site("todo-web", "web"), site("todo-docs", "docs")} })
@@ -321,9 +311,9 @@ func TestAppEntrySchemas(t *testing.T) {
 		}
 	}
 	refs, err := json.Marshal(AppSpec{
-		KV: []AppKVStore{{Ref: "a"}}, Buckets: []AppBucket{{Ref: "a"}}, Functions: []AppFunction{{Ref: "a"}},
+		KV: []KVStoreEntry{{Ref: "a"}}, Buckets: []BucketEntry{{Ref: "a"}}, Functions: []AppFunction{{Ref: "a"}},
 		Workflows: []AppWorkflow{{Ref: "a"}}, EventSources: []AppEventSource{{Ref: "a"}}, Sensors: []AppSensor{{Ref: "a"}},
-		Routes: []AppRoute{{Ref: "a"}}, Sites: []AppSite{{Ref: "a"}}, Catalogs: []AppCatalog{{Ref: "a"}},
+		Routes: []AppRoute{{Ref: "a"}}, Sites: []AppSite{{Ref: "a"}}, Catalogs: []CatalogEntry{{Ref: "a"}},
 	})
 	if err != nil {
 		t.Fatalf("marshal ref entries: %v", err)

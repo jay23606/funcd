@@ -99,8 +99,8 @@ func upgradeOwner(st *v1.KVStore, wfs []v1.Object) *v1.Workflow {
 }
 
 func declares(wf *v1.Workflow, name v1.ObjectName) bool {
-	for i := range wf.Spec.KV {
-		if wf.Spec.KV[i].Name == name {
+	for i := range wf.Spec.KVStores {
+		if wf.Spec.KVStores[i].Name == name {
 			return true
 		}
 	}

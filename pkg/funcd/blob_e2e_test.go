@@ -3,7 +3,6 @@
 package funcd_test
 
 import (
-	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -16,19 +15,7 @@ import (
 	"sigs.k8s.io/yaml"
 
 	v1 "github.com/pyvvo/funcd/api/types/v1alpha1"
-	"github.com/pyvvo/funcd/pkg/sdk"
 )
-
-// applyBucket parses a Bucket manifest and applies it through the control-plane client (ADR-0080).
-func applyBucket(t *testing.T, c *sdk.Client, path string) {
-	t.Helper()
-	data, err := os.ReadFile(path)
-	require.NoError(t, err)
-	var b v1.Bucket
-	require.NoError(t, yaml.Unmarshal(data, &b), "parse %s", path)
-	_, err = c.Apply(context.Background(), &b)
-	require.NoError(t, err)
-}
 
 // scenario (e2e): blob-object-via-context-blob (ADR-0127) — the REAL native path: build the blob-object
 // handler, push it, apply it, then POST. The handler put/get/lists its BOUND, OWNED gold prefix through
@@ -64,9 +51,8 @@ func TestScenarioE2EBlobObjectViaContextBlob(t *testing.T) {
 	status, body := call()
 	require.NotEqual(t, http.StatusOK, status, "without a spec.blob binding, context.blob is denied (default-deny): %s", body)
 
-	// Apply the Bucket (gold owner=blob-object), then re-apply the function WITH spec.blob (the binding
-	// grants read, the ownership grants write). ADR-0121: owner existence is reconcile-time, any order.
-	applyBucket(t, c, filepath.Join(exDir, "bucket.yaml"))
+	// Re-apply the function WITH the binding: its root Bucket (gold, owner defaulted to blob-object, ADR-0248) already
+	// exists; the binding grants read, the ownership grants write.
 	applyFnObj(t, c, &fn)
 	waitReady(t, c, "blob-object")
 

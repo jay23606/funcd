@@ -20,12 +20,12 @@ type noPurge struct{}
 
 func (noPurge) Purge(context.Context, v1.NamespaceName, v1.ObjectName) error { return nil }
 
-func storedWorkflow(t *testing.T, s store.Store, name v1.ObjectName, steps []string, kv ...v1.WorkflowKVStore) *v1.Workflow {
+func storedWorkflow(t *testing.T, s store.Store, name v1.ObjectName, steps []string, kv ...v1.KVStoreEntry) *v1.Workflow {
 	t.Helper()
 	wf := &v1.Workflow{
 		TypeMeta:   v1.TypeMeta{APIVersion: v1.KindWorkflow.GVK().APIVersion(), Kind: v1.KindWorkflow},
 		ObjectMeta: v1.ObjectMeta{Name: name, Namespace: "default", ResourceGroup: "rg1"},
-		Spec:       v1.WorkflowSpec{KV: kv},
+		Spec:       v1.WorkflowSpec{KVStores: kv},
 	}
 	for _, st := range steps {
 		wf.Spec.Steps = append(wf.Spec.Steps, v1.WorkflowStep{Name: v1.ObjectName(st), Function: &v1.FunctionStep{Image: "oci:" + st}})
@@ -61,8 +61,8 @@ func reasonOf(err error) string {
 	return ""
 }
 
-func storeKV(name v1.ObjectName, deletion v1.DeletionPolicy) v1.WorkflowKVStore {
-	return v1.WorkflowKVStore{Name: name, Deletion: deletion, Tables: []v1.KVTable{{Name: "t"}}}
+func storeKV(name v1.ObjectName, deletion v1.DeletionPolicy) v1.KVStoreEntry {
+	return v1.KVStoreEntry{Name: name, Deletion: deletion, KVStoreSpec: v1.KVStoreSpec{Tables: []v1.KVTable{{Name: "t"}}}}
 }
 
 // scenario: recreated-workflow-takes-new-uid — step Functions naming a deleted gcwf's UID are re-stamped with the
@@ -188,7 +188,7 @@ func TestPruneFunctionsDeletesRemovedStepsOnly(t *testing.T) {
 	wf = getObj(t, s, v1.KindWorkflow, "gcwf").(*v1.Workflow)
 	wf.Spec.Steps = wf.Spec.Steps[:2]
 	wf.Spec.Steps[1].Function = &v1.FunctionStep{Ref: "elsewhere"}
-	wf.Spec.KV = wf.Spec.KV[:1]
+	wf.Spec.KVStores = wf.Spec.KVStores[:1]
 	require.NoError(t, m.Materialize(ctx, wf))
 
 	require.False(t, gone(t, s, v1.KindFunction, "gcwf-s1"), "a kept image step stays")

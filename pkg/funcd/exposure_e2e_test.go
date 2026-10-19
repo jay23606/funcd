@@ -32,7 +32,7 @@ func fleetSite(t *testing.T, layout, tag string, ing v1.Ingress) *v1.Site {
 	ref, _ := pushSiteBundle(t, layout, tag, map[string]string{"index.html": "<title>" + tag + "</title>"})
 	s := &v1.Site{TypeMeta: v1.TypeMeta{APIVersion: v1.KindSite.GVK().APIVersion(), Kind: v1.KindSite}}
 	s.Name, s.Namespace, s.ResourceGroup = "fleet", "staging", "rg1"
-	s.Spec = v1.SiteSpec{Image: ref, Bucket: v1.SiteBucket{Name: "reports"}, Prefix: "fleet", SPA: true, Ingress: v1.SiteIngress{Ingress: ing}}
+	s.Spec = v1.SiteSpec{Image: ref, Buckets: []v1.BucketEntry{{Name: "reports"}}, Bindings: v1.SiteBindings{Blob: []v1.BlobRef{{Bucket: "reports", Prefix: "fleet"}}}, SPA: true, Ingress: v1.SiteIngress{Ingress: ing}}
 	return s
 }
 
@@ -95,7 +95,8 @@ func TestScenario_exposure_explicit(t *testing.T) {
 	layout := filepath.Join(t.TempDir(), "layout")
 	off := fleetSite(t, layout, "off", v1.Ingress{})
 	on := fleetSite(t, layout, "on", v1.Ingress{Enabled: new(true)})
-	on.Name, on.Spec.Prefix = "fleet-on", "fleet-on"
+	on.Name, on.Spec.Bindings.Blob[0].Prefix = "fleet-on", "fleet-on"
+	on.Spec.Buckets[0].Name, on.Spec.Bindings.Blob[0].Bucket = "reports-on", "reports-on" // a Bucket of its own (ADR-0248)
 	api := pageRoute("staging", "todo-api", "", "/todo")
 	api.Spec.Rules[0].Backend = v1.RouteBackend{Function: "todo-api"}
 	h := startNSHost(t, []v1.Object{

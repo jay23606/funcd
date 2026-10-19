@@ -39,7 +39,6 @@ func TestScenarioRemoteStoreServes(t *testing.T) {
 	var fn v1.Function
 	require.NoError(t, yaml.Unmarshal(data, &fn), "parse function.yaml")
 	fn.Spec.Image, fn.Spec.ImageDigest = ref, digest
-	applyBucket(t, c, filepath.Join(exDir, "bucket.yaml"))
 	applyFnObj(t, c, &fn)
 	waitReady(t, c, "blob-object")
 

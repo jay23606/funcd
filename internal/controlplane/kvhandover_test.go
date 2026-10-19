@@ -76,8 +76,8 @@ func kvWorkflow(t *testing.T, st store.Store, store v1.ObjectName, policy v1.Del
 		TypeMeta:   v1.TypeMeta{APIVersion: v1.KindWorkflow.GVK().APIVersion(), Kind: v1.KindWorkflow},
 		ObjectMeta: v1.ObjectMeta{Name: "w", Namespace: kvNS, ResourceGroup: "rg1"},
 		Spec: v1.WorkflowSpec{
-			Steps: []v1.WorkflowStep{{Name: "s", Function: &v1.FunctionStep{Image: "oci:s"}}},
-			KV:    []v1.WorkflowKVStore{{Name: store, Deletion: policy, Tables: []v1.KVTable{{Name: "t"}}}},
+			Steps:    []v1.WorkflowStep{{Name: "s", Function: &v1.FunctionStep{Image: "oci:s"}}},
+			KVStores: []v1.KVStoreEntry{{Name: store, Deletion: policy, KVStoreSpec: v1.KVStoreSpec{Tables: []v1.KVTable{{Name: "t"}}}}},
 		},
 	})
 	require.NoError(t, err)

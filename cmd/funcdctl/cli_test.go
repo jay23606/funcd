@@ -375,9 +375,12 @@ metadata:
   resourceGroup: rg1
 spec:
   image: oci-layout:///mnt/registry:bi
-  bucket:
-    name: reports
-  prefix: bi
+  buckets:
+    - name: reports
+  bindings:
+    blob:
+      - bucket: reports
+        prefix: bi
   spa: true
   ingress:
     host: bi.example.com
@@ -390,7 +393,7 @@ spec:
 
 // scenario: cli-apply-site + prefix-is-immutable at the API (ADR-0139) — `funcdctl apply -f site.yaml`
 // creates a Site through the REAL control plane (stampTypeMeta + validate admission + the store), `get`
-// reads it back, a re-apply of the same manifest is accepted, and a re-apply that changes spec.prefix is
+// reads it back, a re-apply of the same manifest is accepted, and a re-apply that changes spec.bindings.blob[0].prefix is
 // refused by the site-prefix-immutable Update admission.
 func TestScenarioCLIApplySite(t *testing.T) {
 	t.Parallel()
@@ -422,10 +425,10 @@ func TestScenarioCLIApplySite(t *testing.T) {
 	out.Reset()
 	require.NoError(t, execCLI(&out, c, "apply", "-f", writeManifest(t, siteManifest)), "re-applying the same manifest is fine")
 
-	moved := strings.Replace(siteManifest, "  prefix: bi\n", "  prefix: reports\n", 1)
+	moved := strings.Replace(siteManifest, "        prefix: bi\n", "        prefix: reports\n", 1)
 	err = execCLI(&bytes.Buffer{}, c, "apply", "-f", writeManifest(t, moved))
-	require.Equal(t, fault.Invalid, fault.KindOf(err), "a changed spec.prefix is refused at the API")
-	require.Contains(t, err.Error(), "spec.prefix is immutable")
+	require.Equal(t, fault.Invalid, fault.KindOf(err), "a changed served prefix is refused at the API")
+	require.Contains(t, err.Error(), "spec.bindings.blob[0].prefix is immutable")
 }
 
 // appManifest is the ADR-0199 Scenarios fixture App todo.

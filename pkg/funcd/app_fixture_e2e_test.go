@@ -34,11 +34,11 @@ func todoApp(t *testing.T, e *gcEnv) *v1.App {
 		TypeMeta:   v1.TypeMeta{APIVersion: v1.KindApp.GVK().APIVersion(), Kind: v1.KindApp},
 		ObjectMeta: v1.ObjectMeta{Name: "todo", Namespace: "default", ResourceGroup: "rg1"},
 		Spec: v1.AppSpec{
-			KV: []v1.AppKVStore{
+			KV: []v1.KVStoreEntry{
 				{Name: "todo-store", KVStoreSpec: v1.KVStoreSpec{Tables: []v1.KVTable{{Name: "todos", Owner: "todo-api"}}}},
 				{Name: "todo-cache", Deletion: v1.DeletionDelete, KVStoreSpec: v1.KVStoreSpec{Tables: []v1.KVTable{{Name: "entries"}}}},
 			},
-			Buckets: []v1.AppBucket{
+			Buckets: []v1.BucketEntry{
 				{Name: "todo-files", BucketSpec: v1.BucketSpec{Prefixes: []v1.BucketPrefix{{Name: "attachments", Owner: "todo-api"}}}},
 				{Name: "todo-tmp", Deletion: v1.DeletionDelete},
 			},

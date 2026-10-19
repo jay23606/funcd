@@ -34,7 +34,9 @@ func TestIsMarker(t *testing.T) {
 	require.True(t, ownedstore.IsMarker(ref(v1.KindWorkflow, false)))
 	require.True(t, ownedstore.IsMarker(ref(v1.KindApp, false)))
 	require.False(t, ownedstore.IsMarker(ref(v1.KindApp, true)), "a controller reference is not a marker")
-	require.False(t, ownedstore.IsMarker(ref(v1.KindSite, false)), "no Site stamps a marker yet")
+	require.True(t, ownedstore.IsMarker(ref(v1.KindFunction, false)))
+	require.True(t, ownedstore.IsMarker(ref(v1.KindSite, false)))
+	require.False(t, ownedstore.IsMarker(ref(v1.KindRoute, false)), "a Route stamps no marker")
 }
 
 func TestRefs(t *testing.T) {
@@ -80,6 +82,11 @@ func TestEnsure_CreatesUpdatesAndRefuses(t *testing.T) {
 	require.Equal(t, v1.ResourceGroupName("rg2"), got.ResourceGroup)
 	require.Len(t, got.OwnerReferences, 2, "the references follow the deletion policy")
 	require.Equal(t, v1.PhaseReady, got.Status.Phase, "the status is kept")
+	_, err = ownedstore.Ensure(ctx, st, wf, kvStore("cache", "rg2", "b"), v1.DeletionDelete)
+	require.NoError(t, err)
+	obj, err = st.Get(ctx, v1.KindKVStore.GVK(), "default", "cache")
+	require.NoError(t, err)
+	require.Equal(t, got.ResourceVersion, obj.GetObjectMeta().ResourceVersion, "an unchanged store is not written")
 
 	_, err = ownedstore.Ensure(ctx, st, workflow("pipeline", "u2"), kvStore("cache", "rg1", "c"), v1.DeletionRetain)
 	require.ErrorIs(t, err, ownedstore.ErrNotOwned, "another incarnation does not take the store over")

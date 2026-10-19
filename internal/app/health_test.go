@@ -99,7 +99,7 @@ func TestMapStepFunction(t *testing.T) {
 	}))
 	h.create(todoApp(func(b *v1.App) {
 		b.Name = "other"
-		b.Spec = v1.AppSpec{KV: []v1.AppKVStore{{Name: "other-store"}}}
+		b.Spec = v1.AppSpec{KV: []v1.KVStoreEntry{{Name: "other-store"}}}
 	}))
 	h.reconcile()
 	todo := []controller.Request{{GVK: v1.KindApp.GVK(), Namespace: ns, Name: "todo"}}

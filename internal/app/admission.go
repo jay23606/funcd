@@ -54,7 +54,8 @@ func (partsAdmission) Handles(gvk v1.GroupVersionKind, op admission.Operation) b
 // Admit refuses a Secret that a part names and spec.secrets does not declare (ADR-0213 Decision 7) and a ref to an
 // object this App controls, then runs each declared part through the part admissions as a create when it is absent,
 // else as an update over the stored object, with the App writer's identity, against a view that already holds the
-// App's other parts, so a quota counts them together. A refusal names the entry's path.
+// App's other parts, so a quota counts them together, and with the App's declarations, which its parts bind
+// (ADR-0248 Decision 2). A refusal names the entry's path.
 func (a partsAdmission) Admit(ctx context.Context, req admission.Request) (v1.Object, error) {
 	app, ok := req.Object.(*v1.App)
 	if !ok {
@@ -81,6 +82,8 @@ func (a partsAdmission) Admit(ctx context.Context, req admission.Request) (v1.Ob
 			return nil, fault.Invalidf(admitOp, "%s.ref: %s/%s is controlled by App/%s; only a store set to deletion: retain can become a ref", e.path, e.kind, e.name, app.Name)
 		}
 	}
+	s := &app.Spec
+	declared := admission.RootDeclared(s.KV, s.Buckets, s.SQL, s.Catalogs, s.ConfigMaps, s.Secrets)
 	parts := app.Parts()
 	for i, p := range parts {
 		k := keyOf(p)
@@ -88,7 +91,7 @@ func (a partsAdmission) Admit(ctx context.Context, req admission.Request) (v1.Ob
 		if err != nil {
 			return nil, err
 		}
-		r := admission.Request{Operation: admission.Create, GVK: p.GroupVersionKind(), Object: p, Identity: req.Identity}
+		r := admission.Request{Operation: admission.Create, GVK: p.GroupVersionKind(), Object: p, Identity: req.Identity, Declared: declared}
 		if old != nil {
 			r.Operation, r.Old = admission.Update, old
 		}

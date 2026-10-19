@@ -3,7 +3,7 @@
 #
 # It proves the whole add-on-provider loop on REAL containerd: a CatalogService is deployed as an
 # add-on PROVIDER (no backing Function), the provider-runtime (ADR-0087) brings up the curated `duckdb`
-# engine, the engine gets its F47/Cedar identity (ADR-0088 — its spec.blob are its blobBindings, it owns
+# engine, the engine gets its F47/Cedar identity (ADR-0088 — its spec.bindings.blob are its blobBindings, it owns
 # its catalog prefix) so its keypair reads/writes S3 through the F47 PEP, and it reaches Ready on its own
 # HTTP readiness probe.
 #
@@ -11,7 +11,7 @@
 # funcd-native shape. It runs on the STOCK `python314` runtime: its duckdb dep travels IN the artifact as
 # an ADR-0089 dependency BUNDLE (vendored duckdb wheel + duckdb-ext/). Testcase 3 deploys it, asserts it
 # reaches Ready (bundle materialized + `import duckdb` at module load), and then does a LIVE SQL round-trip:
-# it POSTs to the function's data-plane route, the handler reads the `spec.catalogs` consumer binding
+# it POSTs to the function's data-plane route, the handler reads the `spec.bindings.catalog` consumer binding
 # (ADR-0091 — FUNCD_CATALOG_LAKE_URL/_TOKEN injected from the `lake` catalog's status.endpoint + QUACK_TOKEN),
 # runs the SQL on `lake` over Quack, and returns the rows. Ready alone proves the binding injected the
 # endpoint/token and `lake` is reachable; the invoke proves the whole consumer loop end-to-end on containerd.
@@ -74,12 +74,12 @@ testcases:
           - result.systemout ShouldContainSubstring "QUACK_HTTP=200"  # the engine serves Quack
           - result.systemout ShouldContainSubstring "S3_403_COUNT=0"  # no S3 denial — ADR-0088 authorized it
 
-  - name: the catalog-reader CONSUMER Function reaches Ready and round-trips SQL over the spec.catalogs binding
+  - name: the catalog-reader CONSUMER Function reaches Ready and round-trips SQL over the spec.bindings.catalog binding
     steps:
       # (a) Ready. The consumer is a funcd Function whose artifact is an ADR-0089 dependency BUNDLE carrying
       # the vendored duckdb wheel + duckdb-ext/. It runs on the STOCK `python314` runtime (no python-duckdb
       # image). handler.py does `import duckdb` at module load, so Ready ⇒ the bundle materialized and the
-      # vendored native dep loaded on the stock runtime. Ready ALSO proves the ADR-0091 spec.catalogs binding
+      # vendored native dep loaded on the stock runtime. Ready ALSO proves the ADR-0091 spec.bindings.catalog binding
       # resolved: the reconcile requeues catalog-reader until `lake` is Ready and injects FUNCD_CATALOG_LAKE_URL
       # (= lake's status.endpoint) + FUNCD_CATALOG_LAKE_TOKEN (= its QUACK_TOKEN).
       - type: exec
@@ -263,7 +263,7 @@ testcases:
             [ -n "$pid" ] || exit 1
             echo "$pid" > /tmp/lake-engine-pid
             sed -e "s/^  name: catalog-reader/  name: lake/" /opt/lane/consumer.yaml > /tmp/lake-function.yaml
-            printf "    blob:\n      - alias: gold\n        bucket: lakehouse\n        prefix: gold\n" >> /tmp/lake-function.yaml
+            printf "    blob:\n      - alias: gold\n        bucket: lakehouse\n        prefix: gold\n  buckets:\n    - ref: lakehouse\n" >> /tmp/lake-function.yaml
             funcdctl apply -f /tmp/lake-function.yaml >/dev/null
             echo "ENGINE_PID=$(cat /tmp/lake-engine-pid)"'
         info: "applied Function lake → {{.result.systemout}}"

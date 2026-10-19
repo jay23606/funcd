@@ -205,7 +205,7 @@ func TestScenario_namespace_host_site(t *testing.T) {
 	ref, _ := pushSiteBundle(t, filepath.Join(t.TempDir(), "layout"), "fleet", map[string]string{"index.html": "<title>fleet</title>"})
 	s := &v1.Site{TypeMeta: v1.TypeMeta{APIVersion: v1.KindSite.GVK().APIVersion(), Kind: v1.KindSite}}
 	s.Name, s.Namespace, s.ResourceGroup = "fleet", "staging", "rg1"
-	s.Spec = v1.SiteSpec{Image: ref, Bucket: v1.SiteBucket{Name: "reports"}, Prefix: "fleet", Ingress: v1.SiteIngress{Ingress: v1.Ingress{Auth: &v1.RouteAuth{Mode: v1.AuthOpen}}}}
+	s.Spec = v1.SiteSpec{Image: ref, Buckets: []v1.BucketEntry{{Name: "reports"}}, Bindings: v1.SiteBindings{Blob: []v1.BlobRef{{Bucket: "reports", Prefix: "fleet"}}}, Ingress: v1.SiteIngress{Ingress: v1.Ingress{Auth: &v1.RouteAuth{Mode: v1.AuthOpen}}}}
 	h := startNSHost(t, []v1.Object{s})
 	require.Eventually(t, func() bool {
 		obj, err := h.st.Get(context.Background(), v1.KindSite.GVK(), "staging", "fleet")

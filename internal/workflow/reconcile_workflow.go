@@ -259,24 +259,41 @@ func (m *Materializer) materialize(ctx context.Context, wf *v1.Workflow) (bool, 
 			return false, err
 		}
 	}
-	// 2. Owned KVStores: every declared and every step-bound store passes the ownership check before any write.
-	stores := make([]*v1.KVStore, len(wf.Spec.KV))
-	for i := range wf.Spec.KV {
-		stores[i] = buildKVStore(wf, &wf.Spec.KV[i])
-		if err := m.checkKVStore(ctx, wf, stores[i]); err != nil {
-			return false, err
+	// 2. Owned KVStores: every store declared by name and every step-bound store passes the ownership check before
+	// any write.
+	var stores []*v1.KVStore
+	var deletions []v1.DeletionPolicy
+	for i := range wf.Spec.KVStores {
+		if e := &wf.Spec.KVStores[i]; e.Name != "" {
+			st := buildKVStore(wf, e)
+			if err := m.checkKVStore(ctx, wf, st); err != nil {
+				return false, err
+			}
+			stores, deletions = append(stores, st), append(deletions, e.Deletion)
 		}
 	}
-	if err := checkStepStores(wf); err != nil {
+	if err := m.checkStepStores(ctx, wf, &kvs); err != nil {
 		return false, err
 	}
 	checked := make(map[v1.ObjectName]v1.UID, len(stores))
 	for i, st := range stores {
-		uid, err := m.ensureKVStore(ctx, wf, st, wf.Spec.KV[i].Deletion)
+		uid, err := m.ensureKVStore(ctx, wf, st, deletions[i])
 		if err != nil {
 			return false, err
 		}
 		checked[st.Name] = uid
+	}
+	// 2b. Owned Buckets (ADR-0248): a prefix owner names a step, the store is written as the KVStores are.
+	for i := range wf.Spec.Buckets {
+		e := &wf.Spec.Buckets[i]
+		if e.Name == "" {
+			continue
+		}
+		if _, err := ownedstore.Ensure(ctx, m.store, wf, buildBucket(wf, e), e.Deletion); errors.Is(err, ownedstore.ErrNotOwned) {
+			return false, &notOwnedError{reason: "StoreNotOwned", msg: fmt.Sprintf("bucket %q was not made by this incarnation of workflow %q", e.Name, wf.Name)}
+		} else if err != nil {
+			return false, err
+		}
 	}
 	// 3. Write every owned step's kv bindings, an empty one included (the binding IS the capability).
 	for i := range wf.Spec.Steps {
@@ -315,7 +332,7 @@ func (v *kvView) get(ctx context.Context, name v1.ObjectName) (*v1.KVStore, erro
 	return st, nil
 }
 
-// ownedBindings returns the entries of kv whose store carries wf's marker.
+// ownedBindings returns the entries of kv whose store exists and wf may bind.
 func (v *kvView) ownedBindings(ctx context.Context, wf *v1.Workflow, kv []v1.FunctionKV) ([]v1.FunctionKV, error) {
 	var out []v1.FunctionKV
 	for _, b := range kv {
@@ -323,11 +340,31 @@ func (v *kvView) ownedBindings(ctx context.Context, wf *v1.Workflow, kv []v1.Fun
 		if err != nil {
 			return nil, err
 		}
-		if st != nil && ownedstore.Marked(st.OwnerReferences, wf) {
+		if st != nil && (ownedstore.Marked(st.OwnerReferences, wf) || shared(wf, st)) {
 			out = append(out, b)
 		}
 	}
 	return out, nil
+}
+
+// shared reports whether wf binds st without owning it (ADR-0248 Decision 3): a store wf declares by ref, or a
+// store the App controlling wf declares, which carries that App's marker. Neither is ever written.
+func shared(wf *v1.Workflow, st *v1.KVStore) bool {
+	for _, e := range wf.Spec.KVStores {
+		if e.Ref == st.Name {
+			return true
+		}
+	}
+	app, ok := v1.ControllerOf(wf.OwnerReferences)
+	if !ok || app.Kind != v1.KindApp {
+		return false
+	}
+	for _, r := range st.OwnerReferences {
+		if ownedstore.IsMarker(r) && r.Kind == v1.KindApp && r.Name == app.Name && r.UID == app.UID {
+			return true
+		}
+	}
+	return false
 }
 
 // stripBindings removes, from every Function this incarnation controls (removed steps included), each kv
@@ -357,11 +394,31 @@ func (m *Materializer) stripBindings(ctx context.Context, wf *v1.Workflow, kvs *
 	return nil
 }
 
-// checkStepStores refuses a step binding to a store wf does not declare in spec.kv. Admission refuses the same spec
-// at apply (ADR-0229); this guard covers a Workflow that reached the store without it.
-func checkStepStores(wf *v1.Workflow) error {
-	if _, _, name, ok := wf.Spec.UndeclaredStepStore(); ok {
-		return kvNotOwned(name, wf)
+// checkStepStores refuses a step binding to a store wf neither declares by name nor may bind (shared). Admission
+// refuses an undeclared one at apply (ADR-0248 Decision 2); this guard covers a Workflow that reached the store
+// without it, and an App store that is not yet there or not this App's.
+func (m *Materializer) checkStepStores(ctx context.Context, wf *v1.Workflow, kvs *kvView) error {
+	named := make(map[v1.ObjectName]bool, len(wf.Spec.KVStores))
+	for _, e := range wf.Spec.KVStores {
+		named[e.Name] = e.Name != ""
+	}
+	for i := range wf.Spec.Steps {
+		f := wf.Spec.Steps[i].Function
+		if f == nil || f.Image == "" {
+			continue
+		}
+		for _, b := range f.Bindings.KV {
+			if named[b.Store] {
+				continue
+			}
+			st, err := kvs.get(ctx, b.Store)
+			if err != nil {
+				return err
+			}
+			if st == nil || !shared(wf, st) {
+				return kvNotOwned(b.Store, wf)
+			}
+		}
 	}
 	return nil
 }
@@ -479,7 +536,7 @@ func effectivePooling(wf *v1.Workflow, st *v1.WorkflowStep) v1.WorkflowPooling {
 	return wf.Spec.Pooling
 }
 
-func buildKVStore(wf *v1.Workflow, kv *v1.WorkflowKVStore) *v1.KVStore {
+func buildKVStore(wf *v1.Workflow, kv *v1.KVStoreEntry) *v1.KVStore {
 	tables := make([]v1.KVTable, len(kv.Tables))
 	for i, t := range kv.Tables {
 		tables[i] = t
@@ -495,6 +552,24 @@ func buildKVStore(wf *v1.Workflow, kv *v1.WorkflowKVStore) *v1.KVStore {
 		TypeMeta:   v1.TypeMeta{APIVersion: v1.KindKVStore.GVK().APIVersion(), Kind: v1.KindKVStore},
 		ObjectMeta: meta,
 		Spec:       v1.KVStoreSpec{Tables: tables},
+	}
+}
+
+// buildBucket is the Bucket a Workflow declares by name, its prefix owners mapped from step names to the
+// materialized Function names (ADR-0248 Decision 1).
+func buildBucket(wf *v1.Workflow, e *v1.BucketEntry) *v1.Bucket {
+	spec := e.BucketSpec
+	spec.Prefixes = make([]v1.BucketPrefix, len(e.Prefixes))
+	for i, p := range e.Prefixes {
+		spec.Prefixes[i] = p
+		if p.Owner != "" {
+			spec.Prefixes[i].Owner = materializedName(wf, p.Owner)
+		}
+	}
+	return &v1.Bucket{
+		TypeMeta:   v1.TypeMeta{APIVersion: v1.KindBucket.GVK().APIVersion(), Kind: v1.KindBucket},
+		ObjectMeta: v1.ObjectMeta{Name: e.Name, Namespace: wf.Namespace, ResourceGroup: wf.ResourceGroup},
+		Spec:       spec,
 	}
 }
 
@@ -560,8 +635,8 @@ func (m *Materializer) ensureKVStore(ctx context.Context, wf *v1.Workflow, st *v
 	return uid, err
 }
 
-// patchFunctionKV writes a step's kv bindings after re-reading each bound store: one whose UID is not the
-// one checked, or that lost the marker, is refused with no write.
+// patchFunctionKV writes a step's kv bindings after re-reading each bound store: one wf owns whose UID is not the
+// one checked, or that lost the marker, or a shared one that is gone or no longer shared, is refused with no write.
 func (m *Materializer) patchFunctionKV(ctx context.Context, wf *v1.Workflow, st *v1.WorkflowStep, checked map[v1.ObjectName]v1.UID) error {
 	for _, b := range st.Function.Bindings.KV {
 		obj, err := m.store.Get(ctx, v1.KindKVStore.GVK(), wf.Namespace, b.Store)
@@ -571,7 +646,12 @@ func (m *Materializer) patchFunctionKV(ctx context.Context, wf *v1.Workflow, st 
 		if err != nil {
 			return fault.Wrapf(err, fault.KindOf(err), materializeOp, "re-read kvstore %q", b.Store)
 		}
-		if meta := obj.GetObjectMeta(); meta.UID != checked[b.Store] || !ownedstore.Marked(meta.OwnerReferences, wf) {
+		ks := obj.(*v1.KVStore)
+		if uid, owned := checked[b.Store]; owned {
+			if ks.UID != uid || !ownedstore.Marked(ks.OwnerReferences, wf) {
+				return kvNotOwned(b.Store, wf)
+			}
+		} else if !shared(wf, ks) {
 			return kvNotOwned(b.Store, wf)
 		}
 	}

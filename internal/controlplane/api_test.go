@@ -277,9 +277,9 @@ func TestScenarioSiteSchemaRequiresIngress(t *testing.T) {
 	const path = "/apis/funcd.io/v1alpha1/namespaces/my-ns/sites"
 
 	spec := map[string]interface{}{
-		"image":  "oci-layout:///layout:bi",
-		"bucket": map[string]interface{}{"name": "reports"},
-		"prefix": "bi",
+		"image":    "oci-layout:///layout:bi",
+		"buckets":  []interface{}{map[string]interface{}{"name": "reports"}},
+		"bindings": map[string]interface{}{"blob": []interface{}{map[string]interface{}{"bucket": "reports", "prefix": "bi"}}},
 	}
 	body := map[string]interface{}{
 		"apiVersion": "funcd.io/v1alpha1",

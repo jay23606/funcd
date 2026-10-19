@@ -116,8 +116,8 @@ func TestWorkflowOnFailureAndOwnedStore(t *testing.T) {
 	}
 	// owned-store owner must be a step.
 	w2 := newWorkflow(WorkflowSpec{
-		Steps: []WorkflowStep{imgStep("a")},
-		KV:    []WorkflowKVStore{{Name: "s", Tables: []KVTable{{Name: "t", Owner: "ghost"}}}},
+		Steps:    []WorkflowStep{imgStep("a")},
+		KVStores: []KVStoreEntry{{Name: "s", KVStoreSpec: KVStoreSpec{Tables: []KVTable{{Name: "t", Owner: "ghost"}}}}},
 	})
 	if err := w2.Validate(); err == nil {
 		t.Fatal("owned-store owner naming a non-step must be rejected")
@@ -134,7 +134,7 @@ func TestIssue927_ValidateRefusesWhatItsObjectsRefuse(t *testing.T) {
 				Image:    "oci:img",
 				Bindings: StepBindings{KV: []FunctionKV{{Alias: "c", Store: "cache", Table: "a"}, {Alias: "d", Store: "cache", Table: "b"}}, Blob: []FunctionBlob{{Alias: "in", Bucket: "data", Prefix: "in"}, {Alias: "out", Bucket: "data", Prefix: "out"}}, Catalog: []FunctionCatalog{{Alias: "q", Catalog: "lake"}, {Alias: "r", Catalog: "lake"}}, Config: []ObjectName{"settings"}},
 			}}},
-			KV: []WorkflowKVStore{{Name: "cache", Tables: []KVTable{{Name: "a", Owner: "s"}, {Name: "b", Owner: "s"}}}},
+			KVStores: []KVStoreEntry{{Name: "cache", KVStoreSpec: KVStoreSpec{Tables: []KVTable{{Name: "a", Owner: "s"}, {Name: "b", Owner: "s"}}}}},
 		}
 	}
 	if err := newWorkflow(spec()).Validate(); err != nil {
@@ -144,7 +144,7 @@ func TestIssue927_ValidateRefusesWhatItsObjectsRefuse(t *testing.T) {
 		edit func(*WorkflowSpec)
 		want string
 	}{
-		"table named twice":       {func(s *WorkflowSpec) { s.KV[0].Tables[1].Name = "a" }, `spec.kv[0].tables[1].name "a" is duplicated`},
+		"table named twice":       {func(s *WorkflowSpec) { s.KVStores[0].Tables[1].Name = "a" }, `spec.kv[0].tables[1].name "a" is duplicated`},
 		"kv alias repeated":       {func(s *WorkflowSpec) { s.Steps[0].Function.Bindings.KV[1].Alias = "c" }, `spec.steps[0].function.bindings.kv alias "c" is duplicated`},
 		"blob alias repeated":     {func(s *WorkflowSpec) { s.Steps[0].Function.Bindings.Blob[1].Alias = "in" }, `spec.steps[0].function.bindings.blob alias "in" is duplicated`},
 		"catalog alias repeated":  {func(s *WorkflowSpec) { s.Steps[0].Function.Bindings.Catalog[1].Alias = "q" }, `spec.steps[0].function.bindings.catalog alias "q" is duplicated`},
@@ -240,57 +240,15 @@ func TestWorkflowPoolingMode(t *testing.T) {
 // rewrite one store on every pass.
 func TestIssue927_ValidateRefusesRepeatedKVName(t *testing.T) {
 	w := newWorkflow(WorkflowSpec{
-		Steps: []WorkflowStep{imgStep("s")},
-		KV: []WorkflowKVStore{
-			{Name: "cache", Tables: []KVTable{{Name: "a", Owner: "s"}}},
-			{Name: "cache", Tables: []KVTable{{Name: "b", Owner: "s"}}},
-		},
+		Steps:    []WorkflowStep{imgStep("s")},
+		KVStores: []KVStoreEntry{{Name: "cache", KVStoreSpec: KVStoreSpec{Tables: []KVTable{{Name: "a", Owner: "s"}}}}, {Name: "cache", KVStoreSpec: KVStoreSpec{Tables: []KVTable{{Name: "b", Owner: "s"}}}}},
 	})
 	err := w.Validate()
-	if want := `spec.kv[1].name repeats the name "cache" of spec.kv[0]`; err == nil || fault.KindOf(err) != fault.Invalid || !strings.Contains(err.Error(), want) {
+	if want := `spec.kv[1] repeats the name "cache" of spec.kv[0]`; err == nil || fault.KindOf(err) != fault.Invalid || !strings.Contains(err.Error(), want) {
 		t.Fatalf("Validate() = %v, want an Invalid error containing %q", err, want)
 	}
-	w.Spec.KV[1].Name = "store"
+	w.Spec.KVStores[1].Name = "store"
 	if err := w.Validate(); err != nil {
 		t.Fatalf("two stores of distinct names rejected: %v", err)
-	}
-}
-
-// ADR-0229: UndeclaredStepStore reports the first image step binding a store that spec.kv does not declare; a step
-// without function.image is not checked, and Validate leaves the rule to admission.
-func TestWorkflowSpecUndeclaredStepStore(t *testing.T) {
-	bound := func(st WorkflowStep, stores ...ObjectName) WorkflowStep {
-		for _, s := range stores {
-			st.Function.Bindings.KV = append(st.Function.Bindings.KV, FunctionKV{Alias: string(s), Store: s, Table: "t"})
-		}
-		return st
-	}
-	ref := func(name ObjectName) WorkflowStep {
-		return WorkflowStep{Name: name, Function: &FunctionStep{Ref: "shared-fn"}}
-	}
-	own := []WorkflowKVStore{{Name: "own", Tables: []KVTable{{Name: "t"}}}}
-	cases := map[string]struct {
-		spec          WorkflowSpec
-		step, binding int
-		store         ObjectName
-		ok            bool
-	}{
-		"declared":   {spec: WorkflowSpec{KV: own, Steps: []WorkflowStep{bound(imgStep("a"), "own")}}},
-		"undeclared": {spec: WorkflowSpec{KV: own, Steps: []WorkflowStep{bound(imgStep("a"), "own", "shared")}}, binding: 1, store: "shared", ok: true},
-		"no image":   {spec: WorkflowSpec{Steps: []WorkflowStep{bound(ref("a"), "shared"), {Name: "b", Builtin: &BuiltinStep{Wait: "1s"}}}}},
-		"first hit wins": {spec: WorkflowSpec{KV: own, Steps: []WorkflowStep{
-			bound(imgStep("a"), "own"), bound(ref("b"), "x"), bound(imgStep("c"), "own", "first", "y"), bound(imgStep("d"), "second"),
-		}}, step: 2, binding: 1, store: "first", ok: true},
-	}
-	for name, c := range cases {
-		t.Run(name, func(t *testing.T) {
-			step, binding, store, ok := c.spec.UndeclaredStepStore()
-			if step != c.step || binding != c.binding || store != c.store || ok != c.ok {
-				t.Fatalf("UndeclaredStepStore() = (%d, %d, %q, %t), want (%d, %d, %q, %t)", step, binding, store, ok, c.step, c.binding, c.store, c.ok)
-			}
-			if err := newWorkflow(c.spec).Validate(); err != nil {
-				t.Fatalf("Validate() = %v, want nil: the rule is admission-only", err)
-			}
-		})
 	}
 }

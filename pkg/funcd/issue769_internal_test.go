@@ -21,6 +21,7 @@ import (
 	"github.com/pyvvo/funcd/internal/provider"
 	"github.com/pyvvo/funcd/internal/runtime"
 	"github.com/pyvvo/funcd/internal/store"
+	"github.com/pyvvo/funcd/internal/testkit/bound"
 	"github.com/pyvvo/funcd/internal/testkit/poll"
 	"github.com/pyvvo/funcd/pkg/sdk"
 )
@@ -84,8 +85,12 @@ func newAsleepRig(t *testing.T, referentPoll time.Duration, opts ...Option) *asl
 	return r
 }
 
+// apply applies obj; a Function declares by ref at its root what it binds, which the rig creates (ADR-0248).
 func (r *asleepRig) apply(t *testing.T, obj v1.Object) {
 	t.Helper()
+	if fn, ok := obj.(*v1.Function); ok {
+		bound.Declare(fn)
+	}
 	_, err := r.c.Apply(context.Background(), obj)
 	require.NoError(t, err, "apply %s", obj.GroupVersionKind().Kind)
 }
@@ -118,15 +123,6 @@ func (r *asleepRig) applyCatalog(t *testing.T) {
 		obj, err := r.p.cfg.store.Get(context.Background(), v1.KindCatalogService.GVK(), "default", "lake")
 		return err == nil && obj.(*v1.CatalogService).Status.Phase == v1.PhaseReady
 	}, 5*time.Second, 10*time.Millisecond, "catalog lake is Ready")
-}
-
-func (r *asleepRig) secret(t *testing.T) {
-	t.Helper()
-	obj, _ := v1.NewObject(v1.KindSecret)
-	s := obj.(*v1.Secret)
-	s.Name, s.Namespace, s.ResourceGroup = "creds", "default", "rg1"
-	s.Spec.Data = map[string][]byte{"API_KEY": []byte("k")}
-	r.apply(t, s)
 }
 
 // reader applies Function reader, minReplicas 0 with a 400 ms idle timeout unless bind changes it.
@@ -234,7 +230,18 @@ func bindLake(fn *v1.Function) {
 	fn.Spec.Bindings.Catalog = []v1.FunctionCatalog{{Alias: "lake", Catalog: "lake"}}
 }
 
-func bindCreds(fn *v1.Function) { fn.Spec.Bindings.Secret = []v1.ObjectName{"creds"} }
+// settings applies ConfigMap settings, which bindSettings binds by ref: deleting it fails a bound Function closed
+// (ConfigResolveFailed), the Failed gate (a declared Secret that goes away waits Pending instead, ADR-0248 Decision 6).
+func (r *asleepRig) settings(t *testing.T) {
+	t.Helper()
+	obj, _ := v1.NewObject(v1.KindConfigMap)
+	cm := obj.(*v1.ConfigMap)
+	cm.Name, cm.Namespace, cm.ResourceGroup = "settings", "default", "rg1"
+	cm.Spec.Data = map[string]string{"APP_MODE": "prod"}
+	r.apply(t, cm)
+}
+
+func bindSettings(fn *v1.Function) { fn.Spec.Bindings.Config = []v1.ObjectName{"settings"} }
 
 // scenario: catalog-gate-while-asleep-goes-pending (ADR-0192, issue #769) — a woken scale-to-zero catalog consumer whose
 // catalog goes away is reclaimed, then held Pending/CatalogNotReady with Asleep=True and no worker, and stays quiet.
@@ -259,18 +266,20 @@ func TestIssue769_CatalogGateWhileAsleepGoesPending(t *testing.T) {
 }
 
 // scenario: secret-gate-while-asleep-goes-failed (ADR-0192, issue #769) — a woken scale-to-zero Function whose bound
-// Secret is deleted is reclaimed, then held Failed/SecretResolveFailed with Asleep=True and no worker, stays quiet, and
-// a call to it is refused at once.
-func TestIssue769_SecretGateWhileAsleepGoesFailed(t *testing.T) {
+// referent is deleted is reclaimed, then held Failed with Asleep=True and no worker, stays quiet, and a call to it is
+// refused at once. Since ADR-0248 a Function declares every Secret it binds, and a declared Secret that goes away
+// waits Pending (SecretNotFound, Decision 6), so no Secret path goes Failed any more: the Failed gate here is a
+// ConfigMap bound by ref (ConfigResolveFailed).
+func TestIssue769_ConfigGateWhileAsleepGoesFailed(t *testing.T) {
 	t.Parallel()
 	r := newAsleepRig(t, 0)
-	r.secret(t)
-	r.reader(t, bindCreds)
+	r.settings(t)
+	r.reader(t, bindSettings)
 	r.wakeReady(t)
 	writes := r.phases(t)
 	start := time.Now()
-	r.del(t, v1.KindSecret, "creds")
-	r.requireAsleep(t, start, writes, v1.PhaseFailed, "SecretResolveFailed")
+	r.del(t, v1.KindConfigMap, "settings")
+	r.requireAsleep(t, start, writes, v1.PhaseFailed, "ConfigResolveFailed")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -278,7 +287,7 @@ func TestIssue769_SecretGateWhileAsleepGoesFailed(t *testing.T) {
 	err := r.wake(ctx)
 	require.Error(t, err)
 	require.Equal(t, fault.Unavailable, fault.KindOf(err))
-	require.Contains(t, err.Error(), "is Failed (SecretResolveFailed)")
+	require.Contains(t, err.Error(), "is Failed (ConfigResolveFailed)")
 	require.Less(t, time.Since(called), time.Second, "the call is refused at once")
 	require.Zero(t, r.running(), "the refused call boots no worker")
 }
@@ -321,15 +330,15 @@ func TestScenarioDependencyReturnsStaysAsleep(t *testing.T) {
 	t.Run("failed", func(t *testing.T) {
 		t.Parallel()
 		r := newAsleepRig(t, 100*time.Millisecond)
-		r.secret(t)
-		r.reader(t, replicas1(bindCreds))
+		r.settings(t)
+		r.reader(t, replicas1(bindSettings))
 		r.wakeReady(t)
 		writes := r.phases(t)
 		start := time.Now()
-		r.del(t, v1.KindSecret, "creds")
-		r.requireAsleep(t, start, writes, v1.PhaseFailed, "SecretResolveFailed")
+		r.del(t, v1.KindConfigMap, "settings")
+		r.requireAsleep(t, start, writes, v1.PhaseFailed, "ConfigResolveFailed")
 		created := r.creates()
-		r.secret(t)
+		r.settings(t)
 		stayAsleep(t, r, created)
 	})
 	t.Run("woken-while-asleep", func(t *testing.T) {

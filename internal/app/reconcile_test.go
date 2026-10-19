@@ -27,11 +27,11 @@ func todoApp(mutate func(*v1.App)) *v1.App {
 		TypeMeta:   v1.TypeMeta{APIVersion: v1.KindApp.GVK().APIVersion(), Kind: v1.KindApp},
 		ObjectMeta: v1.ObjectMeta{Name: "todo", Namespace: ns, ResourceGroup: "todo-rg"},
 		Spec: v1.AppSpec{
-			KV: []v1.AppKVStore{
+			KV: []v1.KVStoreEntry{
 				{Name: "todo-store", KVStoreSpec: v1.KVStoreSpec{Tables: []v1.KVTable{{Name: "todos", Owner: "todo-api"}}}},
 				{Name: "todo-cache", Deletion: v1.DeletionDelete, KVStoreSpec: v1.KVStoreSpec{Tables: []v1.KVTable{{Name: "entries", Owner: "todo-api"}}}},
 			},
-			Buckets: []v1.AppBucket{
+			Buckets: []v1.BucketEntry{
 				{Name: "todo-files", BucketSpec: v1.BucketSpec{Prefixes: []v1.BucketPrefix{{Name: "attachments", Owner: "todo-api"}}}},
 				{Name: "todo-tmp", Deletion: v1.DeletionDelete},
 			},
@@ -491,19 +491,19 @@ func TestAppChildInvalid(t *testing.T) {
 // part that is not ready gives Progressing: ChildNotReady is for Failed and Degraded only (ADR-0200 Decision 6).
 func TestAppReadiness(t *testing.T) {
 	fn := func(a *v1.App) { a.Spec.Functions = []v1.AppFunction{{Name: "todo-api", FunctionSpec: apiSpec()}} }
-	kv := func(a *v1.App) { a.Spec.KV = []v1.AppKVStore{{Name: "todo-store"}} }
+	kv := func(a *v1.App) { a.Spec.KV = []v1.KVStoreEntry{{Name: "todo-store"}} }
 	timer := func(a *v1.App) {
 		a.Spec.EventSources = []v1.AppEventSource{{Name: "todo-tick", EventSourceSpec: v1.EventSourceSpec{
 			Timer: &v1.TimerSource{Events: []v1.TimerEvent{{Name: "hourly", Interval: v1.Duration(time.Hour)}}},
 		}}}
 	}
 	catalog := func(a *v1.App) {
-		a.Spec.Catalogs = []v1.AppCatalog{{Name: "todo-lake", CatalogServiceSpec: v1.CatalogServiceSpec{
+		a.Spec.Catalogs = []v1.CatalogEntry{{Name: "todo-lake", CatalogServiceSpec: v1.CatalogServiceSpec{
 			Catalog:  v1.CatalogRef{Bucket: "lake", Prefix: "lake"},
 			Bindings: v1.CatalogServiceBindings{Blob: []v1.FunctionBlob{{Alias: "lake", Bucket: "lake", Prefix: "lake"}}},
 		}}}
 	}
-	bucket := func(a *v1.App) { a.Spec.Buckets = []v1.AppBucket{{Name: "todo-files"}} }
+	bucket := func(a *v1.App) { a.Spec.Buckets = []v1.BucketEntry{{Name: "todo-files"}} }
 	const yes, no, unk = v1.ConditionTrue, v1.ConditionFalse, v1.ConditionUnknown
 	for _, tc := range []struct {
 		name      string
@@ -757,7 +757,7 @@ func TestMapPart(t *testing.T) {
 	a := h.create(todoApp(func(a *v1.App) { a.Spec.Functions = append(a.Spec.Functions, v1.AppFunction{Ref: "mailer"}) })).(*v1.App)
 	h.create(todoApp(func(b *v1.App) {
 		b.Name = "other"
-		b.Spec = v1.AppSpec{KV: []v1.AppKVStore{{Ref: "todo-store"}}}
+		b.Spec = v1.AppSpec{KV: []v1.KVStoreEntry{{Ref: "todo-store"}}}
 	}))
 	h.reconcile()
 	req := func(name v1.ObjectName) controller.Request {

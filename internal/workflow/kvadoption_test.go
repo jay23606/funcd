@@ -104,13 +104,13 @@ func TestScenarioOwnStoreFollowsPolicyAndTables(t *testing.T) {
 		require.Len(t, st.Spec.Tables, tables)
 	}
 	check(0, 1)
-	wf.Spec.KV[0].Deletion = v1.DeletionDelete
+	wf.Spec.KVStores[0].Deletion = v1.DeletionDelete
 	require.NoError(t, m.Materialize(ctx, wf))
 	check(1, 1)
-	wf.Spec.KV[0].Tables = append(wf.Spec.KV[0].Tables, v1.KVTable{Name: "t2"})
+	wf.Spec.KVStores[0].Tables = append(wf.Spec.KVStores[0].Tables, v1.KVTable{Name: "t2"})
 	require.NoError(t, m.Materialize(ctx, wf))
 	check(1, 2)
-	wf.Spec.KV[0].Deletion = v1.DeletionRetain
+	wf.Spec.KVStores[0].Deletion = v1.DeletionRetain
 	require.NoError(t, m.Materialize(ctx, wf))
 	check(0, 2)
 }
@@ -174,7 +174,7 @@ func TestScenarioUpgradeMigrationMarksOwnStore(t *testing.T) {
 		require.Equal(t, prev.Spec, got.Spec)
 
 		require.NoError(t, m.Materialize(ctx, w), "w is Ready")
-		w.Spec.KV[0].Deletion = flipped
+		w.Spec.KVStores[0].Deletion = flipped
 		require.NoError(t, m.Materialize(ctx, w))
 		got = getObj(t, s, v1.KindKVStore, "w-kv").(*v1.KVStore)
 		require.Equal(t, prev.UID, got.UID)
@@ -193,7 +193,7 @@ func TestScenarioPostUpgradeApiStoreRefused(t *testing.T) {
 	require.NoError(t, MarkKVStoresOnce(ctx, s, nil))
 
 	user := apiKVStore(t, s, "shared")
-	w.Spec.KV = []v1.WorkflowKVStore{storeKV("shared", v1.DeletionRetain)}
+	w.Spec.KVStores = []v1.KVStoreEntry{storeKV("shared", v1.DeletionRetain)}
 	require.Equal(t, "KVStoreNotOwned", reasonOf(m.Materialize(ctx, w)))
 	require.Equal(t, user.ResourceVersion, rvOf(t, s, v1.KindKVStore, "shared"), "no write")
 }
@@ -232,7 +232,7 @@ func TestScenarioStaleStepBindingRemoved(t *testing.T) {
 	require.Empty(t, boundStores(t, s, "w-s2"))
 	require.Equal(t, user.ResourceVersion, rvOf(t, s, v1.KindKVStore, "shared"))
 
-	w.Spec.KV = append(w.Spec.KV, storeKV("shared", v1.DeletionRetain))
+	w.Spec.KVStores = append(w.Spec.KVStores, storeKV("shared", v1.DeletionRetain))
 	require.Equal(t, "KVStoreNotOwned", reasonOf(m.Materialize(ctx, w)))
 	require.Equal(t, []v1.ObjectName{"w-kv"}, boundStores(t, s, "w-s"), "its own binding stays")
 	require.Empty(t, boundStores(t, s, "w-s2"))
@@ -274,7 +274,7 @@ func TestScenarioStripSurvivesRemovedStepAndEarlyFailure(t *testing.T) {
 		setFunctionKV(t, s, "w-s", "shared")
 
 		w.Spec.Steps = w.Spec.Steps[:1]
-		w.Spec.KV = []v1.WorkflowKVStore{storeKV("shared", v1.DeletionRetain)}
+		w.Spec.KVStores = []v1.KVStoreEntry{storeKV("shared", v1.DeletionRetain)}
 		ready, err := reconcileReady(t, s, fakeRuntimes{rt: "nodejs22"}, w)
 		require.NoError(t, err)
 		require.Equal(t, v1.ConditionFalse, ready.Status, "w is NotReady")
@@ -323,7 +323,7 @@ func TestMigrationStripsBindingsToStoresLeftUnmarked(t *testing.T) {
 	kv.Tables[0].Owner = "s"
 	w := storedWorkflow(t, s, "w", []string{"s"}, kv)
 	steps := *w
-	steps.Spec.KV = nil
+	steps.Spec.KVStores = nil
 	require.NoError(t, NewMaterializer(s, fakeRuntimes{rt: "nodejs22"}, nil, 0).Materialize(ctx, &steps))
 	previousStore(t, s, "w-kv", w, false)
 	apiKVStore(t, s, "shared")
@@ -420,7 +420,7 @@ func TestKVMarkerCoversAnApp(t *testing.T) {
 	require.True(t, ownedstore.IsMarker(ref(v1.KindWorkflow, false)))
 	require.True(t, ownedstore.IsMarker(ref(v1.KindApp, false)))
 	require.False(t, ownedstore.IsMarker(ref(v1.KindApp, true)))
-	require.False(t, ownedstore.IsMarker(ref(v1.KindSite, false)))
+	require.False(t, ownedstore.IsMarker(ref(v1.KindRoute, false)))
 
 	s := newStore(t)
 	ctx := context.Background()

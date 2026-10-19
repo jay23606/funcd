@@ -138,7 +138,7 @@ func TestScenarioAppStoreDeletionFlipRefusesAControlledRef(t *testing.T) {
 	stored := h.app()
 	toRef := func(i int) func(*v1.App) {
 		return func(a *v1.App) {
-			a.Spec.KV[i] = v1.AppKVStore{Ref: a.Spec.KV[i].Name}
+			a.Spec.KV[i] = v1.KVStoreEntry{Ref: a.Spec.KV[i].Name}
 		}
 	}
 	err := admit(t, h.st, partAdmissions(0), todoApp(toRef(1)), stored)

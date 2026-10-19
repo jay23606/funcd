@@ -34,8 +34,8 @@ func (sitePrefixImmutable) Admit(_ context.Context, req Request) (v1.Object, err
 	if !ok {
 		return req.Object, nil
 	}
-	if newS.Spec.Prefix != oldS.Spec.Prefix {
-		return nil, fault.Invalidf(op, "spec.prefix is immutable (%q → %q): the prefix holds the site's bundles and is never removed from the bucket; a new prefix is a new Site", oldS.Spec.Prefix, newS.Spec.Prefix)
+	if newS.Spec.ServedPrefix() != oldS.Spec.ServedPrefix() {
+		return nil, fault.Invalidf(op, "spec.bindings.blob[0].prefix is immutable (%q → %q): the prefix holds the site's bundles and is never removed from the bucket; a new prefix is a new Site", oldS.Spec.ServedPrefix(), newS.Spec.ServedPrefix())
 	}
 	return req.Object, nil
 }

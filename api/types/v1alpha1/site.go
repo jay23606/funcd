@@ -26,11 +26,13 @@ type SiteSpec struct {
 	// Image is the site bundle OCI ref (oci-layout://<dir>[:<tag>] or a registry ref; a tag or a
 	// digest). A tag is resolved to a digest once per spec generation — the author never types one.
 	Image string `json:"image"`
-	// Bucket declares the Bucket the bundle materializes into: adopted if present, created if absent.
-	Bucket SiteBucket `json:"bucket"`
-	// Prefix is the Bucket sub-domain rooting the site; objects land under <Prefix>/<digest-slug>/.
-	// Immutable after creation (the site-prefix-immutable admission).
-	Prefix string `json:"prefix" pattern:"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$"`
+	// Buckets declares exactly the one Bucket its bindings.blob names (ADR-0248 Decision 7): by name the Site creates
+	// it with its served prefix and no owner, and refuses an existing one without its marker; by ref the served prefix
+	// must exist without an owner, and the Site never edits the Bucket. deletion: delete is refused (ADR-0139).
+	Buckets []BucketEntry `json:"buckets,omitempty"`
+	// Bindings names the served prefix: one alias-free {bucket, prefix}; objects land under <prefix>/<digest-slug>/.
+	// The prefix is immutable after creation (the site-prefix-immutable admission).
+	Bindings SiteBindings `json:"bindings,omitzero"`
 	// Index is the document served for "/" / a directory / (when SPA) a miss. Default "index.html".
 	Index string `json:"index,omitempty"`
 	// SPA serves Index (200) for an un-matched path under the bundle rule so a client-side router owns
@@ -68,16 +70,36 @@ func RenderSiteRuntimeConfig(members map[string]string) []byte {
 	return b
 }
 
-// SiteBucket declares the target Bucket (the WorkflowKVStore pattern): adopted if present, created if
-// absent; Deletion governs teardown only.
-type SiteBucket struct {
-	// Name is the Bucket name; a DNS-1123 label.
-	Name ObjectName `json:"name"`
-	// Deletion is "retain" (default — the Bucket outlives the Site). "delete" is rejected in V1.
-	Deletion DeletionPolicy `json:"deletion,omitempty"`
-	// Prefixes are additional sub-domains materialized on the Bucket verbatim (owners included). The
-	// Site's own Prefix is added implicitly with NO owner and must not be repeated here.
-	Prefixes []BucketPrefix `json:"prefixes,omitempty"`
+// ServedBucket is the Bucket the Site serves from: its bindings.blob entry's bucket, "" when it has none.
+func (s SiteSpec) ServedBucket() ObjectName {
+	if len(s.Bindings.Blob) == 0 {
+		return ""
+	}
+	return s.Bindings.Blob[0].Bucket
+}
+
+// ServedPrefix is the prefix the Site serves from: its bindings.blob entry's prefix, "" when it has none.
+func (s SiteSpec) ServedPrefix() string {
+	if len(s.Bindings.Blob) == 0 {
+		return ""
+	}
+	return s.Bindings.Blob[0].Prefix
+}
+
+// BucketEntry is the Site's one buckets entry, nil when it has none.
+func (s SiteSpec) BucketEntry() *BucketEntry {
+	if len(s.Buckets) == 0 {
+		return nil
+	}
+	return &s.Buckets[0]
+}
+
+// Declared is the name an entry declares or refers to: Name, else Ref.
+func (e BucketEntry) Declared() ObjectName {
+	if e.Name != "" {
+		return e.Name
+	}
+	return e.Ref
 }
 
 // SiteIngress declares the Site-owned Route (ADR-0241): the shared Ingress, its path being where the bundle is served
@@ -137,7 +159,7 @@ func (s *Site) RuntimeConfigPath() string {
 // two Sites on one prefix never share it (ADR-0239). "_runtime" is never a digest slug, so Served never takes it for
 // the bundle.
 func (s *Site) RuntimeConfigPrefix() string {
-	return s.Spec.Prefix + "/_runtime/" + string(s.Name) + "/"
+	return s.Spec.ServedPrefix() + "/_runtime/" + string(s.Name) + "/"
 }
 
 // digestSlugRE recognizes the digest-scoped key segment the bundle rule is programmed with.
@@ -171,7 +193,7 @@ func (s *Site) Served(rt *Route) (bundle, config *StaticBackend, ok bool) {
 			config = &c
 			continue
 		}
-		rest, found := strings.CutPrefix(st.Prefix, s.Spec.Prefix+"/")
+		rest, found := strings.CutPrefix(st.Prefix, s.Spec.ServedPrefix()+"/")
 		if found && bundle == nil && SlugDigest(strings.TrimSuffix(rest, "/")) != "" {
 			b := *st
 			bundle = &b
@@ -180,17 +202,65 @@ func (s *Site) Served(rt *Route) (bundle, config *StaticBackend, ok bool) {
 	return bundle, config, bundle != nil
 }
 
+// validateBucket checks ADR-0248 Decision 7: exactly one buckets entry, by name or by ref, never deletion: delete (the
+// shared DeletionPolicy enum still advertises it; ADR-0139 has no drain-then-delete teardown); exactly one bindings.blob
+// entry naming that bucket, with a DNS-1123 prefix; extra prefixes only on a named Bucket, unique, and never the
+// served one, which is added implicitly with no owner.
+func (s SiteSpec) validateBucket(op string) error {
+	if len(s.Buckets) != 1 {
+		return fault.Invalidf(op, "spec.buckets must declare exactly the one Bucket spec.bindings.blob names, not %d", len(s.Buckets))
+	}
+	e := s.Buckets[0]
+	if (e.Name == "") == (e.Ref == "") {
+		return fault.Invalidf(op, "spec.buckets[0] must set exactly one of name or ref")
+	}
+	if err := e.Declared().Validate(); err != nil {
+		return fault.Invalidf(op, "spec.buckets[0]: %v", err)
+	}
+	switch e.Deletion {
+	case "", DeletionRetain:
+	case DeletionDelete:
+		return fault.Invalidf(op, "spec.buckets[0].deletion %q is not implemented in V1 (needs a drain-then-delete teardown, ADR-0139); use %q", DeletionDelete, DeletionRetain)
+	default:
+		return fault.Invalidf(op, "spec.buckets[0].deletion %q must be %q", e.Deletion, DeletionRetain)
+	}
+	if len(s.Bindings.Blob) != 1 {
+		return fault.Invalidf(op, "spec.bindings.blob must name exactly one {bucket, prefix}, not %d", len(s.Bindings.Blob))
+	}
+	b := s.Bindings.Blob[0]
+	if b.Bucket != e.Declared() {
+		return fault.Invalidf(op, "spec.bindings.blob[0].bucket %q is not the Bucket spec.buckets declares (%q)", b.Bucket, e.Declared())
+	}
+	if !dnsLabel.MatchString(b.Prefix) {
+		return fault.Invalidf(op, "spec.bindings.blob[0].prefix %q is not a valid DNS-1123 label", b.Prefix)
+	}
+	if e.Ref != "" && len(e.Prefixes) > 0 {
+		return fault.Invalidf(op, "spec.buckets[0] refers to Bucket %q, which the Site never edits, so it lists no prefixes", e.Ref)
+	}
+	seen := make(map[string]bool, len(e.Prefixes))
+	for _, p := range e.Prefixes {
+		if !dnsLabel.MatchString(p.Name) {
+			return fault.Invalidf(op, "spec.buckets[0].prefixes name %q is not a valid DNS-1123 label", p.Name)
+		}
+		if p.Name == b.Prefix {
+			return fault.Invalidf(op, "spec.buckets[0].prefixes must not repeat the served prefix %q (it is added implicitly with no owner)", p.Name)
+		}
+		if seen[p.Name] {
+			return fault.Invalidf(op, "spec.buckets[0].prefixes name %q is duplicated", p.Name)
+		}
+		seen[p.Name] = true
+	}
+	return nil
+}
+
 // GroupVersionKind returns the constant GVK for Site.
 func (s *Site) GroupVersionKind() GroupVersionKind { return KindSite.GVK() }
 
 // GetStatus returns the shared Status pointer, implementing StatusObject.
 func (s *Site) GetStatus() *Status { return &s.Status.Status }
 
-// Validate performs envelope + semantic validation: Image non-empty; Prefix a DNS-1123 label;
-// Index a relative path (no leading '/'); Deletion ∈ {"", retain} — `delete` is Invalid in V1 with an
-// explicit "not implemented" message (the DeletionPolicy enum is shared with Workflow, so the generated
-// OpenAPI still advertises `delete`); spec.bucket.prefixes must not repeat spec.prefix and must have
-// unique names; ingress.path, when set, begins "/" and is "/" or carries no trailing slash, and the
+// Validate performs envelope + semantic validation: Image non-empty; the one buckets entry and the one
+// bindings.blob entry naming it (validateBucket); Index a relative path (no leading '/'); ingress.path, when set, begins "/" and is "/" or carries no trailing slash, and the
 // RESOLVED path (EffectivePath, derived or explicit) does not collide with an ingress rule — validating
 // only the written field would let a derived collision reach the reconciler as an unmapped store error
 // (ADR-0140); every ingress rule Path begins "/" and is neither "/" nor a duplicate;
@@ -205,34 +275,11 @@ func (s *Site) Validate() error {
 	if s.Spec.Image == "" {
 		return fault.Invalidf(op, "spec.image is required")
 	}
-	if !dnsLabel.MatchString(s.Spec.Prefix) {
-		return fault.Invalidf(op, "spec.prefix %q is not a valid DNS-1123 label", s.Spec.Prefix)
-	}
 	if strings.HasPrefix(s.Spec.Index, "/") {
 		return fault.Invalidf(op, "spec.index %q must be a relative path (no leading '/')", s.Spec.Index)
 	}
-	if err := s.Spec.Bucket.Name.Validate(); err != nil {
-		return fault.Invalidf(op, "spec.bucket.name: %v", err)
-	}
-	switch s.Spec.Bucket.Deletion {
-	case "", DeletionRetain:
-	case DeletionDelete:
-		return fault.Invalidf(op, "spec.bucket.deletion %q is not implemented in V1 (needs a drain-then-delete teardown, ADR-0139); use %q", DeletionDelete, DeletionRetain)
-	default:
-		return fault.Invalidf(op, "spec.bucket.deletion %q must be %q", s.Spec.Bucket.Deletion, DeletionRetain)
-	}
-	seenPrefix := make(map[string]bool, len(s.Spec.Bucket.Prefixes))
-	for _, p := range s.Spec.Bucket.Prefixes {
-		if !dnsLabel.MatchString(p.Name) {
-			return fault.Invalidf(op, "spec.bucket.prefixes name %q is not a valid DNS-1123 label", p.Name)
-		}
-		if p.Name == s.Spec.Prefix {
-			return fault.Invalidf(op, "spec.bucket.prefixes must not repeat spec.prefix %q (it is added implicitly with no owner)", p.Name)
-		}
-		if seenPrefix[p.Name] {
-			return fault.Invalidf(op, "spec.bucket.prefixes name %q is duplicated", p.Name)
-		}
-		seenPrefix[p.Name] = true
+	if err := s.Spec.validateBucket(op); err != nil {
+		return err
 	}
 	ing := &s.Spec.Ingress
 	if err := ing.validate(op, "spec.ingress"); err != nil {

@@ -21,9 +21,16 @@ const op = "ownedstore.Ensure"
 var ErrNotOwned = errors.New("ownedstore: the store exists and is not this owner's")
 
 // IsMarker reports whether r has the shape of a store marker: a non-controller reference naming a kind that stamps one,
-// a Workflow (ADR-0178) or an App (ADR-0199 Decision 8).
+// a Workflow (ADR-0178), an App (ADR-0199 Decision 8), or a Function or Site (ADR-0248).
 func IsMarker(r v1.OwnerReference) bool {
-	return !r.Controller && (r.Kind == v1.KindWorkflow || r.Kind == v1.KindApp)
+	if r.Controller {
+		return false
+	}
+	switch r.Kind {
+	case v1.KindWorkflow, v1.KindApp, v1.KindFunction, v1.KindSite:
+		return true
+	}
+	return false
 }
 
 // Refs are the references a store owner stamps: its marker and, under deletion: delete, its cascading controller
@@ -57,7 +64,7 @@ func Marked(refs []v1.OwnerReference, owner v1.Object) bool {
 }
 
 // Ensure creates desired with owner's references, or updates the store of that name that carries owner's marker with
-// desired's spec, references and resource group, keeping its status, and returns the UID it wrote. A store without
+// desired's spec, references and resource group when one differs, keeping its status, and returns the store's UID. A store without
 // the marker is ErrNotOwned and is not written.
 func Ensure(ctx context.Context, st store.Store, owner, desired v1.Object, deletion v1.DeletionPolicy) (v1.UID, error) {
 	dm, gvk := desired.GetObjectMeta(), desired.GroupVersionKind()
@@ -76,6 +83,10 @@ func Ensure(ctx context.Context, st store.Store, owner, desired v1.Object, delet
 	cm := cur.GetObjectMeta()
 	if !Marked(cm.OwnerReferences, owner) {
 		return "", ErrNotOwned
+	}
+	if reflect.DeepEqual(spec(cur).Interface(), spec(desired).Interface()) &&
+		reflect.DeepEqual(cm.OwnerReferences, dm.OwnerReferences) && cm.ResourceGroup == dm.ResourceGroup {
+		return cm.UID, nil
 	}
 	spec(cur).Set(spec(desired))
 	cm.OwnerReferences, cm.ResourceGroup = dm.OwnerReferences, dm.ResourceGroup

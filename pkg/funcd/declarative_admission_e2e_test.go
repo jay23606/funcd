@@ -95,6 +95,7 @@ func TestScenarioDeclarativeAdmissionFunctionBindingAdmitted(t *testing.T) {
 			Runtime:  "nodejs22",
 			Handler:  "handle",
 			Image:    "oci-layout:///mnt/funcd-deps/registry:reader",
+			Buckets:  []v1.BucketEntry{{Ref: "missing"}},
 			Bindings: v1.FunctionBindings{Blob: []v1.FunctionBlob{{Alias: "lake", Bucket: "missing", Prefix: "bronze"}}},
 		},
 	}

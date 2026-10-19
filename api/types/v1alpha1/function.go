@@ -81,6 +81,16 @@ type FunctionSpec struct {
 	// Bindings are what the Function's code uses (ADR-0246): each binding is its grant, named like the ctx accessor
 	// that reaches it.
 	Bindings FunctionBindings `json:"bindings,omitzero"`
+	// KVStores, Buckets, SQLDatabases, CatalogServices and ConfigMaps are what the Function declares at its root
+	// (ADR-0248): by name it owns the resource, which carries its marker; by ref it binds an existing one. An owner
+	// left out of a store's tables, prefixes or database is the Function (the function-store-owner admission).
+	KVStores        []KVStoreEntry     `json:"kv,omitempty"`
+	Buckets         []BucketEntry      `json:"buckets,omitempty"`
+	SQLDatabases    []SQLDatabaseEntry `json:"sql,omitempty"`
+	CatalogServices []CatalogEntry     `json:"catalogs,omitempty"`
+	ConfigMaps      []ConfigMapEntry   `json:"configMaps,omitempty"`
+	// SecretDeclarations are the Secrets the Function's bindings name, with the keys it reads (ADR-0213 Decision 8).
+	SecretDeclarations []SecretDeclaration `json:"secrets,omitempty"`
 	// Ingress is the Function's edge exposure (ADR-0241): unset, it answers by name at /function/<name> while its
 	// namespace is implicit; a host or a path gives it a Route of its own.
 	Ingress *Ingress `json:"ingress,omitempty"`
@@ -228,6 +238,11 @@ func (f *Function) Validate() error {
 		return fault.Invalidf("Function.Validate", "spec.ingress.path %q must not be /function or under it", ing.Path)
 	}
 	if err := f.Spec.validateProtocol(); err != nil {
+		return err
+	}
+	s := &f.Spec
+	roots := rootSections{ConfigMaps: s.ConfigMaps, KV: s.KVStores, Buckets: s.Buckets, SQL: s.SQLDatabases, Catalogs: s.CatalogServices, Secrets: s.SecretDeclarations}
+	if err := roots.validate("Function.Validate", f.ObjectMeta); err != nil {
 		return err
 	}
 	return f.Spec.Validate()
