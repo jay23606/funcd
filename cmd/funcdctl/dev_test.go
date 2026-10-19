@@ -182,7 +182,8 @@ func TestScenarioCtxDev(t *testing.T) {
 	require.Contains(t, body, `"key":"s3cr3t-from-env"`, "ctx.secret reads the ${ENV} secret: %s", body)
 }
 
-// scenario: dev-secret-from-env — dev.secrets ${VAR} resolves from the process env into the handler env;
+// scenario: dev-secret-from-env — dev.secrets ${VAR} resolves from the process env, and the handler reads it through
+// ctx.secret, never its env (ADR-0249);
 // a missing var fails fast (before any platform boot). No secret value is ever read from the file.
 func TestScenarioDevSecretFromEnv(t *testing.T) {
 	requireNode(t)
@@ -192,13 +193,14 @@ func TestScenarioDevSecretFromEnv(t *testing.T) {
 			"bindings:\n  secrets:\n    - app-secret\n" +
 			permissiveContract +
 			"dev:\n  secrets:\n    app-secret:\n      API_KEY: ${MY_DEV_TOKEN}\n",
-		"handler.mjs": "export function handle() { return { key: process.env.API_KEY }; }\n",
+		"handler.mjs": "export async function handle(ctx) { return { key: await ctx.secret.get('API_KEY'), env: process.env.API_KEY ?? null }; }\n",
 	})
 	inst := runDev(t, dir)
 	waitReady(t, inst)
 
 	_, body := post(t, inst.gatewayURL+"/function/"+inst.functions[0], `{"data":{}}`)
-	require.Contains(t, body, `"key":"s3cr3t-from-env"`, "the ${ENV}-sourced secret reaches the handler env: %s", body)
+	require.Contains(t, body, `"key":"s3cr3t-from-env"`, "the ${ENV}-sourced secret reaches the handler through ctx.secret: %s", body)
+	require.Contains(t, body, `"env":null`, "and not through its env (ADR-0249): %s", body)
 }
 
 // scenario: dev-secret-from-env (fail-fast facet) — a ${VAR} referencing an UNSET env var fails at boot,
