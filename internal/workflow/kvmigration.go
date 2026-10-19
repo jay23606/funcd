@@ -99,8 +99,8 @@ func upgradeOwner(st *v1.KVStore, wfs []v1.Object) *v1.Workflow {
 }
 
 func declares(wf *v1.Workflow, name v1.ObjectName) bool {
-	for i := range wf.Spec.KV {
-		if wf.Spec.KV[i].Name == name {
+	for i := range wf.Spec.KVStores {
+		if wf.Spec.KVStores[i].Name == name {
 			return true
 		}
 	}
@@ -138,19 +138,19 @@ func stripUnmarkedBindings(ctx context.Context, s store.Store, markedStores map[
 	}
 	for _, obj := range fns.Items {
 		fn := obj.(*v1.Function)
-		if r, ok := v1.ControllerOf(fn.OwnerReferences); !ok || r.Kind != v1.KindWorkflow || len(fn.Spec.KV) == 0 {
+		if r, ok := v1.ControllerOf(fn.OwnerReferences); !ok || r.Kind != v1.KindWorkflow || len(fn.Spec.Bindings.KV) == 0 {
 			continue
 		}
 		var keep []v1.FunctionKV
-		for _, b := range fn.Spec.KV {
+		for _, b := range fn.Spec.Bindings.KV {
 			if markedStores[v1.ObjectRef{Namespace: fn.Namespace, Name: b.Store}] {
 				keep = append(keep, b)
 			}
 		}
-		if len(keep) == len(fn.Spec.KV) {
+		if len(keep) == len(fn.Spec.Bindings.KV) {
 			continue
 		}
-		fn.Spec.KV = keep
+		fn.Spec.Bindings.KV = keep
 		if _, err := s.Update(ctx, fn); err != nil {
 			return fault.Wrapf(err, fault.KindOf(err), migrationOp, "strip kv bindings of function %q", fn.Name)
 		}

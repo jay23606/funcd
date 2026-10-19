@@ -113,11 +113,16 @@ func sqlApp(version, api, migrate string) *v1.App {
 		ObjectMeta: v1.ObjectMeta{Name: "sqltodo", Namespace: "default", ResourceGroup: "rg1"},
 		Spec: v1.AppSpec{
 			Version: version,
-			SQL:     []v1.AppSQLDatabase{{Name: "todo-db", SQLDatabaseSpec: v1.SQLDatabaseSpec{Owner: "todo-api"}}},
+			SQL:     []v1.SQLDatabaseEntry{{Name: "todo-db", SQLDatabaseSpec: v1.SQLDatabaseSpec{Owner: "todo-api"}}},
 			Functions: []v1.AppFunction{
-				{Name: "todo-api", FunctionSpec: v1.FunctionSpec{Runtime: "nodejs22", Handler: "handle", Image: api, SQL: bind,
-					Scaling: v1.Scaling{MinReplicas: 1}}},
-				{Name: "todo-migrate", FunctionSpec: v1.FunctionSpec{Runtime: "nodejs22", Handler: "handle", Image: migrate, SQL: bind}},
+				{Name: "todo-api", FunctionSpec: v1.FunctionSpec{
+					Runtime:  "nodejs22",
+					Handler:  "handle",
+					Image:    api,
+					Scaling:  v1.Scaling{MinReplicas: 1},
+					Bindings: v1.FunctionBindings{SQL: bind},
+				}},
+				{Name: "todo-migrate", FunctionSpec: v1.FunctionSpec{Runtime: "nodejs22", Handler: "handle", Image: migrate, Bindings: v1.FunctionBindings{SQL: bind}}},
 			},
 			Hooks: &v1.AppHooks{PreApply: []v1.AppHook{{Function: "todo-migrate"}}},
 		},
@@ -277,12 +282,12 @@ func TestScenarioPruningKeepsBoundDatabase(t *testing.T) {
 	e.apply(t, migrateWritesDB())
 	api, migrate := e.sqlAPIImage(t), e.sqlMigrateImage(t, "migrate-1", createTodos())
 	a := sqlApp("1.0.0", api, migrate)
-	a.Spec.SQL = append(a.Spec.SQL, v1.AppSQLDatabase{Name: "scratch-db", Deletion: v1.DeletionDelete})
+	a.Spec.SQL = append(a.Spec.SQL, v1.SQLDatabaseEntry{Name: "scratch-db", Deletion: v1.DeletionDelete})
 	e.apply(t, a)
 	e.waitSQLApp(t, "sqltodo-1")
 	reporter := &v1.Function{TypeMeta: v1.TypeMeta{APIVersion: v1.KindFunction.GVK().APIVersion(), Kind: v1.KindFunction},
 		ObjectMeta: v1.ObjectMeta{Name: "reporter", Namespace: "default", ResourceGroup: "rg1"},
-		Spec:       v1.FunctionSpec{Runtime: "nodejs22", Handler: "handle", Image: api, SQL: []v1.FunctionSQL{{Alias: "app", Database: "scratch-db"}}}}
+		Spec:       v1.FunctionSpec{Runtime: "nodejs22", Handler: "handle", Image: api, SQLDatabases: []v1.SQLDatabaseEntry{{Ref: "scratch-db"}}, Bindings: v1.FunctionBindings{SQL: []v1.FunctionSQL{{Alias: "app", Database: "scratch-db"}}}}}
 	e.apply(t, reporter)
 	a = sqlApp("2.0.0", api, migrate)
 	e.apply(t, a)
@@ -303,7 +308,7 @@ func TestScenarioSQLRefEntry(t *testing.T) {
 	e.apply(t, shared)
 	e.apply(t, migrateWritesDB())
 	a := sqlApp("1.0.0", e.sqlAPIImage(t), e.sqlMigrateImage(t, "migrate-1", createTodos()))
-	a.Spec.SQL = append(a.Spec.SQL, v1.AppSQLDatabase{Ref: "shared-db"})
+	a.Spec.SQL = append(a.Spec.SQL, v1.SQLDatabaseEntry{Ref: "shared-db"})
 	e.apply(t, a)
 	e.waitSQLApp(t, "sqltodo-1")
 	marked, controlled := appRefs(e.object(t, v1.KindSQLDatabase, "shared-db"), e.app(t, "sqltodo"))

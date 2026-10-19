@@ -50,6 +50,13 @@ func startConfigPlatform(t *testing.T, namespaces []string, objs ...v1.Object) *
 	messaging, err := nats.Open(ctx, nats.Options{Storage: nats.MemoryStorage})
 	require.NoError(t, err)
 	st := store.New(memory.New())
+	// the Sites bind Bucket web by ref, over its ownerless prefix web (ADR-0248 Decision 7)
+	for _, ns := range namespaces {
+		b := &v1.Bucket{TypeMeta: v1.TypeMeta{APIVersion: v1.KindBucket.GVK().APIVersion(), Kind: v1.KindBucket}}
+		b.Name, b.Namespace, b.ResourceGroup = "web", v1.NamespaceName(ns), "rg1"
+		b.Spec.Prefixes = []v1.BucketPrefix{{Name: "web"}}
+		seed(t, st, b)
+	}
 	for _, o := range objs {
 		seed(t, st, o)
 	}
@@ -69,11 +76,12 @@ func startConfigPlatform(t *testing.T, namespaces []string, objs ...v1.Object) *
 	return &configEnv{st: st, blob: bucket, api: "http://" + p.Addr(), dp: "http://" + p.DataPlaneAddr()}
 }
 
-// configSite is a Site on Bucket web and prefix web with spa on; mutate sets its ingress and runtimeConfig.
+// configSite is a Site on Bucket web, bound by ref, and prefix web with spa on; mutate sets its ingress and
+// runtimeConfig.
 func configSite(name string, ns v1.NamespaceName, ref string, mutate func(*v1.Site)) *v1.Site {
 	s := &v1.Site{TypeMeta: v1.TypeMeta{APIVersion: v1.KindSite.GVK().APIVersion(), Kind: v1.KindSite}}
 	s.Name, s.Namespace, s.ResourceGroup = v1.ObjectName(name), ns, "rg1"
-	s.Spec = v1.SiteSpec{Image: ref, Bucket: v1.SiteBucket{Name: "web"}, Prefix: "web", SPA: true}
+	s.Spec = v1.SiteSpec{Image: ref, Buckets: []v1.BucketEntry{{Ref: "web"}}, Bindings: v1.SiteBindings{Blob: []v1.BlobRef{{Bucket: "web", Prefix: "web"}}}, SPA: true}
 	mutate(s)
 	return s
 }
@@ -177,12 +185,17 @@ valuesSchema:
       type: string
       default: "false"
 `,
-		"app/resources/site.yaml": `sites:
+		"app/resources/site.yaml": `buckets:
+  - name: fleet-web
+    prefixes:
+      - name: web
+sites:
   - name: fleet-web
     image: ${{ images.web }}
-    bucket:
-      name: fleet-web
-    prefix: web
+    bindings:
+      blob:
+        - bucket: fleet-web
+          prefix: web
     spa: true
     ingress:
       host: ${{ values.host }}
@@ -271,7 +284,7 @@ func TestScenarioE2ESiteConfigTemplate(t *testing.T) {
 	require.Equal(t, fleetIndex, body, "an app path is the SPA's")
 
 	audit := configSite("audit", "staging", ref, func(s *v1.Site) {
-		s.Spec.Bucket.Name = "audit"
+		s.Spec.Buckets, s.Spec.Bindings.Blob[0].Bucket = []v1.BucketEntry{{Name: "audit"}}, "audit"
 		s.Spec.Ingress = v1.SiteIngress{Ingress: v1.Ingress{Host: "audit.staging.test", Auth: &v1.RouteAuth{Mode: v1.AuthOpen}}}
 		s.Spec.RuntimeConfig = &v1.SiteRuntimeConfig{ConfigMap: flagsOff}
 	})
@@ -458,7 +471,7 @@ func TestScenarioE2ESiteConfigRefused(t *testing.T) {
 		require.NoError(t, resp.Body.Close())
 		return resp.StatusCode, string(msg)
 	}
-	const base = `"image":"registry.example/web:1","bucket":{"name":"web"},"prefix":"web","ingress":{"host":"web.test"`
+	const base = `"image":"registry.example/web:1","buckets":[{"name":"web"}],"bindings":{"blob":[{"bucket":"web","prefix":"web"}]},"ingress":{"host":"web.test"`
 	for _, tc := range []struct{ spec, want string }{
 		{`{` + base + `},"runtimeConfig":{"values":{"api-url":"x"}}}`, "api-url"},
 		{`{` + base + `,"rules":[{"path":"/config.json","prefix":"data"}]},"runtimeConfig":{}}`, `/config.json\"`},

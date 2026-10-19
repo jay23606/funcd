@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/pyvvo/funcd/internal/ownedstore"
 	"io/fs"
 	"log/slog"
 	"os"
@@ -135,19 +136,19 @@ func (r *Reconciler) Reconcile(ctx context.Context, req controller.Request) (con
 		target = d
 	}
 
-	prefixOwned, err := r.ensureBucket(ctx, s)
+	reason, msg, err := r.ensureBucket(ctx, s)
 	if err != nil {
 		return controller.Result{}, err
 	}
-	if prefixOwned {
-		return r.publish(ctx, s, outcome{digest: serving, cond: notReady("PrefixOwned", fmt.Sprintf("bucket %q already declares prefix %q with an owner; a site never takes over a written prefix", s.Spec.Bucket.Name, s.Spec.Prefix))})
+	if reason != "" {
+		return r.publish(ctx, s, outcome{digest: serving, cond: notReady(reason, msg)})
 	}
-	view, ok := r.buckets(s.Namespace, string(s.Spec.Bucket.Name))
+	view, ok := r.buckets(s.Namespace, string(s.Spec.ServedBucket()))
 	if !ok {
-		return controller.Result{}, fault.Internalf(op, "bucket %s/%s has no substrate view", s.Namespace, s.Spec.Bucket.Name)
+		return controller.Result{}, fault.Internalf(op, "bucket %s/%s has no substrate view", s.Namespace, s.Spec.ServedBucket())
 	}
 
-	sp, index := servingPrefix(s.Spec.Prefix, target), indexOf(s, r.defaultIndex)
+	sp, index := servingPrefix(s.Spec.ServedPrefix(), target), indexOf(s, r.defaultIndex)
 	complete, err := view.Exists(ctx, sp+index)
 	if err != nil {
 		return controller.Result{}, fault.Wrapf(err, fault.KindOf(err), op, "probe index %q", sp+index)
@@ -234,7 +235,7 @@ func (r *Reconciler) MapBucket(ctx context.Context, obj v1.Object) []controller.
 	}
 	var reqs []controller.Request
 	for _, o := range list.Items {
-		if s, ok := o.(*v1.Site); ok && s.Spec.Bucket.Name == meta.Name {
+		if s, ok := o.(*v1.Site); ok && s.Spec.ServedBucket() == meta.Name {
 			reqs = append(reqs, controller.Request{GVK: v1.KindSite.GVK(), Namespace: s.Namespace, Name: s.Name})
 		}
 	}
@@ -253,30 +254,70 @@ func (r *Reconciler) routeOf(ctx context.Context, s *v1.Site) (*v1.Route, error)
 	return obj.(*v1.Route), nil
 }
 
-// ensureBucket adopts the Bucket if present (adding only what is absent) or creates it; prefixOwned
-// reports the one adoption collision (Decision §5).
-func (r *Reconciler) ensureBucket(ctx context.Context, s *v1.Site) (prefixOwned bool, err error) {
-	obj, gerr := r.store.Get(ctx, v1.KindBucket.GVK(), s.Namespace, s.Spec.Bucket.Name)
-	if fault.KindOf(gerr) == fault.NotFound {
+// ensureBucket applies ADR-0248 Decision 7 and returns the NotReady reason that stops the Site, "" when it may serve.
+// By name it creates the Bucket with the Site's marker, or adds only what is absent to the one that carries it; an
+// existing Bucket without the marker is StoreNotOwned. By ref the Bucket and its served prefix must exist and are never
+// edited. Either way a served prefix with an owner is PrefixOwned: a site never takes over a written prefix.
+func (r *Reconciler) ensureBucket(ctx context.Context, s *v1.Site) (reason, message string, err error) {
+	name := s.Spec.ServedBucket()
+	ref := s.Spec.BucketEntry() != nil && s.Spec.BucketEntry().Ref != ""
+	obj, gerr := r.store.Get(ctx, v1.KindBucket.GVK(), s.Namespace, name)
+	switch {
+	case fault.KindOf(gerr) == fault.NotFound && ref:
+		return reasonBucketNotFound, fmt.Sprintf("bucket %q, which spec.buckets refers to, does not exist", name), nil
+	case fault.KindOf(gerr) == fault.NotFound:
 		if _, cerr := r.store.Create(ctx, newBucket(s)); cerr != nil {
-			return false, fault.Wrapf(cerr, fault.KindOf(cerr), op, "create bucket %q", s.Spec.Bucket.Name)
+			return "", "", fault.Wrapf(cerr, fault.KindOf(cerr), op, "create bucket %q", name)
 		}
-		return false, nil
-	}
-	if gerr != nil {
-		return false, fault.Wrapf(gerr, fault.KindOf(gerr), op, "get bucket %q", s.Spec.Bucket.Name)
+		return "", "", nil
+	case gerr != nil:
+		return "", "", fault.Wrapf(gerr, fault.KindOf(gerr), op, "get bucket %q", name)
 	}
 	b := obj.(*v1.Bucket)
-	changed, owned := adoptBucket(b, s)
+	if !ref && !ownedstore.Marked(b.OwnerReferences, s) {
+		return reasonStoreNotOwned, fmt.Sprintf("bucket %q exists and was not made by this site; bind it with ref", name), nil
+	}
+	if ref {
+		p, ok := prefixOf(b, s.Spec.ServedPrefix())
+		switch {
+		case !ok:
+			return reasonBucketNotFound, fmt.Sprintf("bucket %q, which spec.buckets refers to, has no prefix %q", name, s.Spec.ServedPrefix()), nil
+		case p.Owner != "":
+			return reasonPrefixOwned, prefixOwnedMessage(s), nil
+		}
+		return "", "", nil
+	}
+	changed, owned := fillOwnBucket(b, s)
 	if owned {
-		return true, nil
+		return reasonPrefixOwned, prefixOwnedMessage(s), nil
 	}
 	if changed {
 		if _, uerr := r.store.Update(ctx, b); uerr != nil {
-			return false, fault.Wrapf(uerr, fault.KindOf(uerr), op, "update bucket %q", s.Spec.Bucket.Name)
+			return "", "", fault.Wrapf(uerr, fault.KindOf(uerr), op, "update bucket %q", name)
 		}
 	}
-	return false, nil
+	return "", "", nil
+}
+
+// The reasons a Site's Bucket stops it (ADR-0139, ADR-0248).
+const (
+	reasonStoreNotOwned  = "StoreNotOwned"
+	reasonPrefixOwned    = "PrefixOwned"
+	reasonBucketNotFound = "BucketNotFound"
+)
+
+func prefixOwnedMessage(s *v1.Site) string {
+	return fmt.Sprintf("bucket %q already declares prefix %q with an owner; a site never takes over a written prefix", s.Spec.ServedBucket(), s.Spec.ServedPrefix())
+}
+
+// prefixOf is the prefix of b named name, and whether it has one.
+func prefixOf(b *v1.Bucket, name string) (v1.BucketPrefix, bool) {
+	for _, p := range b.Spec.Prefixes {
+		if p.Name == name {
+			return p, true
+		}
+	}
+	return v1.BucketPrefix{}, false
 }
 
 // unpack pulls the digest-pinned bundle into a scratch dir and Puts every entry under sp — non-index
@@ -372,7 +413,7 @@ func (r *Reconciler) publish(ctx context.Context, s *v1.Site, out outcome) (cont
 	s.Status.Digest, s.Status.ServingPrefix, s.Status.Objects, s.Status.Bytes = "", "", 0, 0
 	if out.digest != "" {
 		s.Status.Digest = out.digest
-		s.Status.ServingPrefix = servingPrefix(s.Spec.Prefix, out.digest)
+		s.Status.ServingPrefix = servingPrefix(s.Spec.ServedPrefix(), out.digest)
 		if out.view != nil {
 			attrs, lerr := out.view.List(ctx, s.Status.ServingPrefix)
 			if lerr != nil {

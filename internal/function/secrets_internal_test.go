@@ -93,7 +93,7 @@ func TestScenarioReservedEnvNotOverridable(t *testing.T) {
 func TestResolveSecretEnvFailClosed(t *testing.T) {
 	t.Parallel()
 	fn := sampleFn()
-	fn.Spec.Secrets = []v1.ObjectName{"api-creds"}
+	fn.Spec.Bindings.Secret = []v1.ObjectName{"api-creds"}
 
 	t.Run("no-secrets-returns-nil", func(t *testing.T) {
 		r := newShimReconciler(t, fakeResolver{})
@@ -110,7 +110,7 @@ func TestResolveSecretEnvFailClosed(t *testing.T) {
 	t.Run("pooled-fails-closed", func(t *testing.T) {
 		r := newShimReconciler(t, fakeResolver{env: map[string]string{"API_KEY": "x"}})
 		pooled := sampleFn()
-		pooled.Spec.Secrets = []v1.ObjectName{"api-creds"}
+		pooled.Spec.Bindings.Secret = []v1.ObjectName{"api-creds"}
 		pooled.Spec.Pooling.Worker = "agents"
 		env, err := r.resolveBindingEnv(context.Background(), pooled)
 		require.NoError(t, err, "a pooled member resolves its secrets like a solo one")

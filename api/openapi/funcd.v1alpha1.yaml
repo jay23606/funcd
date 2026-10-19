@@ -395,23 +395,10 @@ components:
           items:
             additionalProperties: false
             properties:
-              blob:
-                items:
-                  $ref: "#/components/schemas/FunctionBlob"
-                type:
-                  - array
-                  - "null"
+              bindings:
+                $ref: "#/components/schemas/CatalogServiceBindings"
               catalog:
                 $ref: "#/components/schemas/CatalogRef"
-              config:
-                items:
-                  maxLength: 63
-                  minLength: 1
-                  pattern: ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$
-                  type: string
-                type:
-                  - array
-                  - "null"
               ingress:
                 $ref: "#/components/schemas/Ingress"
               name:
@@ -428,15 +415,6 @@ components:
                 type: string
               resources:
                 $ref: "#/components/schemas/ResourceSpec"
-              secrets:
-                items:
-                  maxLength: 63
-                  minLength: 1
-                  pattern: ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$
-                  type: string
-                type:
-                  - array
-                  - "null"
             type: object
           type:
             - array
@@ -495,24 +473,93 @@ components:
           items:
             additionalProperties: false
             properties:
-              blob:
+              bindings:
+                $ref: "#/components/schemas/FunctionBindings"
+              buckets:
                 items:
-                  $ref: "#/components/schemas/FunctionBlob"
+                  additionalProperties: false
+                  properties:
+                    deletion:
+                      description: retain (the default) keeps the store and its data when the App drops it or is deleted; delete removes them.
+                      enum:
+                        - retain
+                        - delete
+                      type: string
+                    maxObjectBytes:
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    name:
+                      description: The part's name. The object takes the App's namespace and resource group.
+                      maxLength: 63
+                      minLength: 1
+                      pattern: ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$
+                      type: string
+                    prefixes:
+                      items:
+                        $ref: "#/components/schemas/BucketPrefix"
+                      type:
+                        - array
+                        - "null"
+                    ref:
+                      description: The name of an existing object of this kind in the App's namespace. A ref entry sets no other field.
+                      maxLength: 63
+                      minLength: 1
+                      pattern: ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$
+                      type: string
+                  type: object
                 type:
                   - array
                   - "null"
               catalogs:
                 items:
-                  $ref: "#/components/schemas/FunctionCatalog"
+                  additionalProperties: false
+                  properties:
+                    bindings:
+                      $ref: "#/components/schemas/CatalogServiceBindings"
+                    catalog:
+                      $ref: "#/components/schemas/CatalogRef"
+                    ingress:
+                      $ref: "#/components/schemas/Ingress"
+                    name:
+                      description: The part's name. The object takes the App's namespace and resource group.
+                      maxLength: 63
+                      minLength: 1
+                      pattern: ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$
+                      type: string
+                    ref:
+                      description: The name of an existing object of this kind in the App's namespace. A ref entry sets no other field.
+                      maxLength: 63
+                      minLength: 1
+                      pattern: ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$
+                      type: string
+                    resources:
+                      $ref: "#/components/schemas/ResourceSpec"
+                  type: object
                 type:
                   - array
                   - "null"
-              config:
+              configMaps:
                 items:
-                  maxLength: 63
-                  minLength: 1
-                  pattern: ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$
-                  type: string
+                  additionalProperties: false
+                  properties:
+                    data:
+                      additionalProperties:
+                        type: string
+                      type: object
+                    name:
+                      description: The ConfigMap's name, at most 52 characters. It is stored as <name>-<hash of data>, and the config of each part that names it is set to that stored name.
+                      maxLength: 63
+                      minLength: 1
+                      pattern: ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$
+                      type: string
+                    ref:
+                      description: The name of an existing object of this kind in the App's namespace. A ref entry sets no other field.
+                      maxLength: 63
+                      minLength: 1
+                      pattern: ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$
+                      type: string
+                  type: object
                 type:
                   - array
                   - "null"
@@ -528,13 +575,43 @@ components:
                 $ref: "#/components/schemas/Ingress"
               kv:
                 items:
-                  $ref: "#/components/schemas/FunctionKV"
-                type:
-                  - array
-                  - "null"
-              links:
-                items:
-                  $ref: "#/components/schemas/FunctionLink"
+                  additionalProperties: false
+                  properties:
+                    deletion:
+                      description: retain (the default) keeps the store and its data when the App drops it or is deleted; delete removes them.
+                      enum:
+                        - retain
+                        - delete
+                      type: string
+                    maxKeyBytes:
+                      format: int64
+                      maximum: 64000
+                      minimum: 0
+                      type: integer
+                    maxValueBytes:
+                      format: int64
+                      maximum: 1048576
+                      minimum: 0
+                      type: integer
+                    name:
+                      description: The part's name. The object takes the App's namespace and resource group.
+                      maxLength: 63
+                      minLength: 1
+                      pattern: ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$
+                      type: string
+                    ref:
+                      description: The name of an existing object of this kind in the App's namespace. A ref entry sets no other field.
+                      maxLength: 63
+                      minLength: 1
+                      pattern: ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$
+                      type: string
+                    tables:
+                      items:
+                        $ref: "#/components/schemas/KVTable"
+                      type:
+                        - array
+                        - "null"
+                  type: object
                 type:
                   - array
                   - "null"
@@ -572,16 +649,61 @@ components:
                 $ref: "#/components/schemas/Scaling"
               secrets:
                 items:
-                  maxLength: 63
-                  minLength: 1
-                  pattern: ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$
-                  type: string
+                  additionalProperties: false
+                  properties:
+                    description:
+                      description: What the Secret is for, for the installer who provides it.
+                      type: string
+                    keys:
+                      description: "The keys the parts read: the Secret's data must hold each of them."
+                      items:
+                        pattern: ^[A-Za-z_][A-Za-z0-9_]*$
+                        type: string
+                      minItems: 1
+                      type: array
+                    name:
+                      description: The name of a Secret in the App's namespace. The platform holds its value; the App never writes it.
+                      maxLength: 63
+                      minLength: 1
+                      pattern: ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$
+                      type: string
+                  required:
+                    - name
+                    - keys
+                  type: object
                 type:
                   - array
                   - "null"
               sql:
                 items:
-                  $ref: "#/components/schemas/FunctionSQL"
+                  additionalProperties: false
+                  properties:
+                    deletion:
+                      description: retain (the default) keeps the store and its data when the App drops it or is deleted; delete removes them.
+                      enum:
+                        - retain
+                        - delete
+                      type: string
+                    name:
+                      description: The part's name. The object takes the App's namespace and resource group.
+                      maxLength: 63
+                      minLength: 1
+                      pattern: ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$
+                      type: string
+                    owner:
+                      maxLength: 63
+                      minLength: 1
+                      pattern: ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$
+                      type: string
+                    ref:
+                      description: The name of an existing object of this kind in the App's namespace. A ref entry sets no other field.
+                      maxLength: 63
+                      minLength: 1
+                      pattern: ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$
+                      type: string
+                    resources:
+                      $ref: "#/components/schemas/ResourceSpec"
+                  type: object
                 type:
                   - array
                   - "null"
@@ -741,8 +863,44 @@ components:
           items:
             additionalProperties: false
             properties:
-              bucket:
-                $ref: "#/components/schemas/SiteBucket"
+              bindings:
+                $ref: "#/components/schemas/SiteBindings"
+              buckets:
+                items:
+                  additionalProperties: false
+                  properties:
+                    deletion:
+                      description: retain (the default) keeps the store and its data when the App drops it or is deleted; delete removes them.
+                      enum:
+                        - retain
+                        - delete
+                      type: string
+                    maxObjectBytes:
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    name:
+                      description: The part's name. The object takes the App's namespace and resource group.
+                      maxLength: 63
+                      minLength: 1
+                      pattern: ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$
+                      type: string
+                    prefixes:
+                      items:
+                        $ref: "#/components/schemas/BucketPrefix"
+                      type:
+                        - array
+                        - "null"
+                    ref:
+                      description: The name of an existing object of this kind in the App's namespace. A ref entry sets no other field.
+                      maxLength: 63
+                      minLength: 1
+                      pattern: ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$
+                      type: string
+                  type: object
+                type:
+                  - array
+                  - "null"
               image:
                 type: string
               index:
@@ -753,9 +911,6 @@ components:
                 description: The part's name. The object takes the App's namespace and resource group.
                 maxLength: 63
                 minLength: 1
-                pattern: ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$
-                type: string
-              prefix:
                 pattern: ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$
                 type: string
               ref:
@@ -812,11 +967,83 @@ components:
           items:
             additionalProperties: false
             properties:
+              buckets:
+                items:
+                  additionalProperties: false
+                  properties:
+                    deletion:
+                      description: retain (the default) keeps the store and its data when the App drops it or is deleted; delete removes them.
+                      enum:
+                        - retain
+                        - delete
+                      type: string
+                    maxObjectBytes:
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    name:
+                      description: The part's name. The object takes the App's namespace and resource group.
+                      maxLength: 63
+                      minLength: 1
+                      pattern: ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$
+                      type: string
+                    prefixes:
+                      items:
+                        $ref: "#/components/schemas/BucketPrefix"
+                      type:
+                        - array
+                        - "null"
+                    ref:
+                      description: The name of an existing object of this kind in the App's namespace. A ref entry sets no other field.
+                      maxLength: 63
+                      minLength: 1
+                      pattern: ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$
+                      type: string
+                  type: object
+                type:
+                  - array
+                  - "null"
               contract:
                 $ref: "#/components/schemas/WorkflowContract"
               kv:
                 items:
-                  $ref: "#/components/schemas/WorkflowKVStore"
+                  additionalProperties: false
+                  properties:
+                    deletion:
+                      description: retain (the default) keeps the store and its data when the App drops it or is deleted; delete removes them.
+                      enum:
+                        - retain
+                        - delete
+                      type: string
+                    maxKeyBytes:
+                      format: int64
+                      maximum: 64000
+                      minimum: 0
+                      type: integer
+                    maxValueBytes:
+                      format: int64
+                      maximum: 1048576
+                      minimum: 0
+                      type: integer
+                    name:
+                      description: The part's name. The object takes the App's namespace and resource group.
+                      maxLength: 63
+                      minLength: 1
+                      pattern: ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$
+                      type: string
+                    ref:
+                      description: The name of an existing object of this kind in the App's namespace. A ref entry sets no other field.
+                      maxLength: 63
+                      minLength: 1
+                      pattern: ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$
+                      type: string
+                    tables:
+                      items:
+                        $ref: "#/components/schemas/KVTable"
+                      type:
+                        - array
+                        - "null"
+                  type: object
                 type:
                   - array
                   - "null"
@@ -1214,6 +1441,21 @@ components:
       required:
         - name
       type: object
+    BlobRef:
+      additionalProperties: false
+      properties:
+        bucket:
+          maxLength: 63
+          minLength: 1
+          pattern: ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$
+          type: string
+        prefix:
+          pattern: ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$
+          type: string
+      required:
+        - bucket
+        - prefix
+      type: object
     BlobServiceSpec:
       additionalProperties: false
       properties:
@@ -1355,7 +1597,7 @@ components:
         - apiVersion
         - kind
       type: object
-    CatalogServiceSpec:
+    CatalogServiceBindings:
       additionalProperties: false
       properties:
         blob:
@@ -1364,8 +1606,6 @@ components:
           type:
             - array
             - "null"
-        catalog:
-          $ref: "#/components/schemas/CatalogRef"
         config:
           items:
             maxLength: 63
@@ -1375,11 +1615,7 @@ components:
           type:
             - array
             - "null"
-        ingress:
-          $ref: "#/components/schemas/Ingress"
-        resources:
-          $ref: "#/components/schemas/ResourceSpec"
-        secrets:
+        secret:
           items:
             maxLength: 63
             minLength: 1
@@ -1390,6 +1626,20 @@ components:
             - "null"
       required:
         - blob
+      type: object
+    CatalogServiceSpec:
+      additionalProperties: false
+      properties:
+        bindings:
+          $ref: "#/components/schemas/CatalogServiceBindings"
+        catalog:
+          $ref: "#/components/schemas/CatalogRef"
+        ingress:
+          $ref: "#/components/schemas/Ingress"
+        resources:
+          $ref: "#/components/schemas/ResourceSpec"
+      required:
+        - bindings
         - catalog
       type: object
     CatalogServiceStatus:
@@ -1818,6 +2068,58 @@ components:
         - apiVersion
         - kind
       type: object
+    FunctionBindings:
+      additionalProperties: false
+      properties:
+        blob:
+          items:
+            $ref: "#/components/schemas/FunctionBlob"
+          type:
+            - array
+            - "null"
+        catalog:
+          items:
+            $ref: "#/components/schemas/FunctionCatalog"
+          type:
+            - array
+            - "null"
+        config:
+          items:
+            maxLength: 63
+            minLength: 1
+            pattern: ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$
+            type: string
+          type:
+            - array
+            - "null"
+        kv:
+          items:
+            $ref: "#/components/schemas/FunctionKV"
+          type:
+            - array
+            - "null"
+        links:
+          items:
+            $ref: "#/components/schemas/FunctionLink"
+          type:
+            - array
+            - "null"
+        secret:
+          items:
+            maxLength: 63
+            minLength: 1
+            pattern: ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$
+            type: string
+          type:
+            - array
+            - "null"
+        sql:
+          items:
+            $ref: "#/components/schemas/FunctionSQL"
+          type:
+            - array
+            - "null"
+      type: object
     FunctionBlob:
       additionalProperties: false
       properties:
@@ -1909,24 +2211,93 @@ components:
     FunctionSpec:
       additionalProperties: false
       properties:
-        blob:
+        bindings:
+          $ref: "#/components/schemas/FunctionBindings"
+        buckets:
           items:
-            $ref: "#/components/schemas/FunctionBlob"
+            additionalProperties: false
+            properties:
+              deletion:
+                description: retain (the default) keeps the store and its data when the App drops it or is deleted; delete removes them.
+                enum:
+                  - retain
+                  - delete
+                type: string
+              maxObjectBytes:
+                format: int64
+                minimum: 0
+                type: integer
+              name:
+                description: The part's name. The object takes the App's namespace and resource group.
+                maxLength: 63
+                minLength: 1
+                pattern: ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$
+                type: string
+              prefixes:
+                items:
+                  $ref: "#/components/schemas/BucketPrefix"
+                type:
+                  - array
+                  - "null"
+              ref:
+                description: The name of an existing object of this kind in the App's namespace. A ref entry sets no other field.
+                maxLength: 63
+                minLength: 1
+                pattern: ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$
+                type: string
+            type: object
           type:
             - array
             - "null"
         catalogs:
           items:
-            $ref: "#/components/schemas/FunctionCatalog"
+            additionalProperties: false
+            properties:
+              bindings:
+                $ref: "#/components/schemas/CatalogServiceBindings"
+              catalog:
+                $ref: "#/components/schemas/CatalogRef"
+              ingress:
+                $ref: "#/components/schemas/Ingress"
+              name:
+                description: The part's name. The object takes the App's namespace and resource group.
+                maxLength: 63
+                minLength: 1
+                pattern: ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$
+                type: string
+              ref:
+                description: The name of an existing object of this kind in the App's namespace. A ref entry sets no other field.
+                maxLength: 63
+                minLength: 1
+                pattern: ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$
+                type: string
+              resources:
+                $ref: "#/components/schemas/ResourceSpec"
+            type: object
           type:
             - array
             - "null"
-        config:
+        configMaps:
           items:
-            maxLength: 63
-            minLength: 1
-            pattern: ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$
-            type: string
+            additionalProperties: false
+            properties:
+              data:
+                additionalProperties:
+                  type: string
+                type: object
+              name:
+                description: The ConfigMap's name, at most 52 characters. It is stored as <name>-<hash of data>, and the config of each part that names it is set to that stored name.
+                maxLength: 63
+                minLength: 1
+                pattern: ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$
+                type: string
+              ref:
+                description: The name of an existing object of this kind in the App's namespace. A ref entry sets no other field.
+                maxLength: 63
+                minLength: 1
+                pattern: ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$
+                type: string
+            type: object
           type:
             - array
             - "null"
@@ -1942,13 +2313,43 @@ components:
           $ref: "#/components/schemas/Ingress"
         kv:
           items:
-            $ref: "#/components/schemas/FunctionKV"
-          type:
-            - array
-            - "null"
-        links:
-          items:
-            $ref: "#/components/schemas/FunctionLink"
+            additionalProperties: false
+            properties:
+              deletion:
+                description: retain (the default) keeps the store and its data when the App drops it or is deleted; delete removes them.
+                enum:
+                  - retain
+                  - delete
+                type: string
+              maxKeyBytes:
+                format: int64
+                maximum: 64000
+                minimum: 0
+                type: integer
+              maxValueBytes:
+                format: int64
+                maximum: 1048576
+                minimum: 0
+                type: integer
+              name:
+                description: The part's name. The object takes the App's namespace and resource group.
+                maxLength: 63
+                minLength: 1
+                pattern: ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$
+                type: string
+              ref:
+                description: The name of an existing object of this kind in the App's namespace. A ref entry sets no other field.
+                maxLength: 63
+                minLength: 1
+                pattern: ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$
+                type: string
+              tables:
+                items:
+                  $ref: "#/components/schemas/KVTable"
+                type:
+                  - array
+                  - "null"
+            type: object
           type:
             - array
             - "null"
@@ -1974,16 +2375,61 @@ components:
           $ref: "#/components/schemas/Scaling"
         secrets:
           items:
-            maxLength: 63
-            minLength: 1
-            pattern: ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$
-            type: string
+            additionalProperties: false
+            properties:
+              description:
+                description: What the Secret is for, for the installer who provides it.
+                type: string
+              keys:
+                description: "The keys the parts read: the Secret's data must hold each of them."
+                items:
+                  pattern: ^[A-Za-z_][A-Za-z0-9_]*$
+                  type: string
+                minItems: 1
+                type: array
+              name:
+                description: The name of a Secret in the App's namespace. The platform holds its value; the App never writes it.
+                maxLength: 63
+                minLength: 1
+                pattern: ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$
+                type: string
+            required:
+              - name
+              - keys
+            type: object
           type:
             - array
             - "null"
         sql:
           items:
-            $ref: "#/components/schemas/FunctionSQL"
+            additionalProperties: false
+            properties:
+              deletion:
+                description: retain (the default) keeps the store and its data when the App drops it or is deleted; delete removes them.
+                enum:
+                  - retain
+                  - delete
+                type: string
+              name:
+                description: The part's name. The object takes the App's namespace and resource group.
+                maxLength: 63
+                minLength: 1
+                pattern: ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$
+                type: string
+              owner:
+                maxLength: 63
+                minLength: 1
+                pattern: ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$
+                type: string
+              ref:
+                description: The name of an existing object of this kind in the App's namespace. A ref entry sets no other field.
+                maxLength: 63
+                minLength: 1
+                pattern: ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$
+                type: string
+              resources:
+                $ref: "#/components/schemas/ResourceSpec"
+            type: object
           type:
             - array
             - "null"
@@ -2035,35 +2481,10 @@ components:
     FunctionStep:
       additionalProperties: false
       properties:
-        blob:
-          items:
-            $ref: "#/components/schemas/FunctionBlob"
-          type:
-            - array
-            - "null"
-        catalogs:
-          items:
-            $ref: "#/components/schemas/FunctionCatalog"
-          type:
-            - array
-            - "null"
-        config:
-          items:
-            maxLength: 63
-            minLength: 1
-            pattern: ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$
-            type: string
-          type:
-            - array
-            - "null"
+        bindings:
+          $ref: "#/components/schemas/StepBindings"
         image:
           type: string
-        kv:
-          items:
-            $ref: "#/components/schemas/FunctionKV"
-          type:
-            - array
-            - "null"
         pooling:
           $ref: "#/components/schemas/WorkflowPooling"
         ref:
@@ -2073,21 +2494,6 @@ components:
           type: string
         retry:
           $ref: "#/components/schemas/StepRetry"
-        secrets:
-          items:
-            maxLength: 63
-            minLength: 1
-            pattern: ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$
-            type: string
-          type:
-            - array
-            - "null"
-        sql:
-          items:
-            $ref: "#/components/schemas/FunctionSQL"
-          type:
-            - array
-            - "null"
         timeout:
           description: "The per-step invocation bound: 0s to 24h; 0s or unset means workflow.defaultStepTimeout."
           pattern: ^([0-9]+h([0-9]+m)?([0-9]+s)?([0-9]+ms)?|[0-9]+m([0-9]+s)?([0-9]+ms)?|[0-9]+s([0-9]+ms)?|[0-9]+ms)$
@@ -3641,27 +4047,17 @@ components:
         - apiVersion
         - kind
       type: object
-    SiteBucket:
+    SiteBindings:
       additionalProperties: false
       properties:
-        deletion:
-          enum:
-            - retain
-            - delete
-          type: string
-        name:
-          maxLength: 63
-          minLength: 1
-          pattern: ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$
-          type: string
-        prefixes:
+        blob:
           items:
-            $ref: "#/components/schemas/BucketPrefix"
+            $ref: "#/components/schemas/BlobRef"
           type:
             - array
             - "null"
       required:
-        - name
+        - blob
       type: object
     SiteIngress:
       additionalProperties: false
@@ -3717,17 +4113,50 @@ components:
     SiteSpec:
       additionalProperties: false
       properties:
-        bucket:
-          $ref: "#/components/schemas/SiteBucket"
+        bindings:
+          $ref: "#/components/schemas/SiteBindings"
+        buckets:
+          items:
+            additionalProperties: false
+            properties:
+              deletion:
+                description: retain (the default) keeps the store and its data when the App drops it or is deleted; delete removes them.
+                enum:
+                  - retain
+                  - delete
+                type: string
+              maxObjectBytes:
+                format: int64
+                minimum: 0
+                type: integer
+              name:
+                description: The part's name. The object takes the App's namespace and resource group.
+                maxLength: 63
+                minLength: 1
+                pattern: ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$
+                type: string
+              prefixes:
+                items:
+                  $ref: "#/components/schemas/BucketPrefix"
+                type:
+                  - array
+                  - "null"
+              ref:
+                description: The name of an existing object of this kind in the App's namespace. A ref entry sets no other field.
+                maxLength: 63
+                minLength: 1
+                pattern: ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$
+                type: string
+            type: object
+          type:
+            - array
+            - "null"
         image:
           type: string
         index:
           type: string
         ingress:
           $ref: "#/components/schemas/SiteIngress"
-        prefix:
-          pattern: ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$
-          type: string
         runtimeConfig:
           $ref: "#/components/schemas/SiteRuntimeConfig"
           description: "Values each deployment sets without a rebuild, served as config.json beside the bundle. The file is public: never put a secret in it."
@@ -3735,8 +4164,6 @@ components:
           type: boolean
       required:
         - image
-        - bucket
-        - prefix
         - ingress
       type: object
     SiteStatus:
@@ -3789,6 +4216,52 @@ components:
           type: boolean
       required:
         - bucket
+      type: object
+    StepBindings:
+      additionalProperties: false
+      properties:
+        blob:
+          items:
+            $ref: "#/components/schemas/FunctionBlob"
+          type:
+            - array
+            - "null"
+        catalog:
+          items:
+            $ref: "#/components/schemas/FunctionCatalog"
+          type:
+            - array
+            - "null"
+        config:
+          items:
+            maxLength: 63
+            minLength: 1
+            pattern: ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$
+            type: string
+          type:
+            - array
+            - "null"
+        kv:
+          items:
+            $ref: "#/components/schemas/FunctionKV"
+          type:
+            - array
+            - "null"
+        secret:
+          items:
+            maxLength: 63
+            minLength: 1
+            pattern: ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$
+            type: string
+          type:
+            - array
+            - "null"
+        sql:
+          items:
+            $ref: "#/components/schemas/FunctionSQL"
+          type:
+            - array
+            - "null"
       type: object
     StepRetry:
       additionalProperties: false
@@ -3923,29 +4396,6 @@ components:
         input: {}
         output: {}
       type: object
-    WorkflowKVStore:
-      additionalProperties: false
-      properties:
-        deletion:
-          enum:
-            - retain
-            - delete
-          type: string
-        name:
-          maxLength: 63
-          minLength: 1
-          pattern: ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$
-          type: string
-        tables:
-          items:
-            $ref: "#/components/schemas/KVTable"
-          type:
-            - array
-            - "null"
-      required:
-        - name
-        - tables
-      type: object
     WorkflowPooling:
       additionalProperties: false
       properties:
@@ -4072,11 +4522,83 @@ components:
     WorkflowSpec:
       additionalProperties: false
       properties:
+        buckets:
+          items:
+            additionalProperties: false
+            properties:
+              deletion:
+                description: retain (the default) keeps the store and its data when the App drops it or is deleted; delete removes them.
+                enum:
+                  - retain
+                  - delete
+                type: string
+              maxObjectBytes:
+                format: int64
+                minimum: 0
+                type: integer
+              name:
+                description: The part's name. The object takes the App's namespace and resource group.
+                maxLength: 63
+                minLength: 1
+                pattern: ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$
+                type: string
+              prefixes:
+                items:
+                  $ref: "#/components/schemas/BucketPrefix"
+                type:
+                  - array
+                  - "null"
+              ref:
+                description: The name of an existing object of this kind in the App's namespace. A ref entry sets no other field.
+                maxLength: 63
+                minLength: 1
+                pattern: ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$
+                type: string
+            type: object
+          type:
+            - array
+            - "null"
         contract:
           $ref: "#/components/schemas/WorkflowContract"
         kv:
           items:
-            $ref: "#/components/schemas/WorkflowKVStore"
+            additionalProperties: false
+            properties:
+              deletion:
+                description: retain (the default) keeps the store and its data when the App drops it or is deleted; delete removes them.
+                enum:
+                  - retain
+                  - delete
+                type: string
+              maxKeyBytes:
+                format: int64
+                maximum: 64000
+                minimum: 0
+                type: integer
+              maxValueBytes:
+                format: int64
+                maximum: 1048576
+                minimum: 0
+                type: integer
+              name:
+                description: The part's name. The object takes the App's namespace and resource group.
+                maxLength: 63
+                minLength: 1
+                pattern: ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$
+                type: string
+              ref:
+                description: The name of an existing object of this kind in the App's namespace. A ref entry sets no other field.
+                maxLength: 63
+                minLength: 1
+                pattern: ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$
+                type: string
+              tables:
+                items:
+                  $ref: "#/components/schemas/KVTable"
+                type:
+                  - array
+                  - "null"
+            type: object
           type:
             - array
             - "null"

@@ -1,6 +1,6 @@
 # ADR-0246: Bindings move under `spec.bindings`, typed per kind
 
-- **Status**: Accepted (2026-10-19), after two judge rounds, under `adr-batch` with acceptance delegated by the
+- **Status**: Reviewing (2026-10-19), implemented; Accepted (2026-10-19), after two judge rounds, under `adr-batch` with acceptance delegated by the
   decider: the first round split the store half into ADR-0248 and gave each kind its own binding type; the second
   moved the Site into ADR-0248 and pinned the grant check to a golden fixture.
 - **Date**: 2026-10-19

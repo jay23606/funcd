@@ -34,6 +34,7 @@ import (
 	"github.com/pyvvo/funcd/internal/runtime/process"
 	"github.com/pyvvo/funcd/internal/store"
 	"github.com/pyvvo/funcd/internal/store/memory"
+	"github.com/pyvvo/funcd/internal/testkit/bound"
 	"github.com/pyvvo/funcd/internal/testkit/langmod"
 	"github.com/pyvvo/funcd/pkg/funcd"
 	"github.com/pyvvo/funcd/pkg/sdk"
@@ -234,10 +235,11 @@ func (h *shimRig) deploy(t *testing.T, name string, f shimFn) {
 	fn.Spec.Replicas, fn.Spec.Scaling.MinReplicas = 1, 1
 	fn.Spec.Pooling.Worker = f.worker
 	fn.Spec.Timeout = v1.Duration(f.timeout)
-	fn.Spec.Links = f.links
+	fn.Spec.Bindings.Links = f.links
 	if f.change != nil {
 		f.change(fn)
 	}
+	bound.Declare(fn)
 	_, err = h.c.Apply(context.Background(), fn)
 	require.NoError(t, err)
 }

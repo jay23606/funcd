@@ -126,18 +126,19 @@ spec:
   runtime: nodejs22
   handler: handle
   image: oci-layout:///mnt/funcd-deps/registry:front
-  links:
-    - alias: greeter
-      target: greeter
+  bindings:
+    links:
+      - alias: greeter
+        target: greeter
 `)
 	obj, err := sdk.DecodeManifest(yamlManifest)
 	require.NoError(t, err)
 	fn, ok := obj.(*v1.Function)
 	require.True(t, ok)
 	require.Equal(t, v1.ObjectName("front"), fn.Name)
-	require.Len(t, fn.Spec.Links, 1)
-	require.Equal(t, "greeter", fn.Spec.Links[0].Alias)
-	require.Equal(t, v1.ObjectName("greeter"), fn.Spec.Links[0].Target)
+	require.Len(t, fn.Spec.Bindings.Links, 1)
+	require.Equal(t, "greeter", fn.Spec.Bindings.Links[0].Alias)
+	require.Equal(t, v1.ObjectName("greeter"), fn.Spec.Bindings.Links[0].Target)
 
 	// JSON still decodes (JSON is valid YAML).
 	jsonManifest := []byte(`{"apiVersion":"funcd.io/v1alpha1","kind":"Function","metadata":{"name":"g"}}`)

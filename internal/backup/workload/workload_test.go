@@ -47,9 +47,11 @@ func TestResolveScopes(t *testing.T) {
 		&v1.KVStore{TypeMeta: tm(v1.KindKVStore), ObjectMeta: meta("shared-state", "other")},
 		&v1.Bucket{TypeMeta: tm(v1.KindBucket), ObjectMeta: meta("orders-files", "app")},
 		&v1.CatalogService{TypeMeta: tm(v1.KindCatalogService), ObjectMeta: meta("lake", "app"), Spec: v1.CatalogServiceSpec{
-			Blob: []v1.FunctionBlob{{Alias: "lake", Bucket: "lake-files", Prefix: "lake"}}, Catalog: lake}},
+			Catalog:  lake,
+			Bindings: v1.CatalogServiceBindings{Blob: []v1.FunctionBlob{{Alias: "lake", Bucket: "lake-files", Prefix: "lake"}}},
+		}},
 		&v1.App{TypeMeta: tm(v1.KindApp), ObjectMeta: meta("orders", "app"), Spec: v1.AppSpec{
-			KV: []v1.AppKVStore{{Name: "orders-state"}, {Ref: "shared-state"}}, Catalogs: []v1.AppCatalog{{Ref: "lake"}}}},
+			KV: []v1.KVStoreEntry{{Name: "orders-state"}, {Ref: "shared-state"}}, Catalogs: []v1.CatalogEntry{{Ref: "lake"}}}},
 	} {
 		_, err := st.Create(ctx, o)
 		require.NoError(t, err)

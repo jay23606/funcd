@@ -80,7 +80,7 @@ func seedCatalogWorld(t *testing.T, st store.Store) {
 	createObj(t, st, &v1.Function{
 		TypeMeta:   v1.TypeMeta{APIVersion: v1.KindFunction.GVK().APIVersion(), Kind: v1.KindFunction},
 		ObjectMeta: v1.ObjectMeta{Name: "analytics", Namespace: "data", ResourceGroup: "rg1"},
-		Spec:       v1.FunctionSpec{Catalogs: []v1.FunctionCatalog{{Alias: "lake", Catalog: "lake"}}},
+		Spec:       v1.FunctionSpec{Bindings: v1.FunctionBindings{Catalog: []v1.FunctionCatalog{{Alias: "lake", Catalog: "lake"}}}},
 	})
 	createObj(t, st, &v1.Function{
 		TypeMeta:   v1.TypeMeta{APIVersion: v1.KindFunction.GVK().APIVersion(), Kind: v1.KindFunction},

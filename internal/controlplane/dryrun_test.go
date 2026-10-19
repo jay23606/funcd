@@ -142,7 +142,7 @@ func sample(k v1.Kind, name v1.ObjectName) v1.Object {
 	case *v1.WorkflowRun:
 		x.Spec.Workflow = "w"
 	case *v1.Site:
-		x.Spec.Bucket.Name, x.Spec.Prefix = "b", "p"
+		x.Spec.Buckets, x.Spec.Bindings = []v1.BucketEntry{{Name: "b"}}, v1.SiteBindings{Blob: []v1.BlobRef{{Bucket: "b", Prefix: "p"}}}
 	case *v1.Identity:
 		x.Spec.Type = v1.IdentityTypeExternal
 	case *v1.BackupSchedule:

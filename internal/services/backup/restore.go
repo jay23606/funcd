@@ -305,7 +305,7 @@ func (r *RestoreReconciler) isEmpty(ctx context.Context, ns v1.NamespaceName, t 
 			return false, err
 		}
 		for _, o := range fns.Items {
-			if fn, ok := o.(*v1.Function); ok && slices.ContainsFunc(fn.Spec.SQL, func(b v1.FunctionSQL) bool { return b.Database == t.sql }) {
+			if fn, ok := o.(*v1.Function); ok && slices.ContainsFunc(fn.Spec.Bindings.SQL, func(b v1.FunctionSQL) bool { return b.Database == t.sql }) {
 				return false, nil
 			}
 		}

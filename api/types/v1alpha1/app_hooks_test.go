@@ -14,10 +14,10 @@ import (
 func hookedApp(mutate func(*App)) *App {
 	return todoApp(func(a *App) {
 		a.Spec.Functions = append(a.Spec.Functions, AppFunction{Name: "todo-migrate", FunctionSpec: FunctionSpec{
-			Runtime: "nodejs22",
-			Handler: "index.handler",
-			Image:   "oci-layout://todo-migrate:1",
-			KV:      []FunctionKV{{Alias: "store", Store: "todo-store", Table: "todos"}},
+			Runtime:  "nodejs22",
+			Handler:  "index.handler",
+			Image:    "oci-layout://todo-migrate:1",
+			Bindings: FunctionBindings{KV: []FunctionKV{{Alias: "store", Store: "todo-store", Table: "todos"}}},
 		}})
 		a.Spec.Hooks = &AppHooks{PreApply: []AppHook{{Function: "todo-migrate"}}}
 		if mutate != nil {
@@ -34,17 +34,17 @@ func TestAppValidateAcceptsHooks(t *testing.T) {
 		}),
 		"a pre-hook linking to a ref entry": hookedApp(func(a *App) {
 			a.Spec.Functions = append(a.Spec.Functions, AppFunction{Ref: "mailer"})
-			a.Spec.Functions[1].Links = []FunctionLink{{Alias: "mail", Target: "mailer"}}
+			a.Spec.Functions[1].Bindings.Links = []FunctionLink{{Alias: "mail", Target: "mailer"}}
 		}),
 		"a pre-hook linking to another pre-hook": hookedApp(func(a *App) {
-			a.Spec.Functions[1].Links = []FunctionLink{{Alias: "api", Target: "todo-api"}}
+			a.Spec.Functions[1].Bindings.Links = []FunctionLink{{Alias: "api", Target: "todo-api"}}
 			a.Spec.Hooks.PreApply = append(a.Spec.Hooks.PreApply, AppHook{Function: "todo-api"})
 		}),
 		"a pre-hook linking outside the App": hookedApp(func(a *App) {
-			a.Spec.Functions[1].Links = []FunctionLink{{Alias: "audit", Target: "audit"}}
+			a.Spec.Functions[1].Bindings.Links = []FunctionLink{{Alias: "audit", Target: "audit"}}
 		}),
 		"a post-hook linking to any entry": hookedApp(func(a *App) {
-			a.Spec.Functions[1].Links = []FunctionLink{{Alias: "api", Target: "todo-api"}}
+			a.Spec.Functions[1].Bindings.Links = []FunctionLink{{Alias: "api", Target: "todo-api"}}
 			a.Spec.Hooks = &AppHooks{PostApply: []AppHook{{Function: "todo-migrate"}}}
 		}),
 	} {
@@ -74,7 +74,7 @@ func TestAppValidateHookRefusals(t *testing.T) {
 			a.Spec.Hooks.PreApply = append(a.Spec.Hooks.PreApply, AppHook{Function: "todo-migrate"})
 		}, `spec.hooks.preApply[1].function repeats "todo-migrate" of spec.hooks.preApply[0].function`},
 		{"a pre-hook linking to an entry written after the pre-hooks", func(a *App) {
-			a.Spec.Functions[1].Links = []FunctionLink{{Alias: "api", Target: "todo-api"}}
+			a.Spec.Functions[1].Bindings.Links = []FunctionLink{{Alias: "api", Target: "todo-api"}}
 		}, `spec.hooks.preApply[0].function "todo-migrate" links to "todo-api", written after the pre-hooks`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

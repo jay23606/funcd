@@ -38,12 +38,10 @@ func TestMaterializeOwnedFunctionsAndKV(t *testing.T) {
 		TypeMeta:   v1.TypeMeta{APIVersion: v1.KindWorkflow.GVK().APIVersion(), Kind: v1.KindWorkflow},
 		ObjectMeta: v1.ObjectMeta{Name: "orders", Namespace: "default", ResourceGroup: "rg1", UID: "wf-uid"},
 		Spec: v1.WorkflowSpec{
-			Pooling: v1.WorkflowPooling{Mode: v1.PoolingShared, MinReplicas: 1},
-			KV: []v1.WorkflowKVStore{{
-				Name: "counters-kv", Deletion: v1.DeletionDelete, Tables: []v1.KVTable{{Name: "t", Owner: "ingest"}},
-			}},
+			Pooling:  v1.WorkflowPooling{Mode: v1.PoolingShared, MinReplicas: 1},
+			KVStores: []v1.KVStoreEntry{{Name: "counters-kv", Deletion: v1.DeletionDelete, KVStoreSpec: v1.KVStoreSpec{Tables: []v1.KVTable{{Name: "t", Owner: "ingest"}}}}},
 			Steps: []v1.WorkflowStep{
-				{Name: "ingest", Function: &v1.FunctionStep{Image: "oci:ingest-v1", KV: []v1.FunctionKV{{Alias: "c", Store: "counters-kv", Table: "t"}}}},
+				{Name: "ingest", Function: &v1.FunctionStep{Image: "oci:ingest-v1", Bindings: v1.StepBindings{KV: []v1.FunctionKV{{Alias: "c", Store: "counters-kv", Table: "t"}}}}},
 				{Name: "solo", Function: &v1.FunctionStep{Image: "oci:solo-v1", Pooling: &v1.WorkflowPooling{Mode: v1.PoolingIsolated}}},
 			},
 		},
@@ -74,8 +72,8 @@ func TestMaterializeOwnedFunctionsAndKV(t *testing.T) {
 		t.Fatalf("owner ref missing/wrong: %+v", fn.OwnerReferences)
 	}
 	// kv binding patched on after the store exists (the ADR-0073 cycle).
-	if len(fn.Spec.KV) != 1 || fn.Spec.KV[0].Store != "counters-kv" {
-		t.Fatalf("kv binding not patched: %+v", fn.Spec.KV)
+	if len(fn.Spec.Bindings.KV) != 1 || fn.Spec.Bindings.KV[0].Store != "counters-kv" {
+		t.Fatalf("kv binding not patched: %+v", fn.Spec.Bindings.KV)
 	}
 
 	// the isolated step gets no shared worker.
@@ -108,9 +106,9 @@ func TestMaterializeDeletionPolicy(t *testing.T) {
 		TypeMeta:   v1.TypeMeta{APIVersion: v1.KindWorkflow.GVK().APIVersion(), Kind: v1.KindWorkflow},
 		ObjectMeta: v1.ObjectMeta{Name: "wf", Namespace: "default", ResourceGroup: "rg1", UID: "u"},
 		Spec: v1.WorkflowSpec{
-			KV: []v1.WorkflowKVStore{
-				{Name: "keep-kv", Deletion: v1.DeletionRetain, Tables: []v1.KVTable{{Name: "t"}}},
-				{Name: "drop-kv", Deletion: v1.DeletionDelete, Tables: []v1.KVTable{{Name: "t"}}},
+			KVStores: []v1.KVStoreEntry{
+				{Name: "keep-kv", Deletion: v1.DeletionRetain, KVStoreSpec: v1.KVStoreSpec{Tables: []v1.KVTable{{Name: "t"}}}},
+				{Name: "drop-kv", Deletion: v1.DeletionDelete, KVStoreSpec: v1.KVStoreSpec{Tables: []v1.KVTable{{Name: "t"}}}},
 			},
 			Steps: []v1.WorkflowStep{{Name: "a", Function: &v1.FunctionStep{Image: "oci:a"}}},
 		},
@@ -147,8 +145,8 @@ func TestIssue149_KVDeletionPolicyChangeUpdatesOwnerRef(t *testing.T) {
 				TypeMeta:   v1.TypeMeta{APIVersion: v1.KindWorkflow.GVK().APIVersion(), Kind: v1.KindWorkflow},
 				ObjectMeta: v1.ObjectMeta{Name: "wfa", Namespace: "default", ResourceGroup: "rg1", UID: "uid-a"},
 				Spec: v1.WorkflowSpec{
-					KV:    []v1.WorkflowKVStore{{Name: "data-kv", Deletion: tc.from, Tables: []v1.KVTable{{Name: "t"}}}},
-					Steps: []v1.WorkflowStep{{Name: "a", Function: &v1.FunctionStep{Image: "oci:a"}}},
+					KVStores: []v1.KVStoreEntry{{Name: "data-kv", Deletion: tc.from, KVStoreSpec: v1.KVStoreSpec{Tables: []v1.KVTable{{Name: "t"}}}}},
+					Steps:    []v1.WorkflowStep{{Name: "a", Function: &v1.FunctionStep{Image: "oci:a"}}},
 				},
 			}
 			if err := m.Materialize(ctx, wf); err != nil {
@@ -158,7 +156,7 @@ func TestIssue149_KVDeletionPolicyChangeUpdatesOwnerRef(t *testing.T) {
 			if err != nil {
 				t.Fatalf("get kvstore: %v", err)
 			}
-			wf.Spec.KV[0].Deletion = tc.to
+			wf.Spec.KVStores[0].Deletion = tc.to
 			if err := m.Materialize(ctx, wf); err != nil {
 				t.Fatalf("re-materialize: %v", err)
 			}
@@ -243,9 +241,9 @@ func TestIssue19_RematerializeKeepsKVStoreStatus(t *testing.T) {
 		TypeMeta:   v1.TypeMeta{APIVersion: v1.KindWorkflow.GVK().APIVersion(), Kind: v1.KindWorkflow},
 		ObjectMeta: v1.ObjectMeta{Name: "orders", Namespace: "default", ResourceGroup: "rg1", UID: "wf-uid"},
 		Spec: v1.WorkflowSpec{
-			KV: []v1.WorkflowKVStore{{Name: "counters-kv", Tables: []v1.KVTable{{Name: "t", Owner: "ingest"}}}},
+			KVStores: []v1.KVStoreEntry{{Name: "counters-kv", KVStoreSpec: v1.KVStoreSpec{Tables: []v1.KVTable{{Name: "t", Owner: "ingest"}}}}},
 			Steps: []v1.WorkflowStep{
-				{Name: "ingest", Function: &v1.FunctionStep{Image: "oci:ingest-v1", KV: []v1.FunctionKV{{Alias: "c", Store: "counters-kv", Table: "t"}}}},
+				{Name: "ingest", Function: &v1.FunctionStep{Image: "oci:ingest-v1", Bindings: v1.StepBindings{KV: []v1.FunctionKV{{Alias: "c", Store: "counters-kv", Table: "t"}}}}},
 			},
 		},
 	}
@@ -338,9 +336,10 @@ func TestIssue722_GroupMoveRestampsChildren(t *testing.T) {
 		TypeMeta:   v1.TypeMeta{APIVersion: v1.KindWorkflow.GVK().APIVersion(), Kind: v1.KindWorkflow},
 		ObjectMeta: v1.ObjectMeta{Name: "w", Namespace: "default", ResourceGroup: "team", UID: "uid-w"},
 		Spec: v1.WorkflowSpec{
-			KV: []v1.WorkflowKVStore{{Name: "keep", Tables: []v1.KVTable{{Name: "t", Owner: "s1"}}}},
+			KVStores: []v1.KVStoreEntry{{Name: "keep", KVStoreSpec: v1.KVStoreSpec{Tables: []v1.KVTable{{Name: "t", Owner: "s1"}}}}},
 			Steps: []v1.WorkflowStep{{Name: "s1", Function: &v1.FunctionStep{
-				Image: "oci:x", KV: []v1.FunctionKV{{Alias: "c", Store: "keep", Table: "t"}},
+				Image:    "oci:x",
+				Bindings: v1.StepBindings{KV: []v1.FunctionKV{{Alias: "c", Store: "keep", Table: "t"}}},
 			}}},
 		},
 	}
@@ -365,7 +364,7 @@ func TestIssue722_GroupMoveRestampsChildren(t *testing.T) {
 	if g := kv.GetObjectMeta().ResourceGroup; g != "other" {
 		t.Errorf("retain kvstore group = %q, want other (with no controller ref it stays a member of the old group)", g)
 	}
-	if b := fn.(*v1.Function).Spec.KV; len(b) != 1 || b[0].Store != "keep" {
+	if b := fn.(*v1.Function).Spec.Bindings.KV; len(b) != 1 || b[0].Store != "keep" {
 		t.Errorf("kv binding after the move = %+v, want the keep binding", b)
 	}
 }

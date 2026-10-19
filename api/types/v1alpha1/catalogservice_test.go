@@ -11,7 +11,7 @@ func catalogService(name string, catalog CatalogRef, blob ...FunctionBlob) *Cata
 	return &CatalogService{
 		TypeMeta:   TypeMeta{APIVersion: KindCatalogService.GVK().APIVersion(), Kind: KindCatalogService},
 		ObjectMeta: ObjectMeta{Name: ObjectName(name), Namespace: "default", ResourceGroup: "rg1"},
-		Spec:       CatalogServiceSpec{Blob: blob, Catalog: catalog},
+		Spec:       CatalogServiceSpec{Catalog: catalog, Bindings: CatalogServiceBindings{Blob: blob}},
 	}
 }
 
@@ -52,11 +52,11 @@ func TestCatalogServiceValidate(t *testing.T) {
 		t.Errorf("catalog prefix not bound: want Invalid, got %v", err)
 	}
 
-	// invalid: a duplicate spec.blob alias is still rejected (the structural loop runs first).
+	// invalid: a duplicate spec.bindings.blob alias is still rejected (the structural loop runs first).
 	if err := catalogService("dupalias", goldCatalog,
 		FunctionBlob{Alias: "a", Bucket: "lakehouse", Prefix: "gold"},
 		FunctionBlob{Alias: "a", Bucket: "lakehouse", Prefix: "bronze"}).Validate(); fault.KindOf(err) != fault.Invalid {
-		t.Errorf("duplicate spec.blob alias: want Invalid, got %v", err)
+		t.Errorf("duplicate spec.bindings.blob alias: want Invalid, got %v", err)
 	}
 
 	// invalid: a non-DNS-1123 catalog prefix is rejected before the binding check.
@@ -116,8 +116,8 @@ func TestCatalogServiceValidate_secrets_config(t *testing.T) {
 
 	// valid: well-formed secret + config names.
 	cs := catalogService("ok", goldCatalog, gold)
-	cs.Spec.Secrets = []ObjectName{"lake-quack-token"}
-	cs.Spec.Config = []ObjectName{"lake-engine-config"}
+	cs.Spec.Bindings.Secret = []ObjectName{"lake-quack-token"}
+	cs.Spec.Bindings.Config = []ObjectName{"lake-engine-config"}
 	if err := cs.Validate(); err != nil {
 		t.Errorf("valid secrets/config rejected: %v", err)
 	}
@@ -129,14 +129,14 @@ func TestCatalogServiceValidate_secrets_config(t *testing.T) {
 
 	// invalid: a non-DNS-1123 secret name.
 	bad := catalogService("badsecret", goldCatalog, gold)
-	bad.Spec.Secrets = []ObjectName{"Not_A_Label"}
+	bad.Spec.Bindings.Secret = []ObjectName{"Not_A_Label"}
 	if err := bad.Validate(); fault.KindOf(err) != fault.Invalid {
 		t.Errorf("bad secret name: want Invalid, got %v", err)
 	}
 
 	// invalid: a non-DNS-1123 config name.
 	badc := catalogService("badconfig", goldCatalog, gold)
-	badc.Spec.Config = []ObjectName{"Bad_Config"}
+	badc.Spec.Bindings.Config = []ObjectName{"Bad_Config"}
 	if err := badc.Validate(); fault.KindOf(err) != fault.Invalid {
 		t.Errorf("bad config name: want Invalid, got %v", err)
 	}
@@ -164,74 +164,74 @@ func TestCatalogServiceValidate_messages(t *testing.T) {
 		{"valid", catalogService("ok", gold, bound), ""},
 		{"valid extra binding", catalogService("ok", gold, bronze, bound), ""},
 		{"valid secrets config ingress", catalogWith(catalogService("ok", gold, bound), func(c *CatalogService) {
-			c.Spec.Secrets = []ObjectName{"lake-token"}
-			c.Spec.Config = []ObjectName{"lake-config", "lake-tuning"}
+			c.Spec.Bindings.Secret = []ObjectName{"lake-token"}
+			c.Spec.Bindings.Config = []ObjectName{"lake-config", "lake-tuning"}
 			c.Spec.Ingress = &Ingress{Enabled: new(true), Path: "/catalog/lake"}
 		}), ""},
 		{"bad metadata name", catalogService("Bad_Name", gold, bound),
 			`ObjectMeta.Validate: invalid name: ObjectName.Validate: "Bad_Name" is not a valid DNS label`},
 		{"empty alias", catalogService("cs", gold, blob("", "gold")),
-			op + `spec.blob alias "" is not a valid DNS-1123 label`},
+			op + `spec.bindings.blob alias "" is not a valid DNS-1123 label`},
 		{"uppercase alias", catalogService("cs", gold, blob("Catalog", "gold")),
-			op + `spec.blob alias "Catalog" is not a valid DNS-1123 label`},
+			op + `spec.bindings.blob alias "Catalog" is not a valid DNS-1123 label`},
 		{"underscore alias", catalogService("cs", gold, blob("my_alias", "gold")),
-			op + `spec.blob alias "my_alias" is not a valid DNS-1123 label`},
+			op + `spec.bindings.blob alias "my_alias" is not a valid DNS-1123 label`},
 		{"leading hyphen alias", catalogService("cs", gold, blob("-a", "gold")),
-			op + `spec.blob alias "-a" is not a valid DNS-1123 label`},
+			op + `spec.bindings.blob alias "-a" is not a valid DNS-1123 label`},
 		{"64-char alias", catalogService("cs", gold, blob(long, "gold")),
-			op + `spec.blob alias "` + long + `" is not a valid DNS-1123 label`},
+			op + `spec.bindings.blob alias "` + long + `" is not a valid DNS-1123 label`},
 		{"bad alias in second entry", catalogService("cs", gold, bound, blob("B", "bronze")),
-			op + `spec.blob alias "B" is not a valid DNS-1123 label`},
+			op + `spec.bindings.blob alias "B" is not a valid DNS-1123 label`},
 		{"duplicate alias", catalogService("cs", gold, blob("a", "gold"), blob("a", "bronze")),
-			op + `spec.blob alias "a" is duplicated`},
+			op + `spec.bindings.blob alias "a" is duplicated`},
 		{"duplicate alias not adjacent", catalogService("cs", gold, blob("a", "gold"), bronze, blob("a", "silver")),
-			op + `spec.blob alias "a" is duplicated`},
+			op + `spec.bindings.blob alias "a" is duplicated`},
 		{"duplicate alias before its bad prefix", catalogService("cs", gold, blob("a", "gold"), blob("a", "Bad")),
-			op + `spec.blob alias "a" is duplicated`},
+			op + `spec.bindings.blob alias "a" is duplicated`},
 		{"empty blob prefix", catalogService("cs", gold, blob("catalog", "")),
-			op + `spec.blob[catalog].prefix "" is not a valid DNS-1123 label`},
+			op + `spec.bindings.blob[catalog].prefix "" is not a valid DNS-1123 label`},
 		{"bad blob prefix", catalogService("cs", gold, blob("catalog", "Bad_Prefix")),
-			op + `spec.blob[catalog].prefix "Bad_Prefix" is not a valid DNS-1123 label`},
+			op + `spec.bindings.blob[catalog].prefix "Bad_Prefix" is not a valid DNS-1123 label`},
 		{"bad alias before bad prefix", catalogService("cs", gold, blob("Bad", "Bad")),
-			op + `spec.blob alias "Bad" is not a valid DNS-1123 label`},
+			op + `spec.bindings.blob alias "Bad" is not a valid DNS-1123 label`},
 		{"blob before catalog prefix", catalogService("cs", CatalogRef{Bucket: "lakehouse", Prefix: "Bad"}, blob("x_y", "gold")),
-			op + `spec.blob alias "x_y" is not a valid DNS-1123 label`},
+			op + `spec.bindings.blob alias "x_y" is not a valid DNS-1123 label`},
 		{"bad catalog prefix", catalogService("cs", CatalogRef{Bucket: "lakehouse", Prefix: "Bad_Prefix"}, bound),
 			op + `spec.catalog.prefix "Bad_Prefix" is not a valid DNS-1123 label`},
 		{"empty catalog prefix", catalogService("cs", CatalogRef{Bucket: "lakehouse"}, bound),
 			op + `spec.catalog.prefix "" is not a valid DNS-1123 label`},
 		{"catalog prefix not bound", catalogService("cs", gold, blob("catalog", "bronze")),
-			op + `spec.catalog ("lakehouse"/"gold") must be one of spec.blob bindings (the catalog prefix must be a bound, owned blob binding so the engine can write it)`},
+			op + `spec.catalog ("lakehouse"/"gold") must be one of spec.bindings.blob (the catalog prefix must be a bound, owned blob binding so the engine can write it)`},
 		{"catalog bucket not bound", catalogService("cs", CatalogRef{Bucket: "other", Prefix: "gold"}, bound),
-			op + `spec.catalog ("other"/"gold") must be one of spec.blob bindings (the catalog prefix must be a bound, owned blob binding so the engine can write it)`},
+			op + `spec.catalog ("other"/"gold") must be one of spec.bindings.blob (the catalog prefix must be a bound, owned blob binding so the engine can write it)`},
 		{"no blob", catalogService("cs", gold),
-			op + `spec.catalog ("lakehouse"/"gold") must be one of spec.blob bindings (the catalog prefix must be a bound, owned blob binding so the engine can write it)`},
+			op + `spec.catalog ("lakehouse"/"gold") must be one of spec.bindings.blob (the catalog prefix must be a bound, owned blob binding so the engine can write it)`},
 		{"bad secret", catalogWith(catalogService("cs", gold, bound), func(c *CatalogService) {
-			c.Spec.Secrets = []ObjectName{"Not_A_Label"}
-		}), op + `spec.secrets entry "Not_A_Label" is not a valid DNS-1123 name`},
+			c.Spec.Bindings.Secret = []ObjectName{"Not_A_Label"}
+		}), op + `spec.bindings.secret entry "Not_A_Label" is not a valid DNS-1123 name`},
 		{"bad config", catalogWith(catalogService("cs", gold, bound), func(c *CatalogService) {
-			c.Spec.Config = []ObjectName{"Bad_Config"}
-		}), op + `spec.config entry "Bad_Config" is not a valid DNS-1123 name`},
+			c.Spec.Bindings.Config = []ObjectName{"Bad_Config"}
+		}), op + `spec.bindings.config entry "Bad_Config" is not a valid DNS-1123 name`},
 		{"empty config in second entry", catalogWith(catalogService("cs", gold, bound), func(c *CatalogService) {
-			c.Spec.Config = []ObjectName{"ok", ""}
-		}), op + `spec.config entry "" is not a valid DNS-1123 name`},
+			c.Spec.Bindings.Config = []ObjectName{"ok", ""}
+		}), op + `spec.bindings.config entry "" is not a valid DNS-1123 name`},
 		{"blob before config", catalogWith(catalogService("cs", gold, bound, blob("B", "gold")), func(c *CatalogService) {
-			c.Spec.Config = []ObjectName{"Bad_Config"}
-		}), op + `spec.blob alias "B" is not a valid DNS-1123 label`},
+			c.Spec.Bindings.Config = []ObjectName{"Bad_Config"}
+		}), op + `spec.bindings.blob alias "B" is not a valid DNS-1123 label`},
 		{"catalog prefix before config", catalogWith(catalogService("cs", CatalogRef{Bucket: "lakehouse", Prefix: "Bad"}, bound), func(c *CatalogService) {
-			c.Spec.Config = []ObjectName{"Bad_Config"}
+			c.Spec.Bindings.Config = []ObjectName{"Bad_Config"}
 		}), op + `spec.catalog.prefix "Bad" is not a valid DNS-1123 label`},
 		{"catalog binding before config", catalogWith(catalogService("cs", gold, bronze), func(c *CatalogService) {
-			c.Spec.Config = []ObjectName{"Bad_Config"}
-		}), op + `spec.catalog ("lakehouse"/"gold") must be one of spec.blob bindings (the catalog prefix must be a bound, owned blob binding so the engine can write it)`},
+			c.Spec.Bindings.Config = []ObjectName{"Bad_Config"}
+		}), op + `spec.catalog ("lakehouse"/"gold") must be one of spec.bindings.blob (the catalog prefix must be a bound, owned blob binding so the engine can write it)`},
 		{"secret before config", catalogWith(catalogService("cs", gold, bound), func(c *CatalogService) {
-			c.Spec.Secrets = []ObjectName{"Bad_Secret"}
-			c.Spec.Config = []ObjectName{"Bad_Config"}
-		}), op + `spec.secrets entry "Bad_Secret" is not a valid DNS-1123 name`},
+			c.Spec.Bindings.Secret = []ObjectName{"Bad_Secret"}
+			c.Spec.Bindings.Config = []ObjectName{"Bad_Config"}
+		}), op + `spec.bindings.secret entry "Bad_Secret" is not a valid DNS-1123 name`},
 		{"config before ingress", catalogWith(catalogService("cs", gold, bound), func(c *CatalogService) {
-			c.Spec.Config = []ObjectName{"Bad_Config"}
+			c.Spec.Bindings.Config = []ObjectName{"Bad_Config"}
 			c.Spec.Ingress = &Ingress{Enabled: new(true), Path: "lake"}
-		}), op + `spec.config entry "Bad_Config" is not a valid DNS-1123 name`},
+		}), op + `spec.bindings.config entry "Bad_Config" is not a valid DNS-1123 name`},
 		{"unrooted ingress path", catalogWith(catalogService("cs", gold, bound), func(c *CatalogService) {
 			c.Spec.Ingress = &Ingress{Enabled: new(true), Path: "catalog/lake"}
 		}), op + `spec.ingress.path "catalog/lake" must begin with '/'`},

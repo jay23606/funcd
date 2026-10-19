@@ -1,6 +1,6 @@
 # ADR-0248: Every kind declares the stores it owns at its root
 
-- **Status**: Accepted (2026-10-19), after two judge rounds, under `adr-batch` with acceptance delegated by the
+- **Status**: Reviewing (2026-10-19), implemented; Accepted (2026-10-19), after two judge rounds, under `adr-batch` with acceptance delegated by the
   decider, who also chose the narrower scope for the Workflow and the standalone CatalogService. The judge added one
   ownership check for every owner kind, ADR-0178's supersession for `ref` and App stores, ADR-0213's ConfigMap and
   Secret rules, the GC pairs and the Site rules.

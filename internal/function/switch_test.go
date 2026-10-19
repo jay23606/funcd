@@ -267,13 +267,13 @@ func TestFailedGateKeepsOldServing(t *testing.T) {
 	}{
 		{"artifact", "ArtifactUnresolved", func(fn *v1.Function) { fn.Spec.Image = "oci://example/missing:v2" }},
 		{"shape", "ShapeInvalid", func(fn *v1.Function) { fn.Spec.Handler = "" }},
-		{"secret", "SecretResolveFailed", func(fn *v1.Function) { fn.Spec.Secrets = []v1.ObjectName{"db"} }},
-		{"config", "ConfigResolveFailed", func(fn *v1.Function) { fn.Spec.Config = []v1.ObjectName{"missing"} }},
+		{"secret", "SecretResolveFailed", func(fn *v1.Function) { fn.Spec.Bindings.Secret = []v1.ObjectName{"db"} }},
+		{"config", "ConfigResolveFailed", func(fn *v1.Function) { fn.Spec.Bindings.Config = []v1.ObjectName{"missing"} }},
 		{"data-reference", "KVStoreNotFound", func(fn *v1.Function) {
-			fn.Spec.KV = []v1.FunctionKV{{Alias: "cache", Store: "nostore", Table: "t"}}
+			fn.Spec.Bindings.KV = []v1.FunctionKV{{Alias: "cache", Store: "nostore", Table: "t"}}
 		}},
 		{"catalog", "CatalogNotReady", func(fn *v1.Function) {
-			fn.Spec.Catalogs = []v1.FunctionCatalog{{Alias: "lake", Catalog: "nolake"}}
+			fn.Spec.Bindings.Catalog = []v1.FunctionCatalog{{Alias: "lake", Catalog: "nolake"}}
 		}},
 	}
 	for _, tc := range cases {
@@ -421,7 +421,7 @@ func TestDrainProceedsWhileAGateFails(t *testing.T) {
 	h.reconcile(t, "echo")
 	require.Equal(t, "echo-1", h.getFn(t, "echo").Status.DrainingRevision)
 
-	h.apply(t, "echo", func(fn *v1.Function) { fn.Spec.Config = []v1.ObjectName{"missing"} })
+	h.apply(t, "echo", func(fn *v1.Function) { fn.Spec.Bindings.Config = []v1.ObjectName{"missing"} })
 	time.Sleep(40 * time.Millisecond)
 	h.reconcile(t, "echo")
 	fn := h.getFn(t, "echo")
@@ -658,7 +658,7 @@ func TestGateFailureStopsTheBootingRevision(t *testing.T) {
 	h.configMap(t, "app")
 	h.deployReady(t, "echo")
 	h.rt.serveRevision(t, "echo-2", http.StatusServiceUnavailable)
-	h.apply(t, "echo", func(fn *v1.Function) { fn.Spec.Config = []v1.ObjectName{"app"} })
+	h.apply(t, "echo", func(fn *v1.Function) { fn.Spec.Bindings.Config = []v1.ObjectName{"app"} })
 	h.reconcile(t, "echo")
 	require.Equal(t, runtime.StateRunning, h.rt.revisionStates("echo")["echo-2"][0], "revision 2 boots")
 
@@ -681,7 +681,7 @@ func TestFailedGateIsRecheckedNextPass(t *testing.T) {
 	h := newShimHarness(t, http.StatusOK, false, withSwitch)
 	h.configMap(t, "app")
 	h.deployReady(t, "echo")
-	h.apply(t, "echo", func(fn *v1.Function) { fn.Spec.Config = []v1.ObjectName{"app"} })
+	h.apply(t, "echo", func(fn *v1.Function) { fn.Spec.Bindings.Config = []v1.ObjectName{"app"} })
 	h.reconcile(t, "echo")
 	require.Equal(t, "echo-2", h.getFn(t, "echo").Status.ServingRevision)
 

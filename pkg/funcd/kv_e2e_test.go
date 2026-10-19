@@ -40,13 +40,11 @@ func TestScenarioE2EKVCounterViaContextKV(t *testing.T) {
 	require.NoError(t, yaml.Unmarshal(data, &fn), "parse counter.yaml")
 	fn.Spec.Image, fn.Spec.ImageDigest = ref, digest
 
-	// ADR-0073 ordering: owner-exists (KVStore.tables[].owner is a real Function) needs the function to
-	// exist before the store; binding-validity (spec.kv names an existing store/table) needs the store to
-	// exist before the function declares spec.kv. So: apply the function WITHOUT spec.kv (default-deny —
-	// proves unbound is Forbidden), then the store (its owner now exists), then UPDATE the function to add
-	// spec.kv (the store/table now exist) — proving the binding is the capability.
+	// ADR-0248: the function declares its store at its root, so the reconciler writes it with the function as the
+	// table owner. Apply it first WITHOUT the binding (default-deny — proves unbound is Forbidden), then UPDATE it
+	// to add the binding — proving the binding is the capability.
 	unbound := fn
-	unbound.Spec.KV = nil
+	unbound.Spec.Bindings.KV = nil
 	applyFnObj(t, c, &unbound)
 	waitReady(t, c, "counter")
 
@@ -71,8 +69,6 @@ func TestScenarioE2EKVCounterViaContextKV(t *testing.T) {
 	count, body := call()
 	require.NotEqual(t, 1, count, "without a spec.kv binding, the kv-counter call is denied (default-deny): %s", body)
 
-	// Apply the owned store (owner "counter" exists now), then re-apply the function WITH spec.kv.
-	applyKVStore(t, c, filepath.Join(exDir, "store.yaml"))
 	applyFnObj(t, c, &fn)
 	waitReady(t, c, "counter")
 
@@ -99,16 +95,5 @@ func TestScenarioE2EKVCounterViaContextKV(t *testing.T) {
 func applyPolicyObj(t *testing.T, c *sdk.Client, pol *v1.Policy) {
 	t.Helper()
 	_, err := c.Apply(context.Background(), pol)
-	require.NoError(t, err)
-}
-
-// applyKVStore parses a KVStore manifest and applies it through the control-plane client (ADR-0073).
-func applyKVStore(t *testing.T, c *sdk.Client, path string) {
-	t.Helper()
-	data, err := os.ReadFile(path)
-	require.NoError(t, err)
-	var ks v1.KVStore
-	require.NoError(t, yaml.Unmarshal(data, &ks), "parse %s", path)
-	_, err = c.Apply(context.Background(), &ks)
 	require.NoError(t, err)
 }

@@ -3,9 +3,10 @@ functions:
     runtime: nodejs22
     handler: handle
     image: ${{ images.stats }}
-    catalogs:
-      - alias: lake
-        catalog: ${{ app.name + "-lake" }}
+    bindings:
+      catalog:
+        - alias: lake
+          catalog: ${{ app.name + "-lake" }}
 routes:
   - name: ${{ app.name + "-stats" }}
     host: ${{ values.host }}

@@ -38,8 +38,8 @@ func TestKVStoreHandoverCommand(t *testing.T) {
 		TypeMeta:   v1.TypeMeta{APIVersion: v1.KindWorkflow.GVK().APIVersion(), Kind: v1.KindWorkflow},
 		ObjectMeta: v1.ObjectMeta{Name: "w", Namespace: "team-a", ResourceGroup: "rg1"},
 		Spec: v1.WorkflowSpec{
-			Steps: []v1.WorkflowStep{{Name: "s", Function: &v1.FunctionStep{Image: "oci:s"}}},
-			KV:    []v1.WorkflowKVStore{{Name: "w-keep", Tables: []v1.KVTable{{Name: "t"}}}},
+			Steps:    []v1.WorkflowStep{{Name: "s", Function: &v1.FunctionStep{Image: "oci:s"}}},
+			KVStores: []v1.KVStoreEntry{{Name: "w-keep", KVStoreSpec: v1.KVStoreSpec{Tables: []v1.KVTable{{Name: "t"}}}}},
 		},
 	})
 	require.NoError(t, err)

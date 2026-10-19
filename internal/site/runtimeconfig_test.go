@@ -207,12 +207,11 @@ func TestSiteRuntimeConfigTooLarge(t *testing.T) {
 	t.Run("over the Bucket's maxObjectBytes", func(t *testing.T) {
 		h := newHarness(t)
 		h.push("v1", siteA())
-		pre := &v1.Bucket{TypeMeta: v1.TypeMeta{APIVersion: v1.KindBucket.GVK().APIVersion(), Kind: v1.KindBucket}}
-		pre.Name, pre.Namespace, pre.ResourceGroup = bucket, ns, "rg1"
-		pre.Spec.MaxObjectBytes = 64
-		_, err := h.st.Create(h.ctx, pre)
-		require.NoError(t, err)
-		h.seedSite("bi", "v1", withConfig(map[string]string{"API_URL": strings.Repeat("x", 80)}, ""))
+		h.seedBucket(64, "bi")
+		h.seedSite("bi", "v1", func(s *v1.Site) {
+			byRef(s)
+			withConfig(map[string]string{"API_URL": strings.Repeat("x", 80)}, "")(s)
+		})
 		h.redeploy("bi")
 		c := readyCond(t, h.site("bi"))
 		require.Equal(t, "RuntimeConfigTooLarge", c.Reason)
@@ -274,6 +273,7 @@ func TestScenarioSiteConfigSharedPrefix(t *testing.T) {
 	h.seedSite("bi", "v1", withConfig(map[string]string{"ENV": "one"}, ""))
 	h.seedSite("bi2", "v1", func(s *v1.Site) {
 		withConfig(map[string]string{"ENV": "two"}, "")(s)
+		byRef(s)
 		s.Spec.Ingress.Host = "bi2.example.com"
 	})
 	h.deploy("bi")

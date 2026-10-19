@@ -30,7 +30,8 @@ type Pair struct{ Owner, Child v1.Kind }
 // Pairs is every pair a reconciler stamps. Revision is last: one sweep collects a Function, then its Revisions.
 // The App pairs are one per App section kind (ADR-0199 Decision 7, ADR-0222 Decision 2), users before stores, with (App, ConfigMap) after
 // (App, Bucket) (ADR-0213 Decision 5), then (App, AppRevision) (ADR-0200 Decision 8) and the hook calls of an
-// AppRevision (ADR-0214).
+// AppRevision (ADR-0214). The Function's, Site's and Workflow's root entries follow, catalogs before stores (ADR-0248
+// Decision 8).
 func Pairs() []Pair {
 	return []Pair{
 		{Owner: v1.KindWorkflow, Child: v1.KindFunction}, {Owner: v1.KindWorkflow, Child: v1.KindKVStore},
@@ -42,6 +43,10 @@ func Pairs() []Pair {
 		{Owner: v1.KindApp, Child: v1.KindKVStore}, {Owner: v1.KindApp, Child: v1.KindSQLDatabase},
 		{Owner: v1.KindApp, Child: v1.KindBucket}, {Owner: v1.KindApp, Child: v1.KindConfigMap},
 		{Owner: v1.KindApp, Child: v1.KindAppRevision}, {Owner: v1.KindAppRevision, Child: v1.KindInvocation},
+		{Owner: v1.KindFunction, Child: v1.KindCatalogService}, {Owner: v1.KindFunction, Child: v1.KindKVStore},
+		{Owner: v1.KindFunction, Child: v1.KindSQLDatabase}, {Owner: v1.KindFunction, Child: v1.KindBucket},
+		{Owner: v1.KindFunction, Child: v1.KindConfigMap}, {Owner: v1.KindSite, Child: v1.KindBucket},
+		{Owner: v1.KindWorkflow, Child: v1.KindBucket},
 		{Owner: v1.KindFunction, Child: v1.KindRoute}, {Owner: v1.KindFunction, Child: v1.KindRevision},
 	}
 }
@@ -419,8 +424,8 @@ func (c *Collector) remove(ctx context.Context, obj v1.Object, ref v1.OwnerRefer
 	return err
 }
 
-// usedElsewhere reports whether obj, a KVStore, Bucket or ConfigMap an App controls, is still used by an object the
-// App does not control or by a Function an open run holds, which this pass does not delete (ADR-0199 Decisions 6 and
+// usedElsewhere reports whether obj, a KVStore, Bucket or ConfigMap an App controls, is still used by an object that is
+// not part of the App (partOfApp) or by a Function an open run holds, which this pass does not delete (ADR-0199 Decisions 6 and
 // 7, ADR-0213 Decision 5).
 func (c *Collector) usedElsewhere(ctx context.Context, obj v1.Object, ref v1.OwnerReference) (bool, error) {
 	if ref.Kind != v1.KindApp {
@@ -438,7 +443,7 @@ func (c *Collector) usedElsewhere(ctx context.Context, obj v1.Object, ref v1.Own
 	}
 	user, used, err := InUse(ctx, c.store, obj, func(u v1.Object) bool {
 		um := u.GetObjectMeta()
-		if !v1.ControlledBy(um.OwnerReferences, v1.KindApp, ref.UID) {
+		if !c.partOfApp(ctx, u, ref.UID) {
 			return false
 		}
 		_, fn := u.(*v1.Function)
@@ -448,6 +453,35 @@ func (c *Collector) usedElsewhere(ctx context.Context, obj v1.Object, ref v1.Own
 		c.log.DebugContext(ctx, "store in use; left for a later sweep", "kind", obj.GroupVersionKind().Kind, "namespace", m.Namespace, "name", m.Name, "user", string(user.Kind)+"/"+string(user.Name))
 	}
 	return used, err
+}
+
+// partOfApp reports whether u goes with the App of UID app: its controller chain reaches the App, or breaks at an
+// owner already gone, as a Workflow part's step Function or a Site part's Route do (ADR-0248 Decision 2). The tie is
+// the controller references, never a name: the API ignores ownerReferences on input (ADR-0048), so only reconcilers
+// stamp them, and an object whose owner is gone is dead-owned and collected by this GC; one an open run holds still
+// counts as a user (usedElsewhere). A read that fails counts u as a user, so the store waits.
+func (c *Collector) partOfApp(ctx context.Context, u v1.Object, app v1.UID) bool {
+	for range 3 { // App → part → its child is the deepest chain a part's reconciler stamps
+		refs := u.GetObjectMeta().OwnerReferences
+		if v1.ControlledBy(refs, v1.KindApp, app) {
+			return true
+		}
+		owner, ok := v1.ControllerOf(refs)
+		if !ok || owner.Kind == v1.KindApp {
+			return false
+		}
+		obj, err := c.store.Get(ctx, owner.Kind.GVK(), u.GetObjectMeta().Namespace, owner.Name)
+		switch {
+		case fault.KindOf(err) == fault.NotFound:
+			return true
+		case err != nil:
+			return false
+		case obj.GetObjectMeta().UID != owner.UID:
+			return true
+		}
+		u = obj
+	}
+	return false
 }
 
 // ownerLive reports whether the owner a controller ref names exists with the ref's UID.
@@ -567,21 +601,21 @@ func uses(u, obj v1.Object) bool {
 	switch obj.(type) {
 	case *v1.Function:
 		f, ok := u.(*v1.Function)
-		return ok && f.Name != name && slices.ContainsFunc(f.Spec.Links, func(l v1.FunctionLink) bool { return l.Target == name })
+		return ok && f.Name != name && slices.ContainsFunc(f.Spec.Bindings.Links, func(l v1.FunctionLink) bool { return l.Target == name })
 	case *v1.KVStore:
 		f, ok := u.(*v1.Function)
-		return ok && slices.ContainsFunc(f.Spec.KV, func(b v1.FunctionKV) bool { return b.Store == name })
+		return ok && slices.ContainsFunc(f.Spec.Bindings.KV, func(b v1.FunctionKV) bool { return b.Store == name })
 	case *v1.SQLDatabase:
 		f, ok := u.(*v1.Function)
-		return ok && slices.ContainsFunc(f.Spec.SQL, func(b v1.FunctionSQL) bool { return b.Database == name })
+		return ok && slices.ContainsFunc(f.Spec.Bindings.SQL, func(b v1.FunctionSQL) bool { return b.Database == name })
 	case *v1.Bucket:
 		return usesBucket(u, name)
 	case *v1.ConfigMap:
 		switch o := u.(type) {
 		case *v1.Function:
-			return slices.Contains(o.Spec.Config, name)
+			return slices.Contains(o.Spec.Bindings.Config, name)
 		case *v1.CatalogService:
-			return slices.Contains(o.Spec.Config, name)
+			return slices.Contains(o.Spec.Bindings.Config, name)
 		case *v1.Site:
 			return o.Spec.RuntimeConfig != nil && o.Spec.RuntimeConfig.ConfigMap == name
 		}
@@ -594,9 +628,9 @@ func usesBucket(u v1.Object, name v1.ObjectName) bool {
 	bound := func(b v1.FunctionBlob) bool { return b.Bucket == name }
 	switch o := u.(type) {
 	case *v1.Function:
-		return slices.ContainsFunc(o.Spec.Blob, bound)
+		return slices.ContainsFunc(o.Spec.Bindings.Blob, bound)
 	case *v1.CatalogService:
-		return slices.ContainsFunc(o.Spec.Blob, bound)
+		return slices.ContainsFunc(o.Spec.Bindings.Blob, bound)
 	case *v1.EventSource:
 		return o.Spec.Blob != nil && o.Spec.Blob.Bucket == name
 	case *v1.Route:
@@ -604,7 +638,7 @@ func usesBucket(u v1.Object, name v1.ObjectName) bool {
 			return r.Backend.Static != nil && r.Backend.Static.Bucket == name
 		})
 	case *v1.Site:
-		return o.Spec.Bucket.Name == name
+		return o.Spec.ServedBucket() == name
 	}
 	return false
 }

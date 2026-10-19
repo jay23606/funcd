@@ -18,7 +18,7 @@ func seedSite(t *testing.T, st store.Store, name v1.ObjectName) *v1.Site {
 	t.Helper()
 	s := &v1.Site{TypeMeta: v1.TypeMeta{APIVersion: v1.KindSite.GVK().APIVersion(), Kind: v1.KindSite}}
 	s.Name, s.Namespace, s.ResourceGroup = name, "staging", "rg1"
-	s.Spec = v1.SiteSpec{Image: "oci-layout:///x:v1", Bucket: v1.SiteBucket{Name: "web"}, Prefix: "web"}
+	s.Spec = v1.SiteSpec{Image: "oci-layout:///x:v1", Buckets: []v1.BucketEntry{{Name: "web"}}, Bindings: v1.SiteBindings{Blob: []v1.BlobRef{{Bucket: "web", Prefix: "web"}}}}
 	obj, err := st.Create(context.Background(), s)
 	require.NoError(t, err)
 	return obj.(*v1.Site)

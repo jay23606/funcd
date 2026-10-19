@@ -74,9 +74,12 @@ func TestScenarioCtxEnvUnchanged(t *testing.T) {
 	fn.Spec.Runtime, fn.Spec.Handler, fn.Spec.Image = "nodejs22", "handle", "file://"+art
 	fn.Spec.Replicas = 1
 	fn.Spec.Scaling = v1.Scaling{MinReplicas: 1}
-	fn.Spec.Config = []v1.ObjectName{"settings"}
-	fn.Spec.Secrets = []v1.ObjectName{"creds"}
-	fn.Spec.Catalogs = []v1.FunctionCatalog{{Alias: "lake", Catalog: "lake"}}
+	fn.Spec.Bindings.Config = []v1.ObjectName{"settings"}
+	fn.Spec.Bindings.Secret = []v1.ObjectName{"creds"}
+	fn.Spec.Bindings.Catalog = []v1.FunctionCatalog{{Alias: "lake", Catalog: "lake"}}
+	fn.Spec.ConfigMaps = []v1.ConfigMapEntry{{Ref: "settings"}}
+	fn.Spec.SecretDeclarations = []v1.SecretDeclaration{{Name: "creds", Keys: []string{"API_KEY"}}}
+	fn.Spec.CatalogServices = []v1.CatalogEntry{{Ref: "lake"}}
 	r.apply(t, fn)
 	require.Eventually(t, func() bool {
 		obj, err := p.cfg.store.Get(context.Background(), v1.KindFunction.GVK(), "default", "reader")
@@ -108,4 +111,14 @@ func TestScenarioCtxEnvUnchanged(t *testing.T) {
 	require.Equal(t, []string{"API_KEY"}, out.Secrets)
 	require.Equal(t, "k", out.Key)
 	require.Equal(t, map[string]string{"url": out.Env["FUNCD_CATALOG_LAKE_URL"], "token": out.Env["FUNCD_CATALOG_LAKE_TOKEN"]}, out.Lake)
+}
+
+// secret applies Secret creds, holding API_KEY.
+func (r *asleepRig) secret(t *testing.T) {
+	t.Helper()
+	obj, _ := v1.NewObject(v1.KindSecret)
+	s := obj.(*v1.Secret)
+	s.Name, s.Namespace, s.ResourceGroup = "creds", "default", "rg1"
+	s.Spec.Data = map[string][]byte{"API_KEY": []byte("k")}
+	r.apply(t, s)
 }

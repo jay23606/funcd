@@ -42,7 +42,7 @@ func (h *storeHandlers) HandoverKVStore(ctx context.Context, ns v1.NamespaceName
 			return nil, false, err
 		}
 		wf := obj.(*v1.Workflow)
-		if !slices.ContainsFunc(wf.Spec.KV, func(kv v1.WorkflowKVStore) bool { return kv.Name == name }) {
+		if !slices.ContainsFunc(wf.Spec.KVStores, func(kv v1.KVStoreEntry) bool { return kv.Name == name }) {
 			return nil, false, fault.Conflictf(op, "workflow %q does not declare kvstore %q in spec.kv", workflowName, name)
 		}
 		maker, live, err := h.liveMarker(ctx, ns, cur.GetObjectMeta().OwnerReferences)

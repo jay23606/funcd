@@ -32,8 +32,8 @@ func TestScenarioCtxPooledMember(t *testing.T) {
 	for _, n := range []string{"a", "b"} {
 		h.create(t, n, func(fn *v1.Function) {
 			bindLake(fn)
-			fn.Spec.Config = []v1.ObjectName{"app"}
-			fn.Spec.Secrets = []v1.ObjectName{"api-keys"}
+			fn.Spec.Bindings.Config = []v1.ObjectName{"app"}
+			fn.Spec.Bindings.Secret = []v1.ObjectName{"api-keys"}
 			fn.Spec.Pooling.Worker = "w1"
 		})
 	}

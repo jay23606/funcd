@@ -10,6 +10,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/pyvvo/funcd/internal/ownedstore"
 	"io"
 	"log/slog"
 	"net"
@@ -997,6 +998,10 @@ func (p *Platform) buildControlPlane() error {
 		ctrl.Watches(k.GVK(), fnReconciler.MapAccess)
 	}
 	ctrl.Watches(v1.KindFunction.GVK(), fnReconciler.MapPoolDisplaced) // an asleep member a newcomer displaces (ADR-0193)
+	// ADR-0248 Decision 3: a change to what a Function defines at its root re-runs that Function, which writes it back
+	for _, k := range []v1.Kind{v1.KindKVStore, v1.KindBucket, v1.KindSQLDatabase, v1.KindCatalogService, v1.KindConfigMap} {
+		ctrl.Watches(k.GVK(), ownedstore.MapOwner(c.store, v1.KindFunction))
+	}
 	ctrl.Register(v1.KindService.GVK(), dispatcher)
 	ctrl.Register(v1.KindEventSource.GVK(), source)
 	// ADR-0118 (F85): the eventing DLQ — the event store's dead-letter tenant, independent of the bus driver. It
@@ -1308,8 +1313,10 @@ func (p *Platform) buildControlPlane() error {
 			// ADR-0074 Policy validity: spec.cedar parses + references only the curated schema
 			// (kv::read/kv::write; Function/KVStore/KVTable) — so every stored Policy compiles.
 			admission.NewPolicyValidityAdmission(),
-			// ADR-0229: an image step binds only KV stores its Workflow declares in spec.kv.
-			admission.NewWorkflowStepStoresAdmission(),
+			// ADR-0248 Decision 2: a binding names what its root declares; a Function's own stores default their
+			// owner to it and its config bindings name the stored ConfigMaps.
+			admission.NewBindingDeclaredAdmission(r),
+			admission.NewFunctionStoreOwnerAdmission(),
 			// ADR-0094 WorkflowRun payload cap: spec.input ≤ payloadLimit (larger data by reference).
 			admission.NewWorkflowRunPayloadAdmission(c.workflowPayloadLimit),
 			// ADR-0098 F65: reject a WorkflowRun whose input violates the parent's cached contract (zero registry I/O).

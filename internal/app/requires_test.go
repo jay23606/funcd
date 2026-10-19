@@ -25,7 +25,7 @@ const requiresTimeout = 2 * time.Minute
 
 func lakehouseApp(version string) *v1.App {
 	a := bareApp("lakehouse", version)
-	a.Spec.Buckets = []v1.AppBucket{{Name: "lake"}}
+	a.Spec.Buckets = []v1.BucketEntry{{Name: "lake"}}
 	return a
 }
 
@@ -34,7 +34,7 @@ func billingApp(mutate func(*v1.App)) *v1.App {
 	a.Spec.Functions = []v1.AppFunction{{Name: "invoice", FunctionSpec: v1.FunctionSpec{
 		Runtime: "nodejs22", Handler: "index.handler", Image: "oci-layout://invoice:1",
 	}}}
-	a.Spec.Buckets = []v1.AppBucket{{Ref: "lake"}}
+	a.Spec.Buckets = []v1.BucketEntry{{Ref: "lake"}}
 	if mutate != nil {
 		mutate(a)
 	}
@@ -457,7 +457,7 @@ func TestAppRequiresWaitBeforeOwnershipAndSecrets(t *testing.T) {
 		Spec:       v1.FunctionSpec{Runtime: "nodejs22", Handler: "index.handler", Image: "oci-layout://hand:1"},
 	})
 	h.create(billingApp(func(a *v1.App) {
-		a.Spec.Secrets = []v1.AppSecret{{Name: "stripe", Keys: []string{"STRIPE_API_KEY"}}}
+		a.Spec.Secrets = []v1.SecretDeclaration{{Name: "stripe", Keys: []string{"STRIPE_API_KEY"}}}
 	}))
 	h.pass("billing")
 	requireCond(t, readyOf(t, h.named("billing")), v1.ConditionFalse, "RequirementNotMet",

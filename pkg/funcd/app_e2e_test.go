@@ -118,7 +118,7 @@ spec:
 	requireNothingStored(t, e)
 }
 
-// scenario: app-shared-writer-refused
+// scenario: app-shared-writer-refused (as amended by ADR-0252: a part's own root entry is refused, naming it)
 func TestScenarioAppSharedWriterRefused(t *testing.T) {
 	e := startGC(t)
 	site, _ := pushSiteBundle(t, e.layout, "web", map[string]string{"index.html": "<!doctype html><title>todo</title>"})
@@ -126,21 +126,21 @@ func TestScenarioAppSharedWriterRefused(t *testing.T) {
 		edit func(*v1.App)
 		want []string
 	}{
-		"a Site writing a declared Bucket": {
+		"a Site part declaring a Bucket": {
 			edit: func(a *v1.App) {
 				a.Spec.Sites = []v1.AppSite{{Name: "todo-web", SiteSpec: v1.SiteSpec{
-					Image:   site,
-					Bucket:  v1.SiteBucket{Name: "todo-files"},
-					Prefix:  "web",
-					Ingress: v1.SiteIngress{Ingress: v1.Ingress{Host: "web." + todoHost, Auth: &v1.RouteAuth{Mode: v1.AuthOpen}}},
+					Image:    site,
+					Buckets:  []v1.BucketEntry{{Name: "todo-files"}},
+					Bindings: v1.SiteBindings{Blob: []v1.BlobRef{{Bucket: "todo-files", Prefix: "web"}}},
+					Ingress:  v1.SiteIngress{Ingress: v1.Ingress{Host: "web." + todoHost, Auth: &v1.RouteAuth{Mode: v1.AuthOpen}}},
 				}}}
 			},
-			want: []string{"spec.sites[0].bucket.name", "spec.buckets[0]"},
+			want: []string{"spec.sites[0].buckets", "declare it at the App's root"},
 		},
 		"a Function named like a step Function": {
 			edit: func(a *v1.App) {
 				fn := a.Spec.Functions[0]
-				fn.Name, fn.KV, fn.Blob = "todo-plan-due", nil, nil
+				fn.Name, fn.Bindings.KV, fn.Bindings.Blob = "todo-plan-due", nil, nil
 				a.Spec.Functions = append(a.Spec.Functions, fn)
 			},
 			want: []string{"spec.workflows[0].steps[0].name", "spec.functions[1]"},
@@ -148,13 +148,13 @@ func TestScenarioAppSharedWriterRefused(t *testing.T) {
 		"two Workflows declaring one kv store": {
 			edit: func(a *v1.App) {
 				plan := &a.Spec.Workflows[0]
-				plan.KV = []v1.WorkflowKVStore{{Name: "todo-plan-state", Tables: []v1.KVTable{{Name: "runs", Owner: "due"}}}}
+				plan.KVStores = []v1.KVStoreEntry{{Name: "todo-plan-state", KVStoreSpec: v1.KVStoreSpec{Tables: []v1.KVTable{{Name: "runs", Owner: "due"}}}}}
 				a.Spec.Workflows = append(a.Spec.Workflows, v1.AppWorkflow{Name: "todo-report", WorkflowSpec: v1.WorkflowSpec{
-					Steps: []v1.WorkflowStep{{Name: "sum", Function: &v1.FunctionStep{Image: plan.Steps[0].Function.Image}}},
-					KV:    []v1.WorkflowKVStore{{Name: "todo-plan-state", Tables: []v1.KVTable{{Name: "runs", Owner: "sum"}}}},
+					Steps:    []v1.WorkflowStep{{Name: "sum", Function: &v1.FunctionStep{Image: plan.Steps[0].Function.Image}}},
+					KVStores: []v1.KVStoreEntry{{Name: "todo-plan-state", KVStoreSpec: v1.KVStoreSpec{Tables: []v1.KVTable{{Name: "runs", Owner: "sum"}}}}},
 				}})
 			},
-			want: []string{"spec.workflows[0].kv[0].name", "spec.workflows[1].kv[0].name"},
+			want: []string{"spec.workflows[0].kv", "an App's part declares nothing at its root"},
 		},
 	} {
 		a := todoApp(t, e)

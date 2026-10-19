@@ -211,7 +211,7 @@ func TestScenarioAppDeleteReports(t *testing.T) {
 		require.Contains(t, lines, want, out)
 	}
 	require.True(t, slices.ContainsFunc(lines, func(l string) bool { return strings.HasPrefix(l, "deleted ConfigMap/todo-settings-") }), out)
-	require.Equal(t, []string{"kept KVStore/todo-store", "kept Bucket/todo-files"}, lines[len(lines)-2:], out)
+	require.Equal(t, []string{"kept KVStore/todo-store", "kept Bucket/todo-files", "kept Bucket/todo-web"}, lines[len(lines)-3:], out)
 	_, ok = tpl.get(t, v1.KindFunction, "todo-plan-due")
 	require.False(t, ok, "todo-plan-due is gone")
 	revs, err := e.c.List(e.ctx, v1.KindRevision, "team-a")

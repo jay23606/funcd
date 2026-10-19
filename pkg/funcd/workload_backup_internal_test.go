@@ -454,7 +454,7 @@ func TestScenarioBackupOutlivesApp(t *testing.T) {
 		s.Scope, s.TTL = v1.BackupScope{}, v1.Duration(2*time.Hour)
 	}).Spec
 	r.create(r.dev, &v1.App{TypeMeta: tmeta(v1.KindApp), ObjectMeta: ordersMeta("shop"), Spec: v1.AppSpec{
-		KV: []v1.AppKVStore{{Ref: "orders-state"}}, BackupSchedules: []v1.AppBackupSchedule{{Name: "shop-nightly", BackupScheduleSpec: spec}}}})
+		KV: []v1.KVStoreEntry{{Ref: "orders-state"}}, BackupSchedules: []v1.AppBackupSchedule{{Name: "shop-nightly", BackupScheduleSpec: spec}}}})
 	require.Eventually(t, func() bool {
 		_, err := r.st.Get(r.ctx, v1.KindBackupSchedule.GVK(), "orders", "shop-nightly")
 		return err == nil
@@ -886,8 +886,9 @@ func TestScenarioCatalogCheckpointVerified(t *testing.T) {
 		r.seed(&v1.Bucket{TypeMeta: tmeta(v1.KindBucket), ObjectMeta: ordersMeta("lake-files")})
 		for _, c := range []struct{ name, prefix string }{{"lake", "lake"}, {"lake-two", "lake-two"}} {
 			r.seed(&v1.CatalogService{TypeMeta: tmeta(v1.KindCatalogService), ObjectMeta: ordersMeta(c.name), Spec: v1.CatalogServiceSpec{
-				Blob:    []v1.FunctionBlob{{Alias: "lake", Bucket: "lake-files", Prefix: c.prefix}},
-				Catalog: v1.CatalogRef{Bucket: "lake-files", Prefix: c.prefix}}})
+				Catalog:  v1.CatalogRef{Bucket: "lake-files", Prefix: c.prefix},
+				Bindings: v1.CatalogServiceBindings{Blob: []v1.FunctionBlob{{Alias: "lake", Bucket: "lake-files", Prefix: c.prefix}}},
+			}})
 		}
 		for key, data := range map[string][]byte{
 			root + "lake/_ducklake/catalog.db":     lakeCheckpoint(t, "lake", "f1.parquet"),

@@ -18,7 +18,7 @@ func lakeS3Meta(withFn bool, fnBlob ...v1.FunctionBlob) s3Meta {
 		css: map[string]*v1.CatalogService{
 			"default/lake": {
 				ObjectMeta: v1.ObjectMeta{Name: "lake", Namespace: "default", ResourceGroup: "rg1"},
-				Spec:       v1.CatalogServiceSpec{Blob: []v1.FunctionBlob{{Alias: "raw", Bucket: "lakehouse", Prefix: "raw"}}},
+				Spec:       v1.CatalogServiceSpec{Bindings: v1.CatalogServiceBindings{Blob: []v1.FunctionBlob{{Alias: "raw", Bucket: "lakehouse", Prefix: "raw"}}}},
 			},
 		},
 		buckets: map[string]*v1.Bucket{
@@ -34,7 +34,7 @@ func lakeS3Meta(withFn bool, fnBlob ...v1.FunctionBlob) s3Meta {
 	if withFn {
 		m.fns["default/lake"] = &v1.Function{
 			ObjectMeta: v1.ObjectMeta{Name: "lake", Namespace: "default", ResourceGroup: "rg1"},
-			Spec:       v1.FunctionSpec{Blob: fnBlob},
+			Spec:       v1.FunctionSpec{Bindings: v1.FunctionBindings{Blob: fnBlob}},
 		}
 	}
 	return m
@@ -81,7 +81,7 @@ func TestScenarioEngineWritesOwnedPrefix(t *testing.T) {
 	t.Run("unbound prefix is denied", func(t *testing.T) {
 		t.Parallel()
 		m := lakeS3Meta(false)
-		m.css["default/lake"].Spec.Blob = []v1.FunctionBlob{{Alias: "a", Bucket: "lakehouse", Prefix: "a"}}
+		m.css["default/lake"].Spec.Bindings.Blob = []v1.FunctionBlob{{Alias: "a", Bucket: "lakehouse", Prefix: "a"}}
 		require.False(t, write(t, m, engine, fixedPolicies{rev: "0"}))
 	})
 	t.Run("a same-named Function makes the Function the owner", func(t *testing.T) {

@@ -113,8 +113,8 @@ testcases:
           - "result.systemout ShouldContainSubstring key=gold/"
 
   # ADR-0139 (F103) — THE DECLARATIVE STATIC WEB APP. site.yaml pushed the prebuilt BI bundle with
-  # `funcdctl push --site`, and the Site ADOPTED the lakehouse Bucket (its gold/other/shared entries
-  # untouched, an ownerless `bi` prefix added), materialized the bundle under bi/<digest-slug>/, and
+  # `funcdctl push --site`, and the Site binds the lakehouse Bucket by ref over its ownerless `bi` prefix, never
+  # editing it (ADR-0248 Decision 7), materialized the bundle under bi/<digest-slug>/, and
   # programmed its owned Route: the app at `/` for bi.example.com, the gold layer mounted at `/data`.
   # All host-side curl (the data plane is forwarded to {{.dp}}); Host: selects the Site's Route.
   - name: the Site serves its bundle and assets at the edge

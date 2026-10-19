@@ -101,7 +101,7 @@ func (a bucketDeletionProtection) admitDelete(ctx context.Context, req Request) 
 		if !ok {
 			continue
 		}
-		for _, bnd := range f.Spec.Blob {
+		for _, bnd := range f.Spec.Bindings.Blob {
 			if bnd.Bucket == bucket {
 				return nil, fault.Conflictf(op, "Bucket %q is bound by function %q (alias %q); remove the binding first", bucket, f.Name, bnd.Alias)
 			}
@@ -164,7 +164,7 @@ func (a bucketDeletionProtection) admitUpdate(ctx context.Context, req Request) 
 			if !ok {
 				continue
 			}
-			for _, bnd := range f.Spec.Blob {
+			for _, bnd := range f.Spec.Bindings.Blob {
 				if bnd.Bucket == bucket && bnd.Prefix == name {
 					return nil, fault.Conflictf(op, "prefix %q of Bucket %q is still bound by function %q (alias %q); remove the binding first", name, bucket, f.Name, bnd.Alias)
 				}

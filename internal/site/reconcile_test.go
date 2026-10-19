@@ -2,6 +2,7 @@ package site_test
 
 import (
 	"context"
+	"github.com/pyvvo/funcd/internal/ownedstore"
 	"os"
 	"path/filepath"
 	"strings"
@@ -94,11 +95,11 @@ func (h *harness) seedSite(name, tag string, mutate func(*v1.Site)) *v1.Site {
 	s := &v1.Site{TypeMeta: v1.TypeMeta{APIVersion: v1.KindSite.GVK().APIVersion(), Kind: v1.KindSite}}
 	s.Name, s.Namespace, s.ResourceGroup = v1.ObjectName(name), ns, "rg1"
 	s.Spec = v1.SiteSpec{
-		Image:   h.ref(tag),
-		Bucket:  v1.SiteBucket{Name: bucket, Prefixes: []v1.BucketPrefix{{Name: "gold", Owner: "etl"}}},
-		Prefix:  "bi",
-		SPA:     true,
-		Ingress: v1.SiteIngress{Ingress: v1.Ingress{Host: "bi.example.com", Auth: &v1.RouteAuth{Mode: v1.AuthOpen}}, Rules: []v1.SiteRule{{Path: "/data", Prefix: "gold"}}},
+		Image:    h.ref(tag),
+		Buckets:  []v1.BucketEntry{{Name: bucket, BucketSpec: v1.BucketSpec{Prefixes: []v1.BucketPrefix{{Name: "gold", Owner: "etl"}}}}},
+		Bindings: v1.SiteBindings{Blob: []v1.BlobRef{{Bucket: bucket, Prefix: "bi"}}},
+		SPA:      true,
+		Ingress:  v1.SiteIngress{Ingress: v1.Ingress{Host: "bi.example.com", Auth: &v1.RouteAuth{Mode: v1.AuthOpen}}, Rules: []v1.SiteRule{{Path: "/data", Prefix: "gold"}}},
 	}
 	if mutate != nil {
 		mutate(s)
@@ -128,6 +129,31 @@ func (h *harness) route(name string) *v1.Route {
 	require.NoError(h.t, err)
 	return obj.(*v1.Route)
 }
+
+// seedBucket creates the shared Bucket outside any Site, with these ownerless prefixes, for a Site to bind by ref.
+func (h *harness) seedBucket(maxObjectBytes int64, prefixes ...string) {
+	h.t.Helper()
+	b := &v1.Bucket{TypeMeta: v1.TypeMeta{APIVersion: v1.KindBucket.GVK().APIVersion(), Kind: v1.KindBucket}}
+	b.Name, b.Namespace, b.ResourceGroup = bucket, ns, "rg1"
+	b.Spec.MaxObjectBytes = maxObjectBytes
+	for _, p := range prefixes {
+		b.Spec.Prefixes = append(b.Spec.Prefixes, v1.BucketPrefix{Name: p})
+	}
+	_, err := h.st.Create(h.ctx, b)
+	require.NoError(h.t, err)
+}
+
+// addPrefix adds an ownerless prefix to the shared Bucket, as its owner would for a second Site binding it by ref.
+func (h *harness) addPrefix(name string) {
+	h.t.Helper()
+	b := h.bucket()
+	b.Spec.Prefixes = append(b.Spec.Prefixes, v1.BucketPrefix{Name: name})
+	_, err := h.st.Update(h.ctx, b)
+	require.NoError(h.t, err)
+}
+
+// byRef binds the shared Bucket by ref instead of declaring it (ADR-0248 Decision 7).
+func byRef(s *v1.Site) { s.Spec.Buckets = []v1.BucketEntry{{Ref: bucket}} }
 
 func (h *harness) bucket() *v1.Bucket {
 	h.t.Helper()
@@ -245,39 +271,59 @@ func TestScenarioOwnedBucketAndRouteMaterialized(t *testing.T) {
 	require.Equal(t, int64(len("<title>A</title>")+len("png-A")+len("js-A")), st.Status.Bytes)
 }
 
-// scenario: retain-stamps-no-owner-reference (ADR-0139 §5) — under retain (the V1 default) the Bucket
-// carries NO OwnerReference (it outlives the Site) while the owned Route always carries one.
+// scenario: retain-stamps-no-owner-reference (ADR-0139 §5, ADR-0248 Decision 7) — under retain (the V1 default) the
+// Bucket carries only the Site's marker, no controller reference (it outlives the Site), while the owned Route always
+// carries one.
 func TestScenarioRetainStampsNoOwnerReference(t *testing.T) {
 	h := newHarness(t)
 	h.push("v1", siteA())
-	h.seedSite("bi", "v1", func(s *v1.Site) { s.Spec.Bucket.Deletion = v1.DeletionRetain })
+	h.seedSite("bi", "v1", func(s *v1.Site) { s.Spec.Buckets[0].Deletion = v1.DeletionRetain })
 	h.reconcile("bi")
-	require.Empty(t, h.bucket().OwnerReferences, "a retain Bucket is never stamped")
+	refs := h.bucket().OwnerReferences
+	require.Len(t, refs, 1, "a retain Bucket carries no controller reference")
+	require.True(t, ownedstore.Marked(refs, h.site("bi")), "the one reference is the Site's marker")
 	require.Len(t, h.route("bi").OwnerReferences, 1, "the Route is always stamped")
 }
 
-// scenario: adopted-bucket-prefixes-preserved (ADR-0139 §5) — adopting a pre-existing Bucket leaves every
-// entry the Site did not declare byte-identical (and the per-object policy); the reconciler only ADDS.
-func TestScenarioAdoptedBucketPrefixesPreserved(t *testing.T) {
+// scenario: site-follows-the-rule (ADR-0248 Decision 7) — a Site that declares by name a Bucket it did not make is
+// StoreNotOwned and leaves it untouched; with ref and the served prefix there ownerless it serves from it, editing
+// nothing in the Bucket.
+func TestScenarioSiteFollowsTheRule(t *testing.T) {
 	h := newHarness(t)
 	h.push("v1", siteA())
 	pre := &v1.Bucket{TypeMeta: v1.TypeMeta{APIVersion: v1.KindBucket.GVK().APIVersion(), Kind: v1.KindBucket}}
 	pre.Name, pre.Namespace, pre.ResourceGroup = bucket, ns, "rg1"
-	pre.Spec = v1.BucketSpec{MaxObjectBytes: 4096, Prefixes: []v1.BucketPrefix{{Name: "gold", Owner: "lakehouse-etl"}, {Name: "bronze", Owner: "ingest"}}}
+	pre.OwnerReferences = []v1.OwnerReference{{ObjectRef: v1.ObjectRef{Kind: v1.KindApp, Namespace: ns, Name: "todo"}, UID: "app-uid"}}
+	pre.Spec = v1.BucketSpec{MaxObjectBytes: 4096, Prefixes: []v1.BucketPrefix{{Name: "bi"}, {Name: "bronze", Owner: "ingest"}}}
 	_, err := h.st.Create(h.ctx, pre)
 	require.NoError(t, err)
+	before := h.bucket().Spec
 
-	h.seedSite("bi", "v1", nil) // declares gold{owner: etl} — an entry that already exists with another owner
+	h.seedSite("bi", "v1", nil)
 	h.reconcile("bi")
-	b := h.bucket()
-	require.Equal(t, int64(4096), b.Spec.MaxObjectBytes)
-	require.Equal(t, []v1.BucketPrefix{{Name: "gold", Owner: "lakehouse-etl"}, {Name: "bronze", Owner: "ingest"}, {Name: "bi"}}, b.Spec.Prefixes,
-		"existing entries untouched (gold keeps its owner), the site prefix appended ownerless")
+	require.Equal(t, "StoreNotOwned", readyCond(t, h.site("bi")).Reason)
+	require.Empty(t, h.shared.puts)
+	require.Equal(t, before, h.bucket().Spec, "a Bucket the Site did not make is never edited")
+
+	h.apply("bi", byRef)
 	require.Equal(t, v1.PhaseReady, h.deploy("bi").Status.Phase)
+	require.Equal(t, before, h.bucket().Spec, "a referenced Bucket is never edited")
+	require.Len(t, h.bucket().OwnerReferences, 1, "a ref stamps no marker")
 }
 
-// scenario: adopted-prefix-with-owner-rejected (ADR-0139 §5) — a Bucket already declaring spec.prefix
-// WITH an owner is never taken over: NotReady PrefixOwned, the entry untouched, nothing materialized.
+// A Site binding by ref a Bucket without its served prefix waits BucketNotFound, as a Function's blob binding does.
+func TestSiteRefWithoutServedPrefixWaits(t *testing.T) {
+	h := newHarness(t)
+	h.push("v1", siteA())
+	h.seedBucket(0, "docs")
+	h.seedSite("bi", "v1", byRef)
+	h.reconcile("bi")
+	require.Equal(t, "BucketNotFound", readyCond(t, h.site("bi")).Reason)
+	require.Equal(t, []v1.BucketPrefix{{Name: "docs"}}, h.bucket().Spec.Prefixes)
+}
+
+// scenario: adopted-prefix-with-owner-rejected (ADR-0139 §5, ADR-0248 Decision 7) — a referenced Bucket declaring the
+// served prefix WITH an owner is never taken over: NotReady PrefixOwned, the entry untouched, nothing materialized.
 func TestScenarioAdoptedPrefixWithOwnerRejected(t *testing.T) {
 	h := newHarness(t)
 	digest := h.push("v1", siteA())
@@ -287,7 +333,7 @@ func TestScenarioAdoptedPrefixWithOwnerRejected(t *testing.T) {
 	_, err := h.st.Create(h.ctx, pre)
 	require.NoError(t, err)
 
-	h.seedSite("bi", "v1", nil)
+	h.seedSite("bi", "v1", byRef)
 	h.reconcile("bi")
 	s := h.site("bi")
 	require.Equal(t, "PrefixOwned", readyCond(t, s).Reason)
@@ -382,7 +428,8 @@ func TestScenarioNotReadyUntilIndexPresent(t *testing.T) {
 	require.False(t, h.exists("bi/"+slug(noIndex)+"/app.js"))
 	require.NotEqual(t, s.Generation, s.Status.ObservedGeneration, "a failed generation stays unobserved")
 
-	h.seedSite("fresh", "broken", func(s *v1.Site) { s.Spec.Prefix = "fresh" })
+	h.addPrefix("fresh")
+	h.seedSite("fresh", "broken", func(s *v1.Site) { byRef(s); s.Spec.Bindings.Blob[0].Prefix = "fresh" })
 	h.reconcile("fresh")
 	f := h.site("fresh")
 	require.Equal(t, "IndexMissing", readyCond(t, f).Reason)
@@ -516,11 +563,13 @@ func TestScenarioConfiguredDefaultIndex(t *testing.T) {
 	require.True(t, h.exists("bi/"+slug(digest)+"/home.htm"))
 
 	h.push("noindex", map[string]string{"index.html": "<title>x</title>"})
-	h.seedSite("other", "noindex", func(s *v1.Site) { s.Spec.Prefix = "other" })
+	h.addPrefix("other")
+	h.seedSite("other", "noindex", func(s *v1.Site) { byRef(s); s.Spec.Bindings.Blob[0].Prefix = "other" })
 	h.reconcile("other")
 	require.Equal(t, "IndexMissing", readyCond(t, h.site("other")).Reason, "the configured default is what is asserted present")
 
-	h.seedSite("explicit", "noindex", func(s *v1.Site) { s.Spec.Prefix = "explicit"; s.Spec.Index = "index.html" })
+	h.addPrefix("explicit")
+	h.seedSite("explicit", "noindex", func(s *v1.Site) { byRef(s); s.Spec.Bindings.Blob[0].Prefix = "explicit"; s.Spec.Index = "index.html" })
 	h.reconcile("explicit")
 	require.Equal(t, "index.html", bundleRule(t, h.route("explicit")).Index, "spec.index wins over the configured default")
 }
@@ -545,8 +594,9 @@ func TestScenarioTwoHostlessSitesCoexist(t *testing.T) {
 	h.push("v2", map[string]string{"index.html": "<title>docs</title>"})
 	hostless := func(s *v1.Site) { s.Spec.Ingress = v1.SiteIngress{} }
 	h.seedSite("bi", "v1", hostless)
-	h.seedSite("docs", "v2", func(s *v1.Site) { hostless(s); s.Spec.Prefix = "docs" })
+	h.seedSite("docs", "v2", func(s *v1.Site) { hostless(s); byRef(s); s.Spec.Bindings.Blob[0].Prefix = "docs" })
 	h.reconcile("bi")
+	h.addPrefix("docs")
 	h.reconcile("docs")
 
 	_, biMount := bundleRuleAt(t, h.route("bi"))
@@ -621,16 +671,15 @@ func TestScenarioExplicitNamespaceStillRequiresHost(t *testing.T) {
 func TestSite_ObjectOverBucketCapIsNotReadyNotRetried(t *testing.T) {
 	h := newHarness(t)
 	digest := h.push("v1", map[string]string{"index.html": "<title>A</title>", "big.bin": strings.Repeat("x", 100)})
-	pre := &v1.Bucket{TypeMeta: v1.TypeMeta{APIVersion: v1.KindBucket.GVK().APIVersion(), Kind: v1.KindBucket}}
-	pre.Name, pre.Namespace, pre.ResourceGroup = bucket, ns, "rg1"
-	pre.Spec.MaxObjectBytes = 64
-	_, err := h.st.Create(h.ctx, pre)
-	require.NoError(t, err)
+	h.seedBucket(64, "bi")
 	view, ok := h.resolve(ns, bucket)
 	require.True(t, ok)
 	require.Equal(t, fault.PayloadTooLarge, fault.KindOf(view.Put(h.ctx, "probe", make([]byte, 65), blob.PutOptions{})), "blob.Capped refuses with PayloadTooLarge")
-	h.seedSite("bi", "v1", nil)
-	h.seedSite("other", "v1", func(s *v1.Site) { s.Spec.Bucket.Name = "elsewhere"; s.Spec.Prefix = "other" })
+	h.seedSite("bi", "v1", byRef)
+	h.seedSite("other", "v1", func(s *v1.Site) {
+		s.Spec.Buckets[0].Name, s.Spec.Bindings.Blob[0].Bucket = "elsewhere", "elsewhere"
+		s.Spec.Bindings.Blob[0].Prefix = "other"
+	})
 
 	res := h.reconcile("bi")
 	require.Zero(t, res.RequeueAfter)

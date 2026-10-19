@@ -513,8 +513,8 @@ func TestCLIAppDeleteReports(t *testing.T) {
 	ctx := context.Background()
 	c, url, st := newTestServer(t)
 	app := applyTodo(t, c, v1.AppSpec{
-		KV:      []v1.AppKVStore{{Name: "todo-store"}, {Name: "todo-cache", Deletion: v1.DeletionDelete}, {Ref: "shared"}},
-		Buckets: []v1.AppBucket{{Name: "todo-files"}, {Name: "todo-tmp", Deletion: v1.DeletionDelete}},
+		KV:      []v1.KVStoreEntry{{Name: "todo-store"}, {Name: "todo-cache", Deletion: v1.DeletionDelete}, {Ref: "shared"}},
+		Buckets: []v1.BucketEntry{{Name: "todo-files"}, {Name: "todo-tmp", Deletion: v1.DeletionDelete}},
 	})
 	seedAppRevision(t, st, "todo", app.UID, 1, app.Spec, v1.PhaseReady)
 	wf := seedChild(t, st, v1.KindWorkflow, "todo-plan", app, true)

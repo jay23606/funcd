@@ -196,7 +196,7 @@ func TestIssue103_NotReadyRetractsEdgeEntry(t *testing.T) {
 
 			cs := mkCatalogService("lake")
 			cs.Spec.Ingress = &v1.Ingress{Enabled: new(true), Path: "/catalog/lake"}
-			cs.Spec.Secrets = []v1.ObjectName{"quack"}
+			cs.Spec.Bindings.Secret = []v1.ObjectName{"quack"}
 			_, err := st.Create(ctx, cs)
 			require.NoError(t, err)
 			reconcileLake(t, r)

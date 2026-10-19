@@ -4,8 +4,8 @@
 # in-VM mutation via `limactl shell` (co-located with the daemon, so it doesn't race the redeploy).
 #
 # It proves two properties declaratively:
-#   1. binding-as-read-grant — each counter reads 1→2 with NO read Policy (the spec.kv binding grants it).
-#   2. fail-closed — applying counter-unbound.yaml (no spec.kv) makes context.kv.get Forbidden
+#   1. binding-as-read-grant — each counter reads 1→2 with NO read Policy (the spec.bindings.kv binding grants it).
+#   2. fail-closed — applying counter-unbound.yaml (no spec.bindings.kv) makes context.kv.get Forbidden
 #      (bound-only, not default-allow).
 name: kv-counter binding-as-read-grant (ADR-0076, containerd lane)
 
@@ -61,9 +61,9 @@ testcases:
   # does not race the redeploy the way a host-side funcdctl does), the assertion runs host-side. {{.vm}} is
   # injected by the recipe (--var) so no machine-specific path lives in this tracked file. No helper script —
   # the apply is one inline exec line; the WAIT is the negative http step's retry/delay (Venom's job).
-  - name: removing the spec.kv binding denies the read (fail-closed)
+  - name: removing the spec.bindings.kv binding denies the read (fail-closed)
     steps:
-      # apply the static no-binding config IN the VM (counter-unbound.yaml = counter.yaml minus spec.kv).
+      # apply the static no-binding config IN the VM (counter-unbound.yaml = counter.yaml minus spec.bindings.kv).
       - type: exec
         script: |
           limactl shell {{.vm}} -- sudo env FUNCD_SERVER=http://127.0.0.1:8080 FUNCD_TOKEN=funcd-dev-token \

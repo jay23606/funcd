@@ -419,7 +419,7 @@ testcases:
   - name: L5 a delete keeps the retained stores on disk and removes the stores with deletion delete
     steps:
       # Each store holds data on disk before the delete: todo-store and todo-files are retained, todo-cache, todo-tmp
-      # and the Workflow's todo-plans have deletion delete.
+      # and todo-plans have deletion delete.
       - type: exec
         script: &disk |
           limactl shell --workdir / {{.vm}} -- sudo bash -c '
@@ -603,7 +603,7 @@ testcases:
         script: |
           {{.vmsh}} '
             set -e
-            funcdctl get function todo-api -n default -o json | python3 -c "import sys,json;f=json.load(sys.stdin);print(f[\"spec\"][\"config\"][0], f[\"status\"][\"currentRevision\"])" > /tmp/settings-1
+            funcdctl get function todo-api -n default -o json | python3 -c "import sys,json;f=json.load(sys.stdin);print(f[\"spec\"][\"bindings\"][\"config\"][0], f[\"status\"][\"currentRevision\"])" > /tmp/settings-1
             funcdctl app deploy {{.reg}}/todo:1.0.0 {{.values}} -f /opt/lane/values/greeting.yaml'
         info: "deploy the new greeting → {{.result.systemout}} {{.result.systemerr}}"
         assertions:
@@ -632,7 +632,7 @@ testcases:
               return json.loads(out.stdout)
           first, first_rev = open("/tmp/settings-1").read().split()
           api = get("function", "todo-api")
-          name, rev = api["spec"]["config"][0], api["status"]["currentRevision"]
+          name, rev = api["spec"]["bindings"]["config"][0], api["status"]["currentRevision"]
           maps = sorted(m["metadata"]["name"] for m in get("configmap") if m["metadata"]["name"].startswith("todo-settings-"))
           first_map = get("configmap", name)["metadata"]["creationTimestamp"] <= get("revision", rev)["metadata"]["creationTimestamp"]
           print("API_CONFIG=" + ("todo-1" if name == first else "hashed" if len(name) == len("todo-settings-") + 10 else name) + ",MAPS=" + str(len(maps)) + ",REVISION=" + ("todo-1" if rev == first_rev else "new") + ",MAP_BEFORE_REVISION=" + str(first_map))
@@ -673,7 +673,7 @@ testcases:
           app = get("app", "todo")
           revs = {r["metadata"]["name"]: r["spec"]["spec"] for r in get("apprevision")}
           maps = sorted(m["metadata"]["name"] for m in get("configmap") if m["metadata"]["name"].startswith("todo-settings-"))
-          print("CURRENT=" + app["status"].get("currentRevision", "") + ",SPEC=" + ("todo-1" if revs.get("todo-3") == revs["todo-1"] else "other") + ",MAPS=" + ";".join("todo-1" if m == first else m for m in maps) + ",API_CONFIG=" + ("todo-1" if get("function", "todo-api")["spec"]["config"][0] == first else "other"))
+          print("CURRENT=" + app["status"].get("currentRevision", "") + ",SPEC=" + ("todo-1" if revs.get("todo-3") == revs["todo-1"] else "other") + ",MAPS=" + ";".join("todo-1" if m == first else m for m in maps) + ",API_CONFIG=" + ("todo-1" if get("function", "todo-api")["spec"]["bindings"]["config"][0] == first else "other"))
           PY
           '
         retry: 30
@@ -884,7 +884,7 @@ testcases:
           - result.systemout ShouldContainSubstring PLANNER=Ready/
           - result.systemout ShouldContainSubstring APP=Ready/
 
-  - name: L12 an App whose Workflow step binds a store the Workflow does not declare is refused at apply
+  - name: L12 an App whose Workflow step binds a store neither the Workflow nor the App declares is refused at apply
     steps:
       - type: exec
         script: |
@@ -893,7 +893,7 @@ testcases:
         info: "apply → {{.result.systemout}} {{.result.systemerr}}"
         assertions:
           - result.systemout ShouldNotStartWith EXIT=0
-          - "result.systemout ShouldContainSubstring 'spec.workflows[0] (Workflow/todo-replan): admission.workflow-step-stores: spec.steps[0].function.kv[0].store todo-store is not declared in spec.kv'"
+          - "result.systemout ShouldContainSubstring 'spec.workflows[0] (Workflow/todo-replan): admission.binding-declared: spec.steps[0].function.bindings.kv[0]: KVStore todo-store is not declared in spec.kv'"
       # The API answers 400 to the create and to its dry run (ADR-0220), naming the field.
       - type: exec
         script: |
@@ -916,8 +916,8 @@ testcases:
           '
         info: "the API → {{.result.systemout}} {{.result.systemerr}}"
         assertions:
-          - "result.systemout ShouldContainSubstring 'DRY_RUN=400 admission.app-parts: spec.workflows[0] (Workflow/todo-replan): admission.workflow-step-stores: spec.steps[0].function.kv[0].store todo-store is not declared in spec.kv'"
-          - "result.systemout ShouldContainSubstring 'CREATE=400 admission.app-parts: spec.workflows[0] (Workflow/todo-replan): admission.workflow-step-stores: spec.steps[0].function.kv[0].store todo-store is not declared in spec.kv'"
+          - "result.systemout ShouldContainSubstring 'DRY_RUN=400 admission.app-parts: spec.workflows[0] (Workflow/todo-replan): admission.binding-declared: spec.steps[0].function.bindings.kv[0]: KVStore todo-store is not declared in spec.kv'"
+          - "result.systemout ShouldContainSubstring 'CREATE=400 admission.app-parts: spec.workflows[0] (Workflow/todo-replan): admission.binding-declared: spec.steps[0].function.bindings.kv[0]: KVStore todo-store is not declared in spec.kv'"
       - type: exec
         script: |
           {{.vmsh}} '

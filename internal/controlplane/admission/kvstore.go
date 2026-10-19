@@ -119,7 +119,7 @@ func (a kvStoreDeletionProtection) admitDelete(ctx context.Context, req Request)
 		if !ok {
 			continue
 		}
-		for _, b := range f.Spec.KV {
+		for _, b := range f.Spec.Bindings.KV {
 			if b.Store == store {
 				return nil, fault.Conflictf(op, "KVStore %q is bound by function %q (alias %q); remove the binding first", store, f.Name, b.Alias)
 			}
@@ -196,7 +196,7 @@ func (a kvStoreDeletionProtection) admitUpdate(ctx context.Context, req Request)
 			if !ok {
 				continue
 			}
-			for _, b := range f.Spec.KV {
+			for _, b := range f.Spec.Bindings.KV {
 				if b.Store == store && b.Table == name {
 					return nil, fault.Conflictf(op, "table %q of KVStore %q is still bound by function %q (alias %q); remove the binding first", name, store, f.Name, b.Alias)
 				}

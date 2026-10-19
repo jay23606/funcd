@@ -244,10 +244,11 @@ configMaps:
 functions:
   - name: ${{ app.name + "-api" }}
     image: ${{ images.api }}
-    secrets:
-      - ${{ app.name + "-stripe-key" }}
-    config:
-      - ${{ app.name + "-settings" }}
+    bindings:
+      secret:
+        - ${{ app.name + "-stripe-key" }}
+      config:
+        - ${{ app.name + "-settings" }}
 ```
 
 Outside the App, an operator sets the values with an ordinary Secret. Until that Secret exists with both declared

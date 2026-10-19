@@ -356,8 +356,14 @@ func TestIssue69_GatedMemberNotLoadedIntoPool(t *testing.T) {
 	t.Parallel()
 	h := newShimHarness(t, http.StatusOK, false, withSwitch, withNodePool)
 	h.create(t, "a-ok", func(fn *v1.Function) { fn.Spec.Pooling.Worker = "gated" })
-	h.create(t, "b-secret", func(fn *v1.Function) { fn.Spec.Pooling.Worker = "gated"; fn.Spec.Secrets = []v1.ObjectName{"db"} })
-	h.create(t, "c-config", func(fn *v1.Function) { fn.Spec.Pooling.Worker = "gated"; fn.Spec.Config = []v1.ObjectName{"settings"} })
+	h.create(t, "b-secret", func(fn *v1.Function) {
+		fn.Spec.Pooling.Worker = "gated"
+		fn.Spec.Bindings.Secret = []v1.ObjectName{"db"}
+	})
+	h.create(t, "c-config", func(fn *v1.Function) {
+		fn.Spec.Pooling.Worker = "gated"
+		fn.Spec.Bindings.Config = []v1.ObjectName{"settings"}
+	})
 	for _, name := range []string{"b-secret", "c-config", "a-ok"} {
 		h.reconcile(t, name)
 	}

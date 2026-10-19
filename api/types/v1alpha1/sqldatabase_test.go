@@ -28,7 +28,7 @@ func TestSQLBindingValidate(t *testing.T) {
 	fn := func(sql ...v1.FunctionSQL) error {
 		f := &v1.Function{TypeMeta: v1.TypeMeta{APIVersion: v1.KindFunction.GVK().APIVersion(), Kind: v1.KindFunction}}
 		f.Name, f.Namespace, f.ResourceGroup = "todo-api", "default", "rg1"
-		f.Spec = v1.FunctionSpec{Runtime: "nodejs22", Handler: "handle", Image: "oci-layout://x:1", SQL: sql}
+		f.Spec = v1.FunctionSpec{Runtime: "nodejs22", Handler: "handle", Image: "oci-layout://x:1", Bindings: v1.FunctionBindings{SQL: sql}}
 		return f.Validate()
 	}
 	require.NoError(t, fn(v1.FunctionSQL{Alias: "app", Database: "todo-db"}, v1.FunctionSQL{Alias: "audit", Database: "todo-db"}))

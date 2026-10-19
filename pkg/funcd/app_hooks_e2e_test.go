@@ -76,10 +76,10 @@ func hookedTodo(t *testing.T, e *gcEnv, img, version string) *v1.App {
 	a := todoV1(t, e)
 	a.Spec.Version = version
 	a.Spec.Functions = append(a.Spec.Functions, v1.AppFunction{Name: "todo-migrate", FunctionSpec: v1.FunctionSpec{
-		Runtime: "nodejs22",
-		Handler: "handle",
-		Image:   img,
-		KV:      []v1.FunctionKV{{Alias: "store", Store: "todo-store", Table: "todos"}},
+		Runtime:  "nodejs22",
+		Handler:  "handle",
+		Image:    img,
+		Bindings: v1.FunctionBindings{KV: []v1.FunctionKV{{Alias: "store", Store: "todo-store", Table: "todos"}}},
 	}})
 	a.Spec.Hooks = &v1.AppHooks{PreApply: []v1.AppHook{{Function: "todo-migrate"}}}
 	return a

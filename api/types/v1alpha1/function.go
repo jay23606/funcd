@@ -78,53 +78,19 @@ type FunctionSpec struct {
 	// access (bindings, owned data, grants) co-locate as handlers in one pool worker; status.pool
 	// names it.
 	Pooling Pooling `json:"pooling,omitempty"`
-	// Secrets names the Secret resources in this function's namespace whose Data is injected
-	// into the worker as env vars at materialization (ADR-0057, F15 last mile). Each named
-	// Secret's Data keys become env-var names; reserved FUNCD_* keys are never overridable.
-	// Empty ⇒ no secret injection. Only the NAMES are persisted; resolved values are never
-	// stored on the Function (they live only in the worker's env). Resolution is PDP-authorized
-	// (ADR-0022/0018); an unauthorized or missing Secret fails the function closed (not Ready).
-	Secrets []ObjectName `json:"secrets,omitempty"`
-	// Config names the ConfigMap resources in this function's namespace whose Data is injected
-	// into the worker as env vars at materialization (ADR-0093), mirroring Secrets but for
-	// NON-sensitive config (a plain store read, no PDP). Config is merged BEFORE Secrets, so a
-	// bound Secret overrides a config default. Reserved FUNCD_* keys are never overridable.
-	// Empty ⇒ no config injection. Fails closed (not Ready, ConfigResolveFailed) if a named
-	// ConfigMap is missing.
-	Config []ObjectName `json:"config,omitempty"`
-	// Links declares synchronous fn-to-fn RPC dependencies (ADR-0064, F33): each binds a local
-	// alias to a target Function in this namespace, callable from the handler as
-	// context.invoke(alias, input). The alias is the capability — with no matching link, invoke
-	// fails closed. Empty ⇒ no links. Cross-resource validity (target exists, acyclic) is an
-	// admission (ADR-0063); only the structural rules are checked in Validate.
-	Links []FunctionLink `json:"links,omitempty"`
-	// KV declares this function's KV bindings (ADR-0073, F42): each binds a local alias to a (store,
-	// table) sub-domain in this namespace, reachable from the handler as context.kv.<verb>(alias, …).
-	// The binding IS the capability — with no matching entry, context.kv on that alias is Forbidden
-	// (default-deny). Mirrors spec.links (wrangler-style: naming lives on the consumer). Empty ⇒ no
-	// KV access. Cross-resource validity (the store/table exist) is an admission (ADR-0063); only the
-	// structural rules (alias is a unique DNS-1123 label) are checked in Validate.
-	KV []FunctionKV `json:"kv,omitempty"`
-	// Blob declares this function's blob (S3) bindings (ADR-0080, F47): each binds a local alias to a
-	// (bucket, prefix) sub-domain in this namespace, reachable from the handler / its DuckDB as
-	// s3://<bucket>/<prefix>/…. The binding IS the read capability — with no matching entry, blob access
-	// on that alias is Forbidden (default-deny); writes require this function to be the prefix's owner.
-	// Mirrors spec.kv (wrangler-style: naming lives on the consumer). Empty ⇒ no blob access.
-	// Cross-resource validity (the bucket/prefix exist) is an admission; only the structural rules
-	// (alias is a unique DNS-1123 label) are checked in Validate.
-	Blob []FunctionBlob `json:"blob,omitempty"`
-	// Catalogs declares this function's CatalogService consumer bindings (ADR-0091, F61): each binds a
-	// local alias to a CatalogService in this namespace, injected into the worker as
-	// FUNCD_CATALOG_<ALIAS>_URL (the catalog's status.endpoint) + FUNCD_CATALOG_<ALIAS>_TOKEN (its
-	// QUACK_TOKEN). Declaring the binding IS the grant — only a declaring function receives the token;
-	// it is never surfaced in CatalogService.status. The reconcile requeues (fail-closed) until the
-	// bound catalog is Ready. Empty ⇒ no catalog consumption. Cross-resource validity (the catalog
-	// exists) is an admission; only the structural rules (alias is a unique DNS-1123 label) are Validate.
-	Catalogs []FunctionCatalog `json:"catalogs,omitempty"`
-	// SQL declares this function's SQL database bindings (ADR-0233, F129): each binds a local alias to a
-	// SQLDatabase in this namespace, reached through context.sql. The binding is the read grant; writes need the
-	// database's owner or a writer role. A missing database holds the Function Pending (SQLDatabaseNotFound).
-	SQL []FunctionSQL `json:"sql,omitempty"`
+	// Bindings are what the Function's code uses (ADR-0246): each binding is its grant, named like the ctx accessor
+	// that reaches it.
+	Bindings FunctionBindings `json:"bindings,omitzero"`
+	// KVStores, Buckets, SQLDatabases, CatalogServices and ConfigMaps are what the Function declares at its root
+	// (ADR-0248): by name it owns the resource, which carries its marker; by ref it binds an existing one. An owner
+	// left out of a store's tables, prefixes or database is the Function (the function-store-owner admission).
+	KVStores        []KVStoreEntry     `json:"kv,omitempty"`
+	Buckets         []BucketEntry      `json:"buckets,omitempty"`
+	SQLDatabases    []SQLDatabaseEntry `json:"sql,omitempty"`
+	CatalogServices []CatalogEntry     `json:"catalogs,omitempty"`
+	ConfigMaps      []ConfigMapEntry   `json:"configMaps,omitempty"`
+	// SecretDeclarations are the Secrets the Function's bindings name, with the keys it reads (ADR-0213 Decision 8).
+	SecretDeclarations []SecretDeclaration `json:"secrets,omitempty"`
 	// Ingress is the Function's edge exposure (ADR-0241): unset, it answers by name at /function/<name> while its
 	// namespace is implicit; a host or a path gives it a Route of its own.
 	Ingress *Ingress `json:"ingress,omitempty"`
@@ -274,6 +240,11 @@ func (f *Function) Validate() error {
 	if err := f.Spec.validateProtocol(); err != nil {
 		return err
 	}
+	s := &f.Spec
+	roots := rootSections{ConfigMaps: s.ConfigMaps, KV: s.KVStores, Buckets: s.Buckets, SQL: s.SQLDatabases, Catalogs: s.CatalogServices, Secrets: s.SecretDeclarations}
+	if err := roots.validate("Function.Validate", f.ObjectMeta); err != nil {
+		return err
+	}
 	return f.Spec.Validate()
 }
 
@@ -292,8 +263,8 @@ func (s *FunctionSpec) Validate() error {
 	if err := CheckDuration(op, "spec.scaling.idleTimeout", s.Scaling.IdleTimeout, 0, MaxIdleTimeout); err != nil {
 		return err
 	}
-	for i := range s.Links {
-		if err := CheckDuration(op, fmt.Sprintf("spec.links[%d].timeout", i), s.Links[i].Timeout, 0, MaxLinkTimeout); err != nil {
+	for i := range s.Bindings.Links {
+		if err := CheckDuration(op, fmt.Sprintf("spec.bindings.links[%d].timeout", i), s.Bindings.Links[i].Timeout, 0, MaxLinkTimeout); err != nil {
 			return err
 		}
 	}
@@ -303,20 +274,20 @@ func (s *FunctionSpec) Validate() error {
 	}
 	// Link structural rules (ADR-0064): alias is a DNS-1123 label, unique within Links; target is a
 	// DNS-1123 label. Cross-resource rules (target exists, no cycle, no self-link) are an admission.
-	seen := make(map[string]bool, len(s.Links))
-	for _, l := range s.Links {
+	seen := make(map[string]bool, len(s.Bindings.Links))
+	for _, l := range s.Bindings.Links {
 		if !dnsLabel.MatchString(l.Alias) {
-			return fault.Invalidf(op, "spec.links alias %q is not a valid DNS-1123 label", l.Alias)
+			return fault.Invalidf(op, "spec.bindings.links alias %q is not a valid DNS-1123 label", l.Alias)
 		}
 		if seen[l.Alias] {
-			return fault.Invalidf(op, "spec.links alias %q is duplicated", l.Alias)
+			return fault.Invalidf(op, "spec.bindings.links alias %q is duplicated", l.Alias)
 		}
 		seen[l.Alias] = true
 		if !dnsLabel.MatchString(string(l.Target)) {
-			return fault.Invalidf(op, "spec.links[%s].target %q is not a valid Function name", l.Alias, l.Target)
+			return fault.Invalidf(op, "spec.bindings.links[%s].target %q is not a valid Function name", l.Alias, l.Target)
 		}
 	}
-	return s.validateBindings(op, "spec")
+	return s.validateBindings(op, "spec.bindings")
 }
 
 // validateProtocol refuses a protocol other than cloudevent and http, and an http Function that is pooled or that runs
@@ -344,8 +315,8 @@ func (s *FunctionSpec) validateProtocol() error {
 func (s *FunctionSpec) validateBindings(op, prefix string) error {
 	// KV binding structural rules (ADR-0073): alias is a DNS-1123 label, unique within KV; table is a
 	// DNS-1123 label. Cross-resource rules (the store/table exist) are an admission.
-	kvSeen := make(map[string]bool, len(s.KV))
-	for _, b := range s.KV {
+	kvSeen := make(map[string]bool, len(s.Bindings.KV))
+	for _, b := range s.Bindings.KV {
 		if !dnsLabel.MatchString(b.Alias) {
 			return fault.Invalidf(op, "%s.kv alias %q is not a valid DNS-1123 label", prefix, b.Alias)
 		}
@@ -359,8 +330,8 @@ func (s *FunctionSpec) validateBindings(op, prefix string) error {
 	}
 	// Blob binding structural rules (ADR-0080): alias is a DNS-1123 label, unique within Blob; prefix is a
 	// DNS-1123 label. Cross-resource rules (the bucket/prefix exist) are an admission.
-	blobSeen := make(map[string]bool, len(s.Blob))
-	for _, b := range s.Blob {
+	blobSeen := make(map[string]bool, len(s.Bindings.Blob))
+	for _, b := range s.Bindings.Blob {
 		if !dnsLabel.MatchString(b.Alias) {
 			return fault.Invalidf(op, "%s.blob alias %q is not a valid DNS-1123 label", prefix, b.Alias)
 		}
@@ -374,17 +345,17 @@ func (s *FunctionSpec) validateBindings(op, prefix string) error {
 	}
 	// Catalog binding structural rules (ADR-0091): alias is a DNS-1123 label, unique within Catalogs;
 	// catalog is a DNS-1123 label. Cross-resource validity (the CatalogService exists) is an admission.
-	cats := make([][2]string, 0, len(s.Catalogs))
-	for _, c := range s.Catalogs {
+	cats := make([][2]string, 0, len(s.Bindings.Catalog))
+	for _, c := range s.Bindings.Catalog {
 		cats = append(cats, [2]string{c.Alias, string(c.Catalog)})
 	}
-	if err := checkAliasTargets(op, prefix, "catalogs", "catalog", "CatalogService", cats); err != nil {
+	if err := checkAliasTargets(op, prefix, "catalog", "catalog", "CatalogService", cats); err != nil {
 		return err
 	}
 	// SQL binding structural rules (ADR-0233): alias is a DNS-1123 label, unique within SQL; database is a
 	// DNS-1123 name. The database's existence is reconcile-time (SQLDatabaseNotFound).
-	dbs := make([][2]string, 0, len(s.SQL))
-	for _, b := range s.SQL {
+	dbs := make([][2]string, 0, len(s.Bindings.SQL))
+	for _, b := range s.Bindings.SQL {
 		dbs = append(dbs, [2]string{b.Alias, string(b.Database)})
 	}
 	if err := checkAliasTargets(op, prefix, "sql", "database", "SQLDatabase", dbs); err != nil {
@@ -393,7 +364,7 @@ func (s *FunctionSpec) validateBindings(op, prefix string) error {
 	// Config binding structural rules (ADR-0093): each names a ConfigMap in this namespace and
 	// must be a valid DNS-1123 ObjectName (mirrors CatalogService.spec.config). Cross-resource
 	// existence is the reconciler's plain store read (fail-closed, ConfigResolveFailed), not Validate.
-	for _, cm := range s.Config {
+	for _, cm := range s.Bindings.Config {
 		if !dnsLabel.MatchString(string(cm)) {
 			return fault.Invalidf(op, "%s.config entry %q is not a valid DNS-1123 name", prefix, cm)
 		}

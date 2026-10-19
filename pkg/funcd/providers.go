@@ -18,18 +18,18 @@ import (
 func providerCatalog() (*provider.Catalog, error) {
 	return provider.New(
 		// built-in data-plane services (function-bindable)
-		provider.Descriptor{Name: "kv", Kind: provider.Builtin, Port: "kvstore.KV", Bindings: []string{"spec.kv"}, Summary: "namespaced key-value store"},
-		provider.Descriptor{Name: "blob", Kind: provider.Builtin, Port: "blob.Bucket", Bindings: []string{"spec.blob"}, Summary: "opaque-byte object substrate"},
+		provider.Descriptor{Name: "kv", Kind: provider.Builtin, Port: "kvstore.KV", Bindings: []string{"spec.bindings.kv"}, Summary: "namespaced key-value store"},
+		provider.Descriptor{Name: "blob", Kind: provider.Builtin, Port: "blob.Bucket", Bindings: []string{"spec.bindings.blob"}, Summary: "opaque-byte object substrate"},
 		provider.Descriptor{Name: "secrets", Kind: provider.Builtin, Port: "secrets.Resolver", Summary: "secret resolution + at-rest encryption"},
 		provider.Descriptor{Name: "eventing", Kind: provider.Builtin, Summary: "CloudEvents trigger delivery (EventSource)"},
-		provider.Descriptor{Name: "invoke", Kind: provider.Builtin, Bindings: []string{"spec.links"}, Summary: "synchronous fn-to-fn RPC (context.invoke)"},
+		provider.Descriptor{Name: "invoke", Kind: provider.Builtin, Bindings: []string{"spec.bindings.links"}, Summary: "synchronous fn-to-fn RPC (context.invoke)"},
 		// built-in protocol gateways (infra; no function-facing binding)
 		provider.Descriptor{Name: "ingress", Kind: provider.Builtin, Port: "gateway.Gateway", Summary: "HTTP ingress gateway"},
 		provider.Descriptor{Name: "egress", Kind: provider.Builtin, Summary: "egress gateway (default-deny + audit)"},
-		provider.Descriptor{Name: "s3", Kind: provider.Builtin, Port: "blob.Bucket", Bindings: []string{"spec.blob"}, Summary: "S3-protocol frontend over blob (ADR-0080)"},
+		provider.Descriptor{Name: "s3", Kind: provider.Builtin, Port: "blob.Bucket", Bindings: []string{"spec.bindings.blob"}, Summary: "S3-protocol frontend over blob (ADR-0080)"},
 		provider.Descriptor{Name: "log-ingest", Kind: provider.Builtin, Summary: "function-telemetry side channel + funclog read path (ADR-0081/0084)"},
 		// add-on providers — out-of-daemon managed engines (ADR-0087)
-		provider.Descriptor{Name: "catalog-query", Kind: provider.Addon, Bindings: []string{"spec.catalogs"}, Summary: "DuckLake catalog/query service (F48, ADR-0086)"},
+		provider.Descriptor{Name: "catalog-query", Kind: provider.Addon, Bindings: []string{"spec.bindings.catalog"}, Summary: "DuckLake catalog/query service (F48, ADR-0086)"},
 		provider.Descriptor{Name: "sql", Kind: provider.Addon, Summary: "one rqlite SQL engine per SQLDatabase (ADR-0232)"},
 	)
 }

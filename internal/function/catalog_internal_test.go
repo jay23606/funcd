@@ -30,10 +30,10 @@ func seedCatalogServiceIn(t *testing.T, r *Reconciler, name, endpoint string, ph
 	obj, _ := v1.NewObject(v1.KindCatalogService)
 	cs := obj.(*v1.CatalogService)
 	cs.Name, cs.Namespace, cs.ResourceGroup = v1.ObjectName(name), "default", "rg1"
-	// A Validate-passing shape: the catalog (bucket, prefix) must be one of spec.blob bindings.
-	cs.Spec.Blob = []v1.FunctionBlob{{Alias: "lakehouse", Bucket: "lakehouse", Prefix: "gold"}}
+	// A Validate-passing shape: the catalog (bucket, prefix) must be one of spec.bindings.blob.
+	cs.Spec.Bindings.Blob = []v1.FunctionBlob{{Alias: "lakehouse", Bucket: "lakehouse", Prefix: "gold"}}
 	cs.Spec.Catalog = v1.CatalogRef{Bucket: "lakehouse", Prefix: "gold"}
-	cs.Spec.Secrets = []v1.ObjectName{"quack-token"} // names the Secret carrying QUACK_TOKEN
+	cs.Spec.Bindings.Secret = []v1.ObjectName{"quack-token"} // names the Secret carrying QUACK_TOKEN
 	cs.Status.Endpoint = endpoint
 	cs.Status.Phase = phase
 	_, err := r.store.Create(context.Background(), cs)
@@ -44,7 +44,7 @@ func seedCatalogServiceIn(t *testing.T, r *Reconciler, name, endpoint string, ph
 func catalogConsumerFn(alias, catalog string) *v1.Function {
 	fn := sampleFn()
 	fn.Name = "reader"
-	fn.Spec.Catalogs = []v1.FunctionCatalog{{Alias: alias, Catalog: v1.ObjectName(catalog)}}
+	fn.Spec.Bindings.Catalog = []v1.FunctionCatalog{{Alias: alias, Catalog: v1.ObjectName(catalog)}}
 	return fn
 }
 

@@ -1,0 +1,30 @@
+{
+  "CatalogService": {
+    "blobBindings": [
+      "BlobPrefix::\"team/lakehouse/bronze\"",
+      "BlobPrefix::\"team/lakehouse/gold\""
+    ],
+    "catalogBindings": [],
+    "kvBindings": [],
+    "links": [],
+    "sqlBindings": []
+  },
+  "Function": {
+    "blobBindings": [
+      "BlobPrefix::\"team/files/uploads\""
+    ],
+    "catalogBindings": [
+      "CatalogService::\"team/lake\""
+    ],
+    "kvBindings": [
+      "KVTable::\"team/cache/hot\"",
+      "KVTable::\"team/counters/counts\""
+    ],
+    "links": [
+      "Function::\"team/billing\""
+    ],
+    "sqlBindings": [
+      "SQLDatabase::\"team/todo-db\""
+    ]
+  }
+}

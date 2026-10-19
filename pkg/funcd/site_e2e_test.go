@@ -83,13 +83,15 @@ func TestScenarioE2ESite(t *testing.T) {
 	waitReady(digestA)
 	putGold(t, substrate, siteNS)
 
-	// The owned resources: the Bucket (site prefix ownerless + the declared gold prefix, no OwnerReference)
-	// and the Route (owner-stamped, data mount + bundle rule).
+	// The owned resources: the Bucket (site prefix ownerless + the declared gold prefix, only the Site's marker,
+	// ADR-0248) and the Route (owner-stamped, data mount + bundle rule).
 	bobj, err := st.Get(ctx, v1.KindBucket.GVK(), siteNS, "reports")
 	require.NoError(t, err)
 	b := bobj.(*v1.Bucket)
 	require.Equal(t, []v1.BucketPrefix{{Name: "bi"}, {Name: "gold", Owner: "etl"}}, b.Spec.Prefixes)
-	require.Empty(t, b.OwnerReferences)
+	require.Len(t, b.OwnerReferences, 1)
+	require.Equal(t, v1.KindSite, b.OwnerReferences[0].Kind)
+	require.False(t, b.OwnerReferences[0].Controller, "retain: the marker only")
 	robj, err := st.Get(ctx, v1.KindRoute.GVK(), siteNS, "bi")
 	require.NoError(t, err)
 	rt := robj.(*v1.Route)
@@ -241,16 +243,16 @@ func startSitePlatform(t *testing.T, reserve func(*testing.T) string, image stri
 		siteObj := &v1.Site{TypeMeta: v1.TypeMeta{APIVersion: v1.KindSite.GVK().APIVersion(), Kind: v1.KindSite}}
 		siteObj.Name, siteObj.Namespace, siteObj.ResourceGroup = "bi", siteNS, "rg1"
 		siteObj.Spec = v1.SiteSpec{
-			Image:   image,
-			Bucket:  v1.SiteBucket{Name: "reports", Prefixes: []v1.BucketPrefix{{Name: "gold", Owner: "etl"}}},
-			Prefix:  "bi",
-			SPA:     true,
-			Ingress: v1.SiteIngress{Ingress: v1.Ingress{Host: "bi.example.com", Auth: &v1.RouteAuth{Mode: v1.AuthOpen}}, Rules: []v1.SiteRule{{Path: "/data", Prefix: "gold"}}},
+			Image:    image,
+			Buckets:  []v1.BucketEntry{{Name: "reports", BucketSpec: v1.BucketSpec{Prefixes: []v1.BucketPrefix{{Name: "gold", Owner: "etl"}}}}},
+			Bindings: v1.SiteBindings{Blob: []v1.BlobRef{{Bucket: "reports", Prefix: "bi"}}},
+			SPA:      true,
+			Ingress:  v1.SiteIngress{Ingress: v1.Ingress{Host: "bi.example.com", Auth: &v1.RouteAuth{Mode: v1.AuthOpen}}, Rules: []v1.SiteRule{{Path: "/data", Prefix: "gold"}}},
 		}
 		seed(t, st, siteObj)
 		uploader := &v1.Function{TypeMeta: v1.TypeMeta{APIVersion: v1.KindFunction.GVK().APIVersion(), Kind: v1.KindFunction}}
 		uploader.Name, uploader.Namespace, uploader.ResourceGroup = "uploader", siteNS, "rg1"
-		uploader.Spec = v1.FunctionSpec{Runtime: "nodejs22", Blob: []v1.FunctionBlob{{Alias: "bi", Bucket: "reports", Prefix: "bi"}}}
+		uploader.Spec = v1.FunctionSpec{Runtime: "nodejs22", Bindings: v1.FunctionBindings{Blob: []v1.FunctionBlob{{Alias: "bi", Bucket: "reports", Prefix: "bi"}}}}
 		seed(t, st, uploader)
 		ext := &v1.Identity{TypeMeta: v1.TypeMeta{APIVersion: v1.KindIdentity.GVK().APIVersion(), Kind: v1.KindIdentity}}
 		ext.Name, ext.Namespace, ext.ResourceGroup = "publisher", siteNS, "rg1"
@@ -334,13 +336,18 @@ func TestScenarioE2EPathMountedSites(t *testing.T) {
 	const ns = "openteam"
 	st := store.New(memory.New())
 
+	// both Sites bind Bucket reports by ref, each over its own ownerless prefix (ADR-0248 Decision 7)
+	reports := &v1.Bucket{TypeMeta: v1.TypeMeta{APIVersion: v1.KindBucket.GVK().APIVersion(), Kind: v1.KindBucket}}
+	reports.Name, reports.Namespace, reports.ResourceGroup = "reports", ns, "rg1"
+	reports.Spec.Prefixes = []v1.BucketPrefix{{Name: "bi"}, {Name: "docs"}}
+	seed(t, st, reports)
 	mkSite := func(name, ref string, mutate func(*v1.Site)) {
 		s := &v1.Site{TypeMeta: v1.TypeMeta{APIVersion: v1.KindSite.GVK().APIVersion(), Kind: v1.KindSite}}
 		s.Name, s.Namespace, s.ResourceGroup = v1.ObjectName(name), ns, "rg1"
 		s.Spec = v1.SiteSpec{
-			Image:  ref,
-			Bucket: v1.SiteBucket{Name: "reports"},
-			Prefix: name,
+			Image:    ref,
+			Buckets:  []v1.BucketEntry{{Ref: "reports"}},
+			Bindings: v1.SiteBindings{Blob: []v1.BlobRef{{Bucket: "reports", Prefix: name}}},
 		}
 		mutate(s)
 		seed(t, st, s)

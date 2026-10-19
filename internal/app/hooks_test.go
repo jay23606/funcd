@@ -178,10 +178,10 @@ func (h *hooked) retry() error { return h.r.Retry(h.ctx, ns, "todo") }
 // migrateSpec is todo-migrate, bound to table todos of todo-store, which todo-api owns.
 func migrateSpec() v1.FunctionSpec {
 	return v1.FunctionSpec{
-		Runtime: "nodejs22",
-		Handler: "index.handler",
-		Image:   "oci-layout://todo-migrate:1",
-		KV:      []v1.FunctionKV{{Alias: "store", Store: "todo-store", Table: "todos"}},
+		Runtime:  "nodejs22",
+		Handler:  "index.handler",
+		Image:    "oci-layout://todo-migrate:1",
+		Bindings: v1.FunctionBindings{KV: []v1.FunctionKV{{Alias: "store", Store: "todo-store", Table: "todos"}}},
 	}
 }
 
@@ -580,8 +580,8 @@ func TestAppStoppedPassStartsNoHookCall(t *testing.T) {
 		},
 		"SecretNotFound": func(h *hooked) {
 			h.edit(func(a *v1.App) {
-				a.Spec.Secrets = []v1.AppSecret{{Name: "todo-stripe-key", Keys: []string{"STRIPE_API_KEY"}}}
-				a.Spec.Functions[0].Secrets = []v1.ObjectName{"todo-stripe-key"}
+				a.Spec.Secrets = []v1.SecretDeclaration{{Name: "todo-stripe-key", Keys: []string{"STRIPE_API_KEY"}}}
+				a.Spec.Functions[0].Bindings.Secret = []v1.ObjectName{"todo-stripe-key"}
 			})
 		},
 	} {
@@ -641,8 +641,8 @@ func TestAppDeadlineFailedRevisionCallsNoHook(t *testing.T) {
 	h.markReady(v1.KindFunction, "todo-migrate")
 	h.converge("todo-1")
 	h.edit(func(a *v1.App) {
-		a.Spec.Secrets = []v1.AppSecret{{Name: "todo-stripe-key", Keys: []string{"STRIPE_API_KEY"}}}
-		a.Spec.Functions[0].Secrets = []v1.ObjectName{"todo-stripe-key"}
+		a.Spec.Secrets = []v1.SecretDeclaration{{Name: "todo-stripe-key", Keys: []string{"STRIPE_API_KEY"}}}
+		a.Spec.Functions[0].Bindings.Secret = []v1.ObjectName{"todo-stripe-key"}
 	})
 	h.reconcile()
 	h.clk.Advance(time.Minute)
@@ -847,14 +847,14 @@ func TestAppHookCallBounds(t *testing.T) {
 func TestAppPreHookPartsFirst(t *testing.T) {
 	h := newHooked(t, nil)
 	h.create(hookedTodo("3.0.0", func(a *v1.App) {
-		a.Spec.ConfigMaps = []v1.AppConfigMap{{Name: "todo-settings", ConfigMapSpec: paris()}}
-		a.Spec.Catalogs = []v1.AppCatalog{{Name: "todo-lake", CatalogServiceSpec: v1.CatalogServiceSpec{
-			Blob:    []v1.FunctionBlob{{Alias: "lake", Bucket: "todo-files", Prefix: "lake"}},
-			Catalog: v1.CatalogRef{Bucket: "todo-files", Prefix: "lake"},
+		a.Spec.ConfigMaps = []v1.ConfigMapEntry{{Name: "todo-settings", ConfigMapSpec: paris()}}
+		a.Spec.Catalogs = []v1.CatalogEntry{{Name: "todo-lake", CatalogServiceSpec: v1.CatalogServiceSpec{
+			Catalog:  v1.CatalogRef{Bucket: "todo-files", Prefix: "lake"},
+			Bindings: v1.CatalogServiceBindings{Blob: []v1.FunctionBlob{{Alias: "lake", Bucket: "todo-files", Prefix: "lake"}}},
 		}}}
 		m := &a.Spec.Functions[1]
-		m.Config = []v1.ObjectName{"todo-settings"}
-		m.Catalogs = []v1.FunctionCatalog{{Alias: "lake", Catalog: "todo-lake"}}
+		m.Bindings.Config = []v1.ObjectName{"todo-settings"}
+		m.Bindings.Catalog = []v1.FunctionCatalog{{Alias: "lake", Catalog: "todo-lake"}}
 	}))
 	h.reconcile()
 	for _, k := range []v1.ObjectRef{
@@ -863,7 +863,7 @@ func TestAppPreHookPartsFirst(t *testing.T) {
 	} {
 		require.NotNil(t, h.get(k.Kind, k.Name), "%s/%s is written before the pre-hook", k.Kind, k.Name)
 	}
-	require.Equal(t, []v1.ObjectName{storedSettings(paris())}, h.get(v1.KindFunction, "todo-migrate").(*v1.Function).Spec.Config)
+	require.Equal(t, []v1.ObjectName{storedSettings(paris())}, h.get(v1.KindFunction, "todo-migrate").(*v1.Function).Spec.Bindings.Config)
 	for _, k := range []v1.ObjectRef{{Kind: v1.KindKVStore, Name: "todo-cache"}, {Kind: v1.KindBucket, Name: "todo-tmp"}, {Kind: v1.KindFunction, Name: "todo-api"}} {
 		require.Nil(t, h.get(k.Kind, k.Name), "%s/%s waits for the pre-hook", k.Kind, k.Name)
 	}
@@ -873,13 +873,13 @@ func TestAppPreHookPartsFirst(t *testing.T) {
 	h.edit(func(a *v1.App) {
 		a.Spec.Version = "4.0.0"
 		a.Spec.KV[0].Tables = append(a.Spec.KV[0].Tables, v1.KVTable{Name: "migrations", Owner: "todo-migrate"})
-		a.Spec.Functions[1].KV = append(a.Spec.Functions[1].KV, v1.FunctionKV{Alias: "log", Store: "todo-store", Table: "migrations"})
+		a.Spec.Functions[1].Bindings.KV = append(a.Spec.Functions[1].Bindings.KV, v1.FunctionKV{Alias: "log", Store: "todo-store", Table: "migrations"})
 		a.Spec.Functions[0].Image = "oci-layout://todo-api:4"
 	})
 	h.reconcile()
 	h.noCall()
 	require.Len(t, h.get(v1.KindKVStore, "todo-store").(*v1.KVStore).Spec.Tables, 2)
-	require.Len(t, h.get(v1.KindFunction, "todo-migrate").(*v1.Function).Spec.KV, 2)
+	require.Len(t, h.get(v1.KindFunction, "todo-migrate").(*v1.Function).Spec.Bindings.KV, 2)
 	require.Equal(t, "oci-layout://todo-api:1", h.get(v1.KindFunction, "todo-api").(*v1.Function).Spec.Image)
 	h.markReady(v1.KindFunction, "todo-migrate")
 	h.converge("todo-2")

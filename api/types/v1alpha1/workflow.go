@@ -26,9 +26,10 @@ type WorkflowSpec struct {
 	// Steps are the workflow's steps. List order chains implicitly (no dependsOn ⇒
 	// the previous step); dependsOn declares explicit edges.
 	Steps []WorkflowStep `json:"steps"`
-	// KV declares workflow-owned KVStores whose table owners name a step (materialized
-	// to the owning Function). Empty ⇒ no owned stores.
-	KV []WorkflowKVStore `json:"kv,omitempty"`
+	// KVStores and Buckets are the stores the Workflow declares at its root (ADR-0248): by name it owns them and their
+	// table and prefix owners name steps, materialized to the step Functions; by ref it binds an existing one.
+	KVStores []KVStoreEntry `json:"kv,omitempty"`
+	Buckets  []BucketEntry  `json:"buckets,omitempty"`
 	// Contract is the optional declared I/O contract (ADR-0090 shape); nil ⇒ the
 	// effective contract is derived (F65). Every optional property must carry a
 	// default (the total-defaults rule).
@@ -115,13 +116,8 @@ type FunctionStep struct {
 	// Pooling overrides the workflow-level pooling for this step's materialized Function
 	// (nil ⇒ inherit spec.pooling); image steps only.
 	Pooling *WorkflowPooling `json:"pooling,omitempty"`
-	// KV/Blob/Secrets/Config/Catalogs/SQL are the step's bindings (Function.spec shapes).
-	KV       []FunctionKV      `json:"kv,omitempty"`
-	Blob     []FunctionBlob    `json:"blob,omitempty"`
-	Secrets  []ObjectName      `json:"secrets,omitempty"`
-	Config   []ObjectName      `json:"config,omitempty"`
-	Catalogs []FunctionCatalog `json:"catalogs,omitempty"`
-	SQL      []FunctionSQL     `json:"sql,omitempty"`
+	// Bindings are the step's bindings (ADR-0246), copied onto its materialized Function.
+	Bindings StepBindings `json:"bindings,omitzero"`
 }
 
 // BuiltinStep is an engine-native step (ADR-0096) — a nested kind-union of exactly one of Wait /
@@ -167,16 +163,6 @@ type StepWhen struct {
 type StepRetry struct {
 	MaxAttempts int      `json:"maxAttempts,omitempty" minimum:"1" maximum:"100"`
 	Backoff     Duration `json:"backoff,omitempty" doc:"The base of the exponential retry backoff: 0s to 1h; 0s or unset means workflow.defaultRetryBackoff."`
-}
-
-// WorkflowKVStore declares a workflow-owned KVStore whose table owners name a step.
-type WorkflowKVStore struct {
-	// Name is the store name; a DNS-1123 label.
-	Name ObjectName `json:"name"`
-	// Deletion is "retain" (default — the store outlives the workflow) or "delete".
-	Deletion DeletionPolicy `json:"deletion,omitempty"`
-	// Tables are the store's sub-domains; each Owner names a step.
-	Tables []KVTable `json:"tables"`
 }
 
 // DeletionPolicy is a workflow-owned store's delete behavior.
@@ -395,8 +381,9 @@ func (s *WorkflowStep) validateBindings(op string, i int) error {
 	if f == nil || f.Image == "" {
 		return nil
 	}
-	spec := FunctionSpec{KV: f.KV, Blob: f.Blob, Config: f.Config, Catalogs: f.Catalogs, SQL: f.SQL}
-	return spec.validateBindings(op, fmt.Sprintf("spec.steps[%d].function", i))
+	b := f.Bindings
+	spec := FunctionSpec{Bindings: FunctionBindings{KV: b.KV, Blob: b.Blob, Config: b.Config, Catalog: b.Catalog, SQL: b.SQL}}
+	return spec.validateBindings(op, fmt.Sprintf("spec.steps[%d].function.bindings", i))
 }
 
 // IsWaitExpression reports whether a builtin wait is a ${{ }} expression; apply and the engine both use it.
@@ -420,27 +407,6 @@ func (s WorkflowSpec) EffectiveDependsOn() map[ObjectName][]ObjectName {
 		prev = st.Name
 	}
 	return deps
-}
-
-// UndeclaredStepStore reports the first image step binding a KV store that s.KV does not declare: its index in
-// s.Steps, the binding's index in its function.kv, and the store (ADR-0229); ok is false when there is none.
-func (s WorkflowSpec) UndeclaredStepStore() (step, binding int, store ObjectName, ok bool) {
-	declared := make(map[ObjectName]bool, len(s.KV))
-	for i := range s.KV {
-		declared[s.KV[i].Name] = true
-	}
-	for i := range s.Steps {
-		f := s.Steps[i].Function
-		if f == nil || f.Image == "" {
-			continue
-		}
-		for j, b := range f.KV {
-			if !declared[b.Store] {
-				return i, j, b.Store, true
-			}
-		}
-	}
-	return 0, 0, "", false
 }
 
 // validateAcyclic rejects a cycle in the scheduled graph (EffectiveDependsOn) via DFS: a cycle is
@@ -512,29 +478,24 @@ func (w *Workflow) validateOnFailure(op string, names map[ObjectName]bool) error
 	return nil
 }
 
-// validateOwnedStores checks each owned store's name is used once, since each entry is materialized as the KVStore
-// of that name, that each table owner names a step, and that the tables pass the KVStore's own table checks.
+// validateOwnedStores checks the root entries as an App checks its own (ADR-0248 Decision 1), and that each table or
+// prefix owner of a store declared by name names a step.
 func (w *Workflow) validateOwnedStores(op string, names map[ObjectName]bool) error {
-	seen := make(map[ObjectName]int, len(w.Spec.KV))
-	for i := range w.Spec.KV {
-		st := &w.Spec.KV[i]
-		if st.Name == "" || !dnsLabel.MatchString(string(st.Name)) {
-			return fault.Invalidf(op, "spec.kv[%d].name %q is not a valid DNS-1123 label", i, st.Name)
-		}
-		if prev, dup := seen[st.Name]; dup {
-			return fault.Invalidf(op, "spec.kv[%d].name repeats the name %q of spec.kv[%d]", i, st.Name, prev)
-		}
-		seen[st.Name] = i
-		if st.Deletion != "" && st.Deletion != DeletionRetain && st.Deletion != DeletionDelete {
-			return fault.Invalidf(op, "spec.kv[%d].deletion must be %q or %q", i, DeletionRetain, DeletionDelete)
-		}
-		for j := range st.Tables {
-			if o := st.Tables[j].Owner; o != "" && !names[o] {
-				return fault.Invalidf(op, "spec.kv[%d].tables[%d].owner %q is not a step", i, j, o)
+	if err := (rootSections{KV: w.Spec.KVStores, Buckets: w.Spec.Buckets}).validate(op, w.ObjectMeta); err != nil {
+		return err
+	}
+	for i := range w.Spec.KVStores {
+		for j, t := range w.Spec.KVStores[i].Tables {
+			if t.Owner != "" && !names[t.Owner] {
+				return fault.Invalidf(op, "spec.kv[%d].tables[%d].owner %q is not a step", i, j, t.Owner)
 			}
 		}
-		if err := validateTables(op, fmt.Sprintf("spec.kv[%d].tables", i), st.Tables); err != nil {
-			return err
+	}
+	for i := range w.Spec.Buckets {
+		for j, p := range w.Spec.Buckets[i].Prefixes {
+			if p.Owner != "" && !names[p.Owner] {
+				return fault.Invalidf(op, "spec.buckets[%d].prefixes[%d].owner %q is not a step", i, j, p.Owner)
+			}
 		}
 	}
 	return nil

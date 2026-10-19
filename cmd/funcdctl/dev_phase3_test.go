@@ -354,21 +354,46 @@ func TestResolveDevFunctionsGenericInPlace(t *testing.T) {
 	require.Equal(t, "handler.mjs", pfs[0].entry)
 }
 
-// TestSynthesizeFunctionCarriesLinks — the synthesized Function carries spec.links so context.invoke
-// resolves (Phase 3 restored what Phase 1 dropped).
-func TestSynthesizeFunctionCarriesLinks(t *testing.T) {
-	m := &sdk.Manifest{
-		Runtime: "nodejs22",
-		Handler: "handle",
-		Bindings: sdk.Bindings{
-			Links: []v1.FunctionLink{{Alias: "greeter", Target: "greeter"}},
-		},
+// TestScenario_dev_still_runs covers scenario: dev-still-runs (ADR-0246) — a funcdctl.yaml project's bindings reach
+// the synthesized Function under spec.bindings, links included, so context.invoke resolves (Phase 3 restored what
+// Phase 1 dropped); TestScenarioDevFnToFnLinks runs such a project end to end.
+func TestScenario_dev_still_runs(t *testing.T) {
+	b := sdk.Bindings{
+		KV:       []v1.FunctionKV{{Alias: "counters", Store: "counters", Table: "counts"}},
+		Blob:     []v1.FunctionBlob{{Alias: "files", Bucket: "files", Prefix: "uploads"}},
+		SQL:      []v1.FunctionSQL{{Alias: "db", Database: "todo-db"}},
+		Catalogs: []v1.FunctionCatalog{{Alias: "lake", Catalog: "lake"}},
+		Links:    []v1.FunctionLink{{Alias: "greeter", Target: "greeter"}},
+		Config:   []v1.ObjectName{"settings"},
+		Secrets:  []v1.ObjectName{"api-keys"},
 	}
+	m := &sdk.Manifest{Runtime: "nodejs22", Handler: "handle", Bindings: b}
 	fn := synthesizeFunction(plannedFunc{m: m, name: "front"}, "/tmp/front.mjs")
-	require.Equal(t, []v1.FunctionLink{{Alias: "greeter", Target: "greeter"}}, fn.Spec.Links,
-		"spec.links are carried into the synthesized Function")
+	require.Equal(t, v1.FunctionBindings{KV: b.KV, Blob: b.Blob, SQL: b.SQL, Catalog: b.Catalogs, Links: b.Links,
+		Config: b.Config, Secret: b.Secrets}, fn.Spec.Bindings, "every funcdctl.yaml binding lands under spec.bindings")
 	require.Equal(t, "file:///tmp/front.mjs", string(fn.Spec.Image))
 	require.Equal(t, 1, fn.Spec.Scaling.MinReplicas, "MinReplicas=1 so it serves immediately")
+}
+
+// ADR-0248's temporary workaround: dev declares by ref what it creates for a Function's bindings, and each Secret with
+// the keys dev gives it, so binding-declared admits the Function; a Secret dev gives no key stays undeclared.
+func TestDevDeclaresRootEntries(t *testing.T) {
+	m := &sdk.Manifest{Runtime: "nodejs22", Handler: "handle", Bindings: sdk.Bindings{
+		KV:       []v1.FunctionKV{{Alias: "a", Store: "counters", Table: "a"}, {Alias: "b", Store: "counters", Table: "b"}},
+		Blob:     []v1.FunctionBlob{{Alias: "files", Bucket: "files", Prefix: "uploads"}},
+		SQL:      []v1.FunctionSQL{{Alias: "db", Database: "todo-db"}},
+		Catalogs: []v1.FunctionCatalog{{Alias: "lake", Catalog: "lake"}},
+		Config:   []v1.ObjectName{"settings"},
+		Secrets:  []v1.ObjectName{"api-keys", "empty"},
+	}}
+	m.Dev.Secrets = map[string]map[string]string{"api-keys": {"STRIPE_KEY": "${STRIPE_KEY}", "A_KEY": "x"}}
+	s := synthesizeFunction(plannedFunc{m: m, name: "front"}, "/tmp/front.mjs").Spec
+	require.Equal(t, []v1.KVStoreEntry{{Ref: "counters"}}, s.KVStores, "one entry per store")
+	require.Equal(t, []v1.BucketEntry{{Ref: "files"}}, s.Buckets)
+	require.Equal(t, []v1.SQLDatabaseEntry{{Ref: "todo-db"}}, s.SQLDatabases)
+	require.Equal(t, []v1.CatalogEntry{{Ref: "lake"}}, s.CatalogServices)
+	require.Equal(t, []v1.ConfigMapEntry{{Ref: "settings"}}, s.ConfigMaps)
+	require.Equal(t, []v1.SecretDeclaration{{Name: "api-keys", Keys: []string{"A_KEY", "STRIPE_KEY"}}}, s.SecretDeclarations)
 }
 
 // TestResolveDevFunctionsNameFlagOverridesGeneric — --name names the single generic function (the

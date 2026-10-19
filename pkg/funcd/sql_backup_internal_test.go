@@ -211,7 +211,7 @@ func TestScenarioAppBackupIncludesDatabase(t *testing.T) {
 	r := sqlRig(t, engines)
 	spec := r.schedule("x", "0 3 * * *", func(s *v1.BackupScheduleSpec) { s.Scope = v1.BackupScope{} }).Spec
 	r.create(r.dev, &v1.App{TypeMeta: tmeta(v1.KindApp), ObjectMeta: ordersMeta("todo"), Spec: v1.AppSpec{
-		SQL:             []v1.AppSQLDatabase{{Name: "todo-db"}},
+		SQL:             []v1.SQLDatabaseEntry{{Name: "todo-db"}},
 		BackupSchedules: []v1.AppBackupSchedule{{Name: "todo-nightly", BackupScheduleSpec: spec}},
 	}})
 	r.waitSQLReady("todo-db")
@@ -253,7 +253,7 @@ func TestScenarioRestoreRefusesNonEmpty(t *testing.T) {
 	engines.engine(t, "todo-db").set(func(e *fileEngine) { e.data = sqlite("milk") })
 	engines.engine(t, "full-db").set(func(e *fileEngine) { e.data = sqlite("other") })
 	fn := &v1.Function{TypeMeta: tmeta(v1.KindFunction), ObjectMeta: ordersMeta("reader"),
-		Spec: v1.FunctionSpec{Runtime: "nodejs22", Handler: "handle", Image: "file:///nonexistent.mjs", SQL: []v1.FunctionSQL{{Alias: "app", Database: "bound-db"}}}}
+		Spec: v1.FunctionSpec{Runtime: "nodejs22", Handler: "handle", Image: "file:///nonexistent.mjs", Bindings: v1.FunctionBindings{SQL: []v1.FunctionSQL{{Alias: "app", Database: "bound-db"}}}}}
 	r.seed(fn)
 	r.create(r.dev, r.dbSchedule("todo-db"))
 	r.create(r.dev, r.backupObj("b1", "orders-db"))

@@ -314,7 +314,7 @@ func (r *Reconciler) bindings(ctx context.Context, db *v1.SQLDatabase) (int, err
 	}
 	n := 0
 	for _, o := range fns.Items {
-		if fn, ok := o.(*v1.Function); ok && slices.ContainsFunc(fn.Spec.SQL, func(b v1.FunctionSQL) bool { return b.Database == db.Name }) {
+		if fn, ok := o.(*v1.Function); ok && slices.ContainsFunc(fn.Spec.Bindings.SQL, func(b v1.FunctionSQL) bool { return b.Database == db.Name }) {
 			n++
 		}
 	}

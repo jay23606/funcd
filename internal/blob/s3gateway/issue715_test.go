@@ -287,7 +287,7 @@ func TestScenarioForgedTokenBounded(t *testing.T) {
 	meta.buckets["default/lakehouse"].Spec.Prefixes = append(meta.buckets["default/lakehouse"].Spec.Prefixes, v1.BucketPrefix{Name: "silver"})
 	meta.fns["default/gold-reader"] = &v1.Function{
 		ObjectMeta: v1.ObjectMeta{Name: "gold-reader", Namespace: "default", ResourceGroup: "rg1"},
-		Spec:       v1.FunctionSpec{Blob: []v1.FunctionBlob{{Alias: "gold", Bucket: "lakehouse", Prefix: "gold"}}},
+		Spec:       v1.FunctionSpec{Bindings: v1.FunctionBindings{Blob: []v1.FunctionBlob{{Alias: "gold", Bucket: "lakehouse", Prefix: "gold"}}}},
 	}
 	g, cb := countedGateway(t, meta, memBucket)
 	for _, k := range []string{"gold/a", "gold/b", "silver/s"} {

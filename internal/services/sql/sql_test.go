@@ -279,7 +279,7 @@ func TestReconcileCountsBindings(t *testing.T) {
 		fn.Name, fn.Namespace, fn.ResourceGroup = name, "default", "rg1"
 		fn.Spec = v1.FunctionSpec{Runtime: "nodejs22", Handler: "handle", Image: "oci-layout://x:1"}
 		if name != "other" {
-			fn.Spec.SQL = []v1.FunctionSQL{{Alias: "app", Database: todoDB().Name}}
+			fn.Spec.Bindings.SQL = []v1.FunctionSQL{{Alias: "app", Database: todoDB().Name}}
 		}
 		_, err := st.Create(context.Background(), fn)
 		require.NoError(t, err)

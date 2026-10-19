@@ -19,10 +19,10 @@ import (
 // todo-stripe-key (STRIPE_API_KEY), both named by todo-api.
 func configApp(mutate func(*App)) *App {
 	return todoApp(func(a *App) {
-		a.Spec.ConfigMaps = []AppConfigMap{{Name: "todo-settings", ConfigMapSpec: ConfigMapSpec{Data: map[string]string{"TZ": "Europe/Paris"}}}}
-		a.Spec.Secrets = []AppSecret{{Name: "todo-stripe-key", Description: "Stripe API access", Keys: []string{"STRIPE_API_KEY"}}}
-		a.Spec.Functions[0].Config = []ObjectName{"todo-settings"}
-		a.Spec.Functions[0].Secrets = []ObjectName{"todo-stripe-key"}
+		a.Spec.ConfigMaps = []ConfigMapEntry{{Name: "todo-settings", ConfigMapSpec: ConfigMapSpec{Data: map[string]string{"TZ": "Europe/Paris"}}}}
+		a.Spec.Secrets = []SecretDeclaration{{Name: "todo-stripe-key", Description: "Stripe API access", Keys: []string{"STRIPE_API_KEY"}}}
+		a.Spec.Functions[0].Bindings.Config = []ObjectName{"todo-settings"}
+		a.Spec.Functions[0].Bindings.Secret = []ObjectName{"todo-stripe-key"}
 		if mutate != nil {
 			mutate(a)
 		}
@@ -56,16 +56,16 @@ func TestAppConfigValidate(t *testing.T) {
 		return func(a *App) {
 			name := ObjectName(strings.Repeat("c", n))
 			a.Spec.ConfigMaps[0].Name = name
-			a.Spec.Functions[0].Config = []ObjectName{name}
+			a.Spec.Functions[0].Bindings.Config = []ObjectName{name}
 		}
 	}
 	for name, a := range map[string]*App{
 		"the fixture":                    configApp(nil),
 		"a name of 52 characters":        configApp(long(52)),
-		"a ref entry":                    configApp(func(a *App) { a.Spec.ConfigMaps = append(a.Spec.ConfigMaps, AppConfigMap{Ref: "shared"}) }),
-		"a declared Secret no part uses": configApp(func(a *App) { a.Spec.Functions[0].Secrets = nil }),
+		"a ref entry":                    configApp(func(a *App) { a.Spec.ConfigMaps = append(a.Spec.ConfigMaps, ConfigMapEntry{Ref: "shared"}) }),
+		"a declared Secret no part uses": configApp(func(a *App) { a.Spec.Functions[0].Bindings.Secret = nil }),
 		"a part naming an undeclared Secret, which only the admission refuses": configApp(func(a *App) {
-			a.Spec.Functions[0].Secrets = []ObjectName{"todo-billing"}
+			a.Spec.Functions[0].Bindings.Secret = []ObjectName{"todo-billing"}
 		}),
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -82,14 +82,14 @@ func TestAppConfigValidate(t *testing.T) {
 	}{
 		{"a name of 53 characters", long(53), "spec.configMaps[0].name"},
 		{"a ref entry on a defined entry's stored name", func(a *App) {
-			a.Spec.ConfigMaps = append(a.Spec.ConfigMaps, AppConfigMap{Ref: stored})
+			a.Spec.ConfigMaps = append(a.Spec.ConfigMaps, ConfigMapEntry{Ref: stored})
 		}, "spec.configMaps[0] and spec.configMaps[1] are both stored as ConfigMap/" + string(stored)},
 		{"a repeated configMaps name", func(a *App) { a.Spec.ConfigMaps = append(a.Spec.ConfigMaps, a.Spec.ConfigMaps[0]) },
 			`spec.configMaps[1] repeats the name "todo-settings"`},
 		{"a data key that is not an env-var name", func(a *App) { a.Spec.ConfigMaps[0].Data["A=B"] = "x" },
 			`spec.configMaps[0].data key "A=B" is not an env-var name`},
 		{"a configMaps ref with data", func(a *App) {
-			a.Spec.ConfigMaps[0] = AppConfigMap{Ref: "shared", ConfigMapSpec: ConfigMapSpec{Data: map[string]string{"A": "1"}}}
+			a.Spec.ConfigMaps[0] = ConfigMapEntry{Ref: "shared", ConfigMapSpec: ConfigMapSpec{Data: map[string]string{"A": "1"}}}
 		}, "spec.configMaps[0] sets ref and another field"},
 		{"a repeated Secret", func(a *App) { a.Spec.Secrets = append(a.Spec.Secrets, a.Spec.Secrets[0]) },
 			`spec.secrets[1] repeats the name "todo-stripe-key" of spec.secrets[0]`},
@@ -113,16 +113,15 @@ func TestAppConfigValidate(t *testing.T) {
 // CatalogService's and an image step's config becomes the stored name, and the App's spec stays as declared.
 func TestAppConfigRepointing(t *testing.T) {
 	a := configApp(func(a *App) {
-		a.Spec.ConfigMaps = append(a.Spec.ConfigMaps, AppConfigMap{Ref: "shared"})
-		a.Spec.Functions[0].Config = []ObjectName{"todo-settings", "shared", "elsewhere"}
+		a.Spec.ConfigMaps = append(a.Spec.ConfigMaps, ConfigMapEntry{Ref: "shared"})
+		a.Spec.Functions[0].Bindings.Config = []ObjectName{"todo-settings", "shared", "elsewhere"}
 		a.Spec.Functions = append(a.Spec.Functions, AppFunction{Ref: "mailer"})
 		wf := &a.Spec.Workflows[0]
-		wf.Steps[0].Function.Config = []ObjectName{"todo-settings"}
-		wf.Steps = append(wf.Steps, WorkflowStep{Name: "notify", Function: &FunctionStep{Ref: "todo-api", Config: []ObjectName{"todo-settings"}}})
-		a.Spec.Catalogs = []AppCatalog{{Name: "todo-lake", CatalogServiceSpec: CatalogServiceSpec{
-			Blob:    []FunctionBlob{{Alias: "lake", Bucket: "todo-files", Prefix: "lake"}},
-			Catalog: CatalogRef{Bucket: "todo-files", Prefix: "lake"},
-			Config:  []ObjectName{"todo-settings"},
+		wf.Steps[0].Function.Bindings.Config = []ObjectName{"todo-settings"}
+		wf.Steps = append(wf.Steps, WorkflowStep{Name: "notify", Function: &FunctionStep{Ref: "todo-api", Bindings: StepBindings{Config: []ObjectName{"todo-settings"}}}})
+		a.Spec.Catalogs = []CatalogEntry{{Name: "todo-lake", CatalogServiceSpec: CatalogServiceSpec{
+			Catalog:  CatalogRef{Bucket: "todo-files", Prefix: "lake"},
+			Bindings: CatalogServiceBindings{Blob: []FunctionBlob{{Alias: "lake", Bucket: "todo-files", Prefix: "lake"}}, Config: []ObjectName{"todo-settings"}},
 		}}}
 	})
 	if err := a.Validate(); err != nil {
@@ -142,17 +141,17 @@ func TestAppConfigRepointing(t *testing.T) {
 	for _, p := range parts {
 		byName[string(p.GroupVersionKind().Kind)+"/"+string(p.GetName())] = p
 	}
-	if got := byName["Function/todo-api"].(*Function).Spec.Config; !slices.Equal(got, []ObjectName{stored, "shared", "elsewhere"}) {
+	if got := byName["Function/todo-api"].(*Function).Spec.Bindings.Config; !slices.Equal(got, []ObjectName{stored, "shared", "elsewhere"}) {
 		t.Fatalf("todo-api config = %v: the defined name is repointed, a ref entry and an undefined name are not", got)
 	}
-	if got := byName["CatalogService/todo-lake"].(*CatalogService).Spec.Config; !slices.Equal(got, []ObjectName{stored}) {
+	if got := byName["CatalogService/todo-lake"].(*CatalogService).Spec.Bindings.Config; !slices.Equal(got, []ObjectName{stored}) {
 		t.Fatalf("todo-lake config = %v", got)
 	}
 	steps := byName["Workflow/todo-plan"].(*Workflow).Spec.Steps
-	if got := steps[0].Function.Config; !slices.Equal(got, []ObjectName{stored}) {
+	if got := steps[0].Function.Bindings.Config; !slices.Equal(got, []ObjectName{stored}) {
 		t.Fatalf("image step config = %v", got)
 	}
-	if got := steps[1].Function.Config; !slices.Equal(got, []ObjectName{"todo-settings"}) {
+	if got := steps[1].Function.Bindings.Config; !slices.Equal(got, []ObjectName{"todo-settings"}) {
 		t.Fatalf("ref step config = %v, want it as written", got)
 	}
 	if _, ok := byName["Function/mailer"]; ok {
@@ -172,7 +171,7 @@ func TestAppConfigRepointing(t *testing.T) {
 func TestAppSiteRuntimeConfigRepointing(t *testing.T) {
 	site := func(name, configMap ObjectName) AppSite {
 		return AppSite{Name: name, SiteSpec: SiteSpec{
-			Image: "oci-layout://todo-web:1", Bucket: SiteBucket{Name: name}, Prefix: "web",
+			Image: "oci-layout://todo-web:1", Bindings: SiteBindings{Blob: []BlobRef{{Bucket: name, Prefix: "web"}}},
 			Ingress:       SiteIngress{Ingress: Ingress{Host: string(name) + ".example"}},
 			RuntimeConfig: &SiteRuntimeConfig{ConfigMap: configMap},
 		}}
@@ -218,7 +217,7 @@ func TestAppConfigJSON(t *testing.T) {
 	if strings.Contains(string(plain), "configMaps") || strings.Contains(string(plain), "secrets") {
 		t.Fatalf("a spec without the sections carries them: %s", plain)
 	}
-	a := configApp(func(a *App) { a.Spec.ConfigMaps = append(a.Spec.ConfigMaps, AppConfigMap{Ref: "shared"}) })
+	a := configApp(func(a *App) { a.Spec.ConfigMaps = append(a.Spec.ConfigMaps, ConfigMapEntry{Ref: "shared"}) })
 	data, err := json.Marshal(a.Spec)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)

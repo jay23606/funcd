@@ -157,13 +157,13 @@ func TestHeldWakeUnderCurrentRevisionGate(t *testing.T) {
 		{"artifact", v1.PhaseReady, "", func(fn *v1.Function) { fn.Spec.Image = "oci://example/missing:v3" }},
 		{"shape", v1.PhaseReady, "", func(fn *v1.Function) { fn.Spec.Handler = "" }},
 		{"runtime", v1.PhaseReady, "", func(fn *v1.Function) { fn.Spec.Runtime = "ruby3" }},
-		{"secret", v1.PhaseFailed, "SecretResolveFailed", func(fn *v1.Function) { fn.Spec.Secrets = []v1.ObjectName{"db"} }},
-		{"config", v1.PhaseFailed, "ConfigResolveFailed", func(fn *v1.Function) { fn.Spec.Config = []v1.ObjectName{"missing"} }},
+		{"secret", v1.PhaseFailed, "SecretResolveFailed", func(fn *v1.Function) { fn.Spec.Bindings.Secret = []v1.ObjectName{"db"} }},
+		{"config", v1.PhaseFailed, "ConfigResolveFailed", func(fn *v1.Function) { fn.Spec.Bindings.Config = []v1.ObjectName{"missing"} }},
 		{"data-reference", v1.PhaseDeploying, "KVStoreNotFound", func(fn *v1.Function) {
-			fn.Spec.KV = []v1.FunctionKV{{Alias: "cache", Store: "nostore", Table: "t"}}
+			fn.Spec.Bindings.KV = []v1.FunctionKV{{Alias: "cache", Store: "nostore", Table: "t"}}
 		}},
 		{"catalog", v1.PhaseDeploying, "CatalogNotReady", func(fn *v1.Function) {
-			fn.Spec.Catalogs = []v1.FunctionCatalog{{Alias: "lake", Catalog: "nolake"}}
+			fn.Spec.Bindings.Catalog = []v1.FunctionCatalog{{Alias: "lake", Catalog: "nolake"}}
 		}},
 	}
 	for _, tc := range cases {

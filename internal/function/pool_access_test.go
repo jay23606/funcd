@@ -43,11 +43,11 @@ func TestPoolKeyCountsOwnedBoundTablesAndOwnedPrefixes(t *testing.T) {
 	h.createObj(t, v1.KindBucket, "k", func(o v1.Object) {
 		o.(*v1.Bucket).Spec.Prefixes = []v1.BucketPrefix{{Name: "raw", Owner: "writer"}}
 	})
-	bound := v1.FunctionSpec{KV: []v1.FunctionKV{{Alias: "t", Store: "s", Table: "bound"}}}
+	bound := v1.FunctionSpec{Bindings: v1.FunctionBindings{KV: []v1.FunctionKV{{Alias: "t", Store: "s", Table: "bound"}}}}
 	for _, n := range []string{"owner", "reader"} {
 		h.create(t, n, func(fn *v1.Function) {
 			fn.Spec.Pooling.Worker = "agents"
-			fn.Spec.KV = bound.KV
+			fn.Spec.Bindings.KV = bound.Bindings.KV
 		})
 	}
 	for _, n := range []string{"idle-owner", "writer", "plain"} {

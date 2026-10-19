@@ -81,7 +81,7 @@ func (a sqlDatabaseDeletionProtection) Admit(ctx context.Context, req Request) (
 			if !ok {
 				continue
 			}
-			for _, b := range f.Spec.SQL {
+			for _, b := range f.Spec.Bindings.SQL {
 				if b.Database == meta.Name {
 					return nil, fault.Conflictf(op, "SQLDatabase %q is bound by function %q (alias %q); remove the binding first", meta.Name, f.Name, b.Alias)
 				}

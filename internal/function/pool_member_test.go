@@ -58,7 +58,7 @@ func TestScenarioPoolSplitsByAccess(t *testing.T) {
 	h.createObj(t, v1.KindKVStore, "s", func(o v1.Object) { o.(*v1.KVStore).Spec.Tables = []v1.KVTable{{Name: "t"}} })
 	h.create(t, "a", func(fn *v1.Function) {
 		fn.Spec.Pooling.Worker = "agents"
-		fn.Spec.KV = []v1.FunctionKV{{Alias: "t", Store: "s", Table: "t"}}
+		fn.Spec.Bindings.KV = []v1.FunctionKV{{Alias: "t", Store: "s", Table: "t"}}
 	})
 	h.create(t, "b", func(fn *v1.Function) { fn.Spec.Pooling.Worker = "agents" })
 	h.create(t, "solo", func(*v1.Function) {})
@@ -161,7 +161,7 @@ func TestPoolManifestCarriesMemberEnv(t *testing.T) {
 	for _, n := range []string{"a", "b"} {
 		h.create(t, n, func(fn *v1.Function) {
 			fn.Spec.Pooling.Worker = "s3"
-			fn.Spec.Blob = []v1.FunctionBlob{{Alias: "raw", Bucket: "k", Prefix: "raw"}}
+			fn.Spec.Bindings.Blob = []v1.FunctionBlob{{Alias: "raw", Bucket: "k", Prefix: "raw"}}
 		})
 	}
 	h.pools(t, "a", "b")

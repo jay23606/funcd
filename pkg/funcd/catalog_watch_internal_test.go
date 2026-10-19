@@ -68,7 +68,7 @@ func TestCatalogWatchesFollowCatalogAndBinders(t *testing.T) {
 	reader.Name = "reader"
 	reader.Spec.Image, reader.Spec.Handler = "file://"+art, "handle"
 	reader.Spec.Scaling.MinReplicas = 1
-	reader.Spec.Catalogs = []v1.FunctionCatalog{{Alias: "lake", Catalog: "lake"}}
+	reader.Spec.Bindings.Catalog = []v1.FunctionCatalog{{Alias: "lake", Catalog: "lake"}}
 	seedObjects(t, st, reader)
 	readerIs := func(phase v1.Phase, rrStatus v1.ConditionStatus, rrReason string) func() bool {
 		return func() bool {

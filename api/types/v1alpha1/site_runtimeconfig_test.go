@@ -14,8 +14,8 @@ func runtimeConfigSite(mutate func(*Site)) *Site {
 	s.Name, s.Namespace, s.ResourceGroup = "web", "default", "rg1"
 	s.Spec = SiteSpec{
 		Image:         "registry.example/web:1",
-		Bucket:        SiteBucket{Name: "web"},
-		Prefix:        "web",
+		Buckets:       []BucketEntry{{Name: "web"}},
+		Bindings:      SiteBindings{Blob: []BlobRef{{Bucket: "web", Prefix: "web"}}},
 		Ingress:       SiteIngress{Ingress: Ingress{Host: "web.test"}},
 		RuntimeConfig: &SiteRuntimeConfig{Values: map[string]string{"API_URL": "https://api.example"}},
 	}

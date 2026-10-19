@@ -254,7 +254,7 @@ func (r *Reconciler) countBindings(ctx context.Context, ns v1.NamespaceName, sto
 		if !ok {
 			continue
 		}
-		for _, b := range f.Spec.KV {
+		for _, b := range f.Spec.Bindings.KV {
 			if b.Store == storeName {
 				n++
 			}

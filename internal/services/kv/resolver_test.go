@@ -34,7 +34,7 @@ func newResolver(t *testing.T, objs ...v1.Object) kvsvc.BindingResolver {
 	return r
 }
 
-// scenario: kv-binding-resolves — the resolver maps the caller's spec.kv alias to its (store, table) +
+// scenario: kv-binding-resolves — the resolver maps the caller's spec.bindings.kv alias to its (store, table) +
 // the table owner + the store's caps.
 func TestScenarioResolverResolvesBinding(t *testing.T) {
 	ctx := context.Background()

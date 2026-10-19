@@ -37,8 +37,8 @@ func TestScenarioDeclarativeAdmissionCatalogCycle(t *testing.T) {
 		TypeMeta:   v1.TypeMeta{APIVersion: v1.KindCatalogService.GVK().APIVersion(), Kind: v1.KindCatalogService},
 		ObjectMeta: v1.ObjectMeta{Name: "lake", Namespace: "default", ResourceGroup: "rg1"},
 		Spec: v1.CatalogServiceSpec{
-			Blob:    []v1.FunctionBlob{{Alias: "gold", Bucket: "lakehouse", Prefix: "gold"}},
-			Catalog: v1.CatalogRef{Bucket: "lakehouse", Prefix: "gold"},
+			Catalog:  v1.CatalogRef{Bucket: "lakehouse", Prefix: "gold"},
+			Bindings: v1.CatalogServiceBindings{Blob: []v1.FunctionBlob{{Alias: "gold", Bucket: "lakehouse", Prefix: "gold"}}},
 		},
 	}
 	_, err = c.Apply(ctx, cs)
@@ -92,10 +92,11 @@ func TestScenarioDeclarativeAdmissionFunctionBindingAdmitted(t *testing.T) {
 		TypeMeta:   v1.TypeMeta{APIVersion: v1.KindFunction.GVK().APIVersion(), Kind: v1.KindFunction},
 		ObjectMeta: v1.ObjectMeta{Name: "reader", Namespace: "default", ResourceGroup: "rg1"},
 		Spec: v1.FunctionSpec{
-			Runtime: "nodejs22",
-			Handler: "handle",
-			Image:   "oci-layout:///mnt/funcd-deps/registry:reader",
-			Blob:    []v1.FunctionBlob{{Alias: "lake", Bucket: "missing", Prefix: "bronze"}},
+			Runtime:  "nodejs22",
+			Handler:  "handle",
+			Image:    "oci-layout:///mnt/funcd-deps/registry:reader",
+			Buckets:  []v1.BucketEntry{{Ref: "missing"}},
+			Bindings: v1.FunctionBindings{Blob: []v1.FunctionBlob{{Alias: "lake", Bucket: "missing", Prefix: "bronze"}}},
 		},
 	}
 	_, err = c.Apply(ctx, fn)

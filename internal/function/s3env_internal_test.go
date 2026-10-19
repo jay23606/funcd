@@ -50,7 +50,7 @@ func newS3Reconciler(t *testing.T, enabled bool) *Reconciler {
 
 func blobFn() *v1.Function {
 	fn := sampleFn()
-	fn.Spec.Blob = []v1.FunctionBlob{{Alias: "gold", Bucket: "lakehouse", Prefix: "gold"}}
+	fn.Spec.Bindings.Blob = []v1.FunctionBlob{{Alias: "gold", Bucket: "lakehouse", Prefix: "gold"}}
 	return fn
 }
 

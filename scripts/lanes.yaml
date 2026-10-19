@@ -207,8 +207,8 @@ s3:
     - ingest-workflow.yaml
     - drop-source.yaml
     - drop-sensor.yaml
-    # ADR-0139 (F103): the prebuilt BI app (two builds, for the redeploy case) + the Site that adopts the
-    # lakehouse Bucket, materializes the bundle under bi/<digest>/, and mounts gold/ at /data.
+    # ADR-0139 (F103): the prebuilt BI app (two builds, for the redeploy case) + the Site that binds the
+    # lakehouse Bucket by ref (ADR-0248), materializes the bundle under bi/<digest>/, and mounts gold/ at /data.
     - bi
     - bi-v2
     - site.yaml
@@ -240,8 +240,8 @@ s3:
     - ingest-workflow.yaml
     - drop-source.yaml
     - drop-sensor.yaml
-    # ADR-0139: applied AFTER bucket.yaml so the Site ADOPTS lakehouse (adds its ownerless `bi` prefix,
-    # leaves gold/other/shared untouched) — the live shared-substrate case.
+    # ADR-0248: the Sites bind lakehouse by ref over its ownerless bi and docs prefixes and never edit it — the
+    # live shared-substrate case.
     - site.yaml
     - site-docs.yaml
   ready:
@@ -263,7 +263,6 @@ kv:
     - funcdctl.yaml
     - counter.yaml
     - counter-unbound.yaml   # the fail-closed negative applied in-VM by the Venom suite
-    - store.yaml
     - funcdconfig.yaml
     - from: examples/kv-counter/src/counter.py
       module: github.com/pyvvo/funcd-python
@@ -274,23 +273,14 @@ kv:
     - from: examples/kv-counter/counter.yaml
       module: github.com/pyvvo/funcd-python
       to: py/counter.yaml
-    - from: examples/kv-counter/store.yaml
-      module: github.com/pyvvo/funcd-python
-      to: py/store.yaml
   push:
     - artifact: counter.mjs
       ref: counter
     - artifact: py/counter.py
       ref: pycounter
-  # ADR-0073 cycle break: apply each function WITHOUT spec.kv (owner exists), then the owned store, then
-  # re-apply WITH spec.kv (the binding IS the capability — default-deny; ADR-0076: no read Policy needed).
+  # ADR-0248: each function declares the store it owns at its root and the reconciler writes it, the function as
+  # the table owner (the binding IS the capability — default-deny; ADR-0076: no read Policy needed).
   apply:
-    - file: counter.yaml
-      transform: python3 -c 'import sys,yaml;d=yaml.safe_load(sys.stdin);d["spec"].pop("kv",None);print(yaml.safe_dump(d))'
-    - file: py/counter.yaml
-      transform: python3 -c 'import sys,yaml;d=yaml.safe_load(sys.stdin);d["spec"].pop("kv",None);print(yaml.safe_dump(d))'
-    - store.yaml
-    - py/store.yaml
     - counter.yaml
     - py/counter.yaml
   ready:
@@ -573,9 +563,6 @@ sql-examples:
     - from: examples/sql-search/search.funcdctl.yaml
       module: github.com/pyvvo/funcd-typescript
       to: sql-search/search.funcdctl.yaml
-    - from: examples/sql-search/search-db.yaml
-      module: github.com/pyvvo/funcd-typescript
-      to: sql-search/search-db.yaml
     - from: examples/sql-search/search.yaml
       module: github.com/pyvvo/funcd-typescript
       to: sql-search/search.yaml
@@ -606,7 +593,6 @@ sql-examples:
     - sql-notes/notes.yaml
     - sql-notes/notes-migrate.yaml
     - sql-notes/grant.yaml
-    - sql-search/search-db.yaml
     - sql-search/search.yaml
     - sql-orders/orders-db.yaml
     - sql-orders/orders.yaml

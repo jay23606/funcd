@@ -35,13 +35,15 @@ const (
 
 // Request is one admission review. Object is the incoming desired object (nil on Delete); Old is
 // the stored object (nil on Create; set on Update/Delete). GVK is the route's kind (authoritative,
-// not body-derived). Identity is the authenticated caller (authz already passed).
+// not body-derived). Identity is the authenticated caller (authz already passed). Declared is set when app-parts reviews
+// an App's part: what the App's root declares, which the part binds without a root entry of its own (ADR-0248 Decision 2).
 type Request struct {
 	Operation Operation
 	GVK       v1.GroupVersionKind
 	Object    v1.Object
 	Old       v1.Object
 	Identity  auth.Identity
+	Declared  *Declared
 }
 
 // Admission reviews a write before it is persisted. Deterministic and side-effect-free.
