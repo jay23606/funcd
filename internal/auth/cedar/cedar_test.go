@@ -59,7 +59,7 @@ func newMeta() fakeMeta {
 			// binding-as-read-grant (read via binding) and write-unaffected (a binding never grants write).
 			"default/analytics": {
 				ObjectMeta: v1.ObjectMeta{Name: "analytics", Namespace: "default", ResourceGroup: "rg1"},
-				Spec:       v1.FunctionSpec{KV: []v1.FunctionKV{{Alias: "cust", Store: "orders", Table: "customers"}}},
+				Spec:       v1.FunctionSpec{Bindings: v1.FunctionBindings{KV: []v1.FunctionKV{{Alias: "cust", Store: "orders", Table: "customers"}}}},
 			},
 		},
 		stores: map[string]*v1.KVStore{"default/orders": newOrders()},

@@ -51,7 +51,7 @@ func mkStore(name string, tables ...v1.KVTable) *v1.KVStore {
 func mkFn(name string, kv ...v1.FunctionKV) *v1.Function {
 	f := &v1.Function{TypeMeta: v1.TypeMeta{APIVersion: v1.KindFunction.GVK().APIVersion(), Kind: v1.KindFunction}}
 	f.Name, f.Namespace, f.ResourceGroup = v1.ObjectName(name), "default", "rg1"
-	f.Spec.KV = kv
+	f.Spec.Bindings.KV = kv
 	return f
 }
 

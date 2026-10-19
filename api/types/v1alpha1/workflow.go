@@ -115,13 +115,8 @@ type FunctionStep struct {
 	// Pooling overrides the workflow-level pooling for this step's materialized Function
 	// (nil ⇒ inherit spec.pooling); image steps only.
 	Pooling *WorkflowPooling `json:"pooling,omitempty"`
-	// KV/Blob/Secrets/Config/Catalogs/SQL are the step's bindings (Function.spec shapes).
-	KV       []FunctionKV      `json:"kv,omitempty"`
-	Blob     []FunctionBlob    `json:"blob,omitempty"`
-	Secrets  []ObjectName      `json:"secrets,omitempty"`
-	Config   []ObjectName      `json:"config,omitempty"`
-	Catalogs []FunctionCatalog `json:"catalogs,omitempty"`
-	SQL      []FunctionSQL     `json:"sql,omitempty"`
+	// Bindings are the step's bindings (ADR-0246), copied onto its materialized Function.
+	Bindings StepBindings `json:"bindings,omitzero"`
 }
 
 // BuiltinStep is an engine-native step (ADR-0096) — a nested kind-union of exactly one of Wait /
@@ -395,8 +390,9 @@ func (s *WorkflowStep) validateBindings(op string, i int) error {
 	if f == nil || f.Image == "" {
 		return nil
 	}
-	spec := FunctionSpec{KV: f.KV, Blob: f.Blob, Config: f.Config, Catalogs: f.Catalogs, SQL: f.SQL}
-	return spec.validateBindings(op, fmt.Sprintf("spec.steps[%d].function", i))
+	b := f.Bindings
+	spec := FunctionSpec{Bindings: FunctionBindings{KV: b.KV, Blob: b.Blob, Config: b.Config, Catalog: b.Catalog, SQL: b.SQL}}
+	return spec.validateBindings(op, fmt.Sprintf("spec.steps[%d].function.bindings", i))
 }
 
 // IsWaitExpression reports whether a builtin wait is a ${{ }} expression; apply and the engine both use it.
@@ -434,7 +430,7 @@ func (s WorkflowSpec) UndeclaredStepStore() (step, binding int, store ObjectName
 		if f == nil || f.Image == "" {
 			continue
 		}
-		for j, b := range f.KV {
+		for j, b := range f.Bindings.KV {
 			if !declared[b.Store] {
 				return i, j, b.Store, true
 			}

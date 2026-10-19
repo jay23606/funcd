@@ -121,9 +121,9 @@ func (f *fixture) checkOf(name v1.ObjectName) *local.DependencyReport {
 
 // api binds KV table store, blob prefix files and links mailer.
 func api(fn *v1.Function) {
-	fn.Spec.KV = []v1.FunctionKV{{Alias: "store", Store: "todo-store", Table: "todos"}, {Alias: "audit", Store: "todo-store", Table: "audit"}}
-	fn.Spec.Blob = []v1.FunctionBlob{{Alias: "files", Bucket: "todo-files", Prefix: "attachments"}}
-	fn.Spec.Links = []v1.FunctionLink{{Alias: "mail", Target: "mailer"}}
+	fn.Spec.Bindings.KV = []v1.FunctionKV{{Alias: "store", Store: "todo-store", Table: "todos"}, {Alias: "audit", Store: "todo-store", Table: "audit"}}
+	fn.Spec.Bindings.Blob = []v1.FunctionBlob{{Alias: "files", Bucket: "todo-files", Prefix: "attachments"}}
+	fn.Spec.Bindings.Links = []v1.FunctionLink{{Alias: "mail", Target: "mailer"}}
 }
 
 // Every binding passes: its resolve and read authorization, the storage probes and the link target, which is Idle.
@@ -165,7 +165,7 @@ func TestCheckerReportsUnreachableStorage(t *testing.T) {
 	f.fn("todo-api", "", api)
 	f.fn("mailer", "", nil)
 	f.fn("files-only", "", func(fn *v1.Function) {
-		fn.Spec.Blob = []v1.FunctionBlob{{Alias: "files", Bucket: "todo-files", Prefix: "attachments"}}
+		fn.Spec.Bindings.Blob = []v1.FunctionBlob{{Alias: "files", Bucket: "todo-files", Prefix: "attachments"}}
 	})
 	f.kvP.fail(fault.Unavailablef("kvstore.badger", "the engine is closed"))
 	health.ProbeAll(context.Background(), f.prob)
@@ -205,7 +205,7 @@ func TestCheckerLinks(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			f := newFixture(t)
-			f.fn("todo-api", "", func(fn *v1.Function) { fn.Spec.Links = []v1.FunctionLink{{Alias: "mail", Target: "mailer"}} })
+			f.fn("todo-api", "", func(fn *v1.Function) { fn.Spec.Bindings.Links = []v1.FunctionLink{{Alias: "mail", Target: "mailer"}} })
 			if tc.create {
 				f.fn("mailer", tc.target, nil)
 			}
@@ -216,8 +216,8 @@ func TestCheckerLinks(t *testing.T) {
 	t.Run("mutual links", func(t *testing.T) {
 		t.Parallel()
 		f := newFixture(t)
-		f.fn("a", v1.PhaseDeploying, func(fn *v1.Function) { fn.Spec.Links = []v1.FunctionLink{{Alias: "b", Target: "b"}} })
-		f.fn("b", v1.PhaseDeploying, func(fn *v1.Function) { fn.Spec.Links = []v1.FunctionLink{{Alias: "a", Target: "a"}} })
+		f.fn("a", v1.PhaseDeploying, func(fn *v1.Function) { fn.Spec.Bindings.Links = []v1.FunctionLink{{Alias: "b", Target: "b"}} })
+		f.fn("b", v1.PhaseDeploying, func(fn *v1.Function) { fn.Spec.Bindings.Links = []v1.FunctionLink{{Alias: "a", Target: "a"}} })
 		require.Nil(t, f.checkOf("a"))
 		require.Nil(t, f.checkOf("b"))
 	})
@@ -284,7 +284,7 @@ func TestCheckerSQL(t *testing.T) {
 	check := health.NewChecker(health.CheckerDeps{Store: f.st, KV: f.kv, Blob: f.blob, SQL: sql, Links: local.NewResolver(f.st), Authz: f.pdp, Health: f.prob})
 	f.fn("todo-api", "", func(fn *v1.Function) {
 		api(fn)
-		fn.Spec.SQL = []v1.FunctionSQL{{Alias: "app", Database: "todo-db"}}
+		fn.Spec.Bindings.SQL = []v1.FunctionSQL{{Alias: "app", Database: "todo-db"}}
 	})
 	f.fn("mailer", v1.PhaseIdle, nil)
 	caller := local.Ref{Namespace: ns, Function: "todo-api"}

@@ -46,12 +46,11 @@ func todoApp(t *testing.T, e *gcEnv) *v1.App {
 				Runtime: "nodejs22",
 				Handler: "handle",
 				Image:   img,
-				KV: []v1.FunctionKV{
+				Scaling: v1.Scaling{MinReplicas: 1},
+				Bindings: v1.FunctionBindings{KV: []v1.FunctionKV{
 					{Alias: "store", Store: "todo-store", Table: "todos"},
 					{Alias: "cache", Store: "todo-cache", Table: "entries"},
-				},
-				Blob:    []v1.FunctionBlob{{Alias: "files", Bucket: "todo-files", Prefix: "attachments"}},
-				Scaling: v1.Scaling{MinReplicas: 1},
+				}, Blob: []v1.FunctionBlob{{Alias: "files", Bucket: "todo-files", Prefix: "attachments"}}},
 			}}},
 			Workflows: []v1.AppWorkflow{{Name: "todo-plan", WorkflowSpec: v1.WorkflowSpec{
 				Steps: []v1.WorkflowStep{{Name: "due", Function: &v1.FunctionStep{Image: img}}},

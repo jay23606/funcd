@@ -16,13 +16,14 @@ spec:
     - name: lake
       owner: todo-lake
   catalogs:
-  - blob:
-    - alias: events
-      bucket: todo-files
-      prefix: events
-    - alias: lake
-      bucket: todo-files
-      prefix: lake
+  - bindings:
+      blob:
+      - alias: events
+        bucket: todo-files
+        prefix: events
+      - alias: lake
+        bucket: todo-files
+        prefix: lake
     catalog:
       bucket: todo-files
       prefix: lake
@@ -39,57 +40,61 @@ spec:
       - interval: 1h
         name: tick
   functions:
-  - blob:
-    - alias: attachments
-      bucket: todo-files
-      prefix: attachments
-    config:
-    - todo-settings
+  - bindings:
+      blob:
+      - alias: attachments
+        bucket: todo-files
+        prefix: attachments
+      config:
+      - todo-settings
+      kv:
+      - alias: todos
+        store: todo-store
+        table: todos
+      secret:
+      - todo-stripe-key
     handler: handle
     image: registry.example/todo-api:1.0.0@sha256:0dd9c6aadc37466268cdf2d6a80d6791ad6c73ebf9bf45f26069fa6d2d14cde5
-    kv:
-    - alias: todos
-      store: todo-store
-      table: todos
     name: todo-api
     pooling: {}
     runtime: nodejs22
     scaling:
       minReplicas: 1
-    secrets:
-    - todo-stripe-key
-  - blob:
-    - alias: events
-      bucket: todo-files
-      prefix: events
+  - bindings:
+      blob:
+      - alias: events
+        bucket: todo-files
+        prefix: events
+      kv:
+      - alias: todos
+        store: todo-store
+        table: todos
+      - alias: runs
+        store: todo-store
+        table: runs
     handler: handle
     image: registry.example/todo-planner:1.0.0@sha256:784c3ea4bf1545655a2dc0fc2c24a773cb2d2738fd8032b41f5e3c4ccaf90bc7
-    kv:
-    - alias: todos
-      store: todo-store
-      table: todos
-    - alias: runs
-      store: todo-store
-      table: runs
     name: todo-planner
     pooling: {}
     runtime: nodejs22
     scaling: {}
-  - catalogs:
-    - alias: lake
-      catalog: todo-lake
+  - bindings:
+      catalog:
+      - alias: lake
+        catalog: todo-lake
     handler: handle
     image: registry.example/todo-stats:1.0.3@sha256:d540eb0bc37f1f6393e5c08593d78bb5e491b2413e0c773daac7795b459f9d81
     name: todo-stats
     pooling: {}
     runtime: nodejs22
     scaling: {}
-  - handler: handle
+  - bindings:
+      kv:
+      - alias: todos
+        store: todo-store
+        table: todos
+    handler: handle
     image: registry.example/todo-migrate:1.2.0@sha256:52981c9787e73cfeb83e8b3ccfeebf194f124f6f3c59b3a830f5317d3042f23a
-    kv:
-    - alias: todos
-      store: todo-store
-      table: todos
     name: todo-migrate
     pooling: {}
     runtime: nodejs22

@@ -395,23 +395,10 @@ components:
           items:
             additionalProperties: false
             properties:
-              blob:
-                items:
-                  $ref: "#/components/schemas/FunctionBlob"
-                type:
-                  - array
-                  - "null"
+              bindings:
+                $ref: "#/components/schemas/CatalogServiceBindings"
               catalog:
                 $ref: "#/components/schemas/CatalogRef"
-              config:
-                items:
-                  maxLength: 63
-                  minLength: 1
-                  pattern: ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$
-                  type: string
-                type:
-                  - array
-                  - "null"
               ingress:
                 $ref: "#/components/schemas/Ingress"
               name:
@@ -428,15 +415,6 @@ components:
                 type: string
               resources:
                 $ref: "#/components/schemas/ResourceSpec"
-              secrets:
-                items:
-                  maxLength: 63
-                  minLength: 1
-                  pattern: ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$
-                  type: string
-                type:
-                  - array
-                  - "null"
             type: object
           type:
             - array
@@ -495,27 +473,8 @@ components:
           items:
             additionalProperties: false
             properties:
-              blob:
-                items:
-                  $ref: "#/components/schemas/FunctionBlob"
-                type:
-                  - array
-                  - "null"
-              catalogs:
-                items:
-                  $ref: "#/components/schemas/FunctionCatalog"
-                type:
-                  - array
-                  - "null"
-              config:
-                items:
-                  maxLength: 63
-                  minLength: 1
-                  pattern: ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$
-                  type: string
-                type:
-                  - array
-                  - "null"
+              bindings:
+                $ref: "#/components/schemas/FunctionBindings"
               handler:
                 pattern: ^[A-Za-z_][A-Za-z0-9_.]*$
                 type: string
@@ -526,18 +485,6 @@ components:
                 type: string
               ingress:
                 $ref: "#/components/schemas/Ingress"
-              kv:
-                items:
-                  $ref: "#/components/schemas/FunctionKV"
-                type:
-                  - array
-                  - "null"
-              links:
-                items:
-                  $ref: "#/components/schemas/FunctionLink"
-                type:
-                  - array
-                  - "null"
               name:
                 description: The part's name. The object takes the App's namespace and resource group.
                 maxLength: 63
@@ -570,21 +517,6 @@ components:
                 type: string
               scaling:
                 $ref: "#/components/schemas/Scaling"
-              secrets:
-                items:
-                  maxLength: 63
-                  minLength: 1
-                  pattern: ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$
-                  type: string
-                type:
-                  - array
-                  - "null"
-              sql:
-                items:
-                  $ref: "#/components/schemas/FunctionSQL"
-                type:
-                  - array
-                  - "null"
               timeout:
                 description: "Bounds an external invoke until its response starts: 0s to 1h; 0s or unset means invoke.defaultTimeout."
                 pattern: ^([0-9]+h([0-9]+m)?([0-9]+s)?([0-9]+ms)?|[0-9]+m([0-9]+s)?([0-9]+ms)?|[0-9]+s([0-9]+ms)?|[0-9]+ms)$
@@ -1355,7 +1287,7 @@ components:
         - apiVersion
         - kind
       type: object
-    CatalogServiceSpec:
+    CatalogServiceBindings:
       additionalProperties: false
       properties:
         blob:
@@ -1364,8 +1296,6 @@ components:
           type:
             - array
             - "null"
-        catalog:
-          $ref: "#/components/schemas/CatalogRef"
         config:
           items:
             maxLength: 63
@@ -1375,11 +1305,7 @@ components:
           type:
             - array
             - "null"
-        ingress:
-          $ref: "#/components/schemas/Ingress"
-        resources:
-          $ref: "#/components/schemas/ResourceSpec"
-        secrets:
+        secret:
           items:
             maxLength: 63
             minLength: 1
@@ -1390,6 +1316,20 @@ components:
             - "null"
       required:
         - blob
+      type: object
+    CatalogServiceSpec:
+      additionalProperties: false
+      properties:
+        bindings:
+          $ref: "#/components/schemas/CatalogServiceBindings"
+        catalog:
+          $ref: "#/components/schemas/CatalogRef"
+        ingress:
+          $ref: "#/components/schemas/Ingress"
+        resources:
+          $ref: "#/components/schemas/ResourceSpec"
+      required:
+        - bindings
         - catalog
       type: object
     CatalogServiceStatus:
@@ -1818,6 +1758,58 @@ components:
         - apiVersion
         - kind
       type: object
+    FunctionBindings:
+      additionalProperties: false
+      properties:
+        blob:
+          items:
+            $ref: "#/components/schemas/FunctionBlob"
+          type:
+            - array
+            - "null"
+        catalog:
+          items:
+            $ref: "#/components/schemas/FunctionCatalog"
+          type:
+            - array
+            - "null"
+        config:
+          items:
+            maxLength: 63
+            minLength: 1
+            pattern: ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$
+            type: string
+          type:
+            - array
+            - "null"
+        kv:
+          items:
+            $ref: "#/components/schemas/FunctionKV"
+          type:
+            - array
+            - "null"
+        links:
+          items:
+            $ref: "#/components/schemas/FunctionLink"
+          type:
+            - array
+            - "null"
+        secret:
+          items:
+            maxLength: 63
+            minLength: 1
+            pattern: ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$
+            type: string
+          type:
+            - array
+            - "null"
+        sql:
+          items:
+            $ref: "#/components/schemas/FunctionSQL"
+          type:
+            - array
+            - "null"
+      type: object
     FunctionBlob:
       additionalProperties: false
       properties:
@@ -1909,27 +1901,8 @@ components:
     FunctionSpec:
       additionalProperties: false
       properties:
-        blob:
-          items:
-            $ref: "#/components/schemas/FunctionBlob"
-          type:
-            - array
-            - "null"
-        catalogs:
-          items:
-            $ref: "#/components/schemas/FunctionCatalog"
-          type:
-            - array
-            - "null"
-        config:
-          items:
-            maxLength: 63
-            minLength: 1
-            pattern: ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$
-            type: string
-          type:
-            - array
-            - "null"
+        bindings:
+          $ref: "#/components/schemas/FunctionBindings"
         handler:
           pattern: ^[A-Za-z_][A-Za-z0-9_.]*$
           type: string
@@ -1940,18 +1913,6 @@ components:
           type: string
         ingress:
           $ref: "#/components/schemas/Ingress"
-        kv:
-          items:
-            $ref: "#/components/schemas/FunctionKV"
-          type:
-            - array
-            - "null"
-        links:
-          items:
-            $ref: "#/components/schemas/FunctionLink"
-          type:
-            - array
-            - "null"
         pooling:
           $ref: "#/components/schemas/Pooling"
         protocol:
@@ -1972,21 +1933,6 @@ components:
           type: string
         scaling:
           $ref: "#/components/schemas/Scaling"
-        secrets:
-          items:
-            maxLength: 63
-            minLength: 1
-            pattern: ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$
-            type: string
-          type:
-            - array
-            - "null"
-        sql:
-          items:
-            $ref: "#/components/schemas/FunctionSQL"
-          type:
-            - array
-            - "null"
         timeout:
           description: "Bounds an external invoke until its response starts: 0s to 1h; 0s or unset means invoke.defaultTimeout."
           pattern: ^([0-9]+h([0-9]+m)?([0-9]+s)?([0-9]+ms)?|[0-9]+m([0-9]+s)?([0-9]+ms)?|[0-9]+s([0-9]+ms)?|[0-9]+ms)$
@@ -2035,35 +1981,10 @@ components:
     FunctionStep:
       additionalProperties: false
       properties:
-        blob:
-          items:
-            $ref: "#/components/schemas/FunctionBlob"
-          type:
-            - array
-            - "null"
-        catalogs:
-          items:
-            $ref: "#/components/schemas/FunctionCatalog"
-          type:
-            - array
-            - "null"
-        config:
-          items:
-            maxLength: 63
-            minLength: 1
-            pattern: ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$
-            type: string
-          type:
-            - array
-            - "null"
+        bindings:
+          $ref: "#/components/schemas/StepBindings"
         image:
           type: string
-        kv:
-          items:
-            $ref: "#/components/schemas/FunctionKV"
-          type:
-            - array
-            - "null"
         pooling:
           $ref: "#/components/schemas/WorkflowPooling"
         ref:
@@ -2073,21 +1994,6 @@ components:
           type: string
         retry:
           $ref: "#/components/schemas/StepRetry"
-        secrets:
-          items:
-            maxLength: 63
-            minLength: 1
-            pattern: ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$
-            type: string
-          type:
-            - array
-            - "null"
-        sql:
-          items:
-            $ref: "#/components/schemas/FunctionSQL"
-          type:
-            - array
-            - "null"
         timeout:
           description: "The per-step invocation bound: 0s to 24h; 0s or unset means workflow.defaultStepTimeout."
           pattern: ^([0-9]+h([0-9]+m)?([0-9]+s)?([0-9]+ms)?|[0-9]+m([0-9]+s)?([0-9]+ms)?|[0-9]+s([0-9]+ms)?|[0-9]+ms)$
@@ -3789,6 +3695,52 @@ components:
           type: boolean
       required:
         - bucket
+      type: object
+    StepBindings:
+      additionalProperties: false
+      properties:
+        blob:
+          items:
+            $ref: "#/components/schemas/FunctionBlob"
+          type:
+            - array
+            - "null"
+        catalog:
+          items:
+            $ref: "#/components/schemas/FunctionCatalog"
+          type:
+            - array
+            - "null"
+        config:
+          items:
+            maxLength: 63
+            minLength: 1
+            pattern: ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$
+            type: string
+          type:
+            - array
+            - "null"
+        kv:
+          items:
+            $ref: "#/components/schemas/FunctionKV"
+          type:
+            - array
+            - "null"
+        secret:
+          items:
+            maxLength: 63
+            minLength: 1
+            pattern: ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$
+            type: string
+          type:
+            - array
+            - "null"
+        sql:
+          items:
+            $ref: "#/components/schemas/FunctionSQL"
+          type:
+            - array
+            - "null"
       type: object
     StepRetry:
       additionalProperties: false

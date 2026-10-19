@@ -241,7 +241,7 @@ func anyFunctionBinds(ctx context.Context, st store.Store, ns v1.NamespaceName, 
 			(fn.Status.ServingRevision != "" && fn.Status.ServingRevision != fn.Status.CurrentRevision) {
 			return true, nil
 		}
-		for _, b := range fn.Spec.Catalogs {
+		for _, b := range fn.Spec.Bindings.Catalog {
 			if b.Catalog == name {
 				return true, nil
 			}
@@ -357,7 +357,7 @@ func (r *Reconciler) engineEnv(ctx context.Context, cs *v1.CatalogService) (map[
 	}
 	// The engine signs as CatalogService::"<ns>/<cs.Name>" (ADR-0175): its reads are its own spec.blob
 	// bindings, and it writes a prefix only where the S3 PEP resolves it as that prefix's writer.
-	if r.derive != nil && len(cs.Spec.Blob) > 0 {
+	if r.derive != nil && len(cs.Spec.Bindings.Blob) > 0 {
 		access, secret := r.derive(v1.KindCatalogService, string(cs.Namespace), string(cs.Name))
 		env["AWS_ACCESS_KEY_ID"] = access
 		env["AWS_SECRET_ACCESS_KEY"] = secret
@@ -377,7 +377,7 @@ func (r *Reconciler) engineEnv(ctx context.Context, cs *v1.CatalogService) (map[
 		Store:    r.store,
 		Identity: r.developerFor,
 		Logger:   r.logger,
-	}, cs.Namespace, cs.Spec.Config, cs.Spec.Secrets)
+	}, cs.Namespace, cs.Spec.Bindings.Config, cs.Spec.Bindings.Secret)
 	if rerr != nil {
 		return nil, fault.Wrapf(rerr, fault.KindOf(rerr), op, "resolve provider env")
 	}
@@ -417,8 +417,8 @@ func (r *Reconciler) resolveBucketRefs(ctx context.Context, cs *v1.CatalogServic
 		}
 		return false, ""
 	}
-	for _, bnd := range cs.Spec.Blob {
-		if rq, msg := check(fmt.Sprintf("spec.blob[%s]", bnd.Alias), bnd.Bucket, bnd.Prefix); rq {
+	for _, bnd := range cs.Spec.Bindings.Blob {
+		if rq, msg := check(fmt.Sprintf("spec.bindings.blob[%s]", bnd.Alias), bnd.Bucket, bnd.Prefix); rq {
 			return true, msg, nil
 		}
 	}

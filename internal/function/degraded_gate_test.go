@@ -21,7 +21,7 @@ import (
 // ADR-0221 tests: while a gate or a pass fails, a Degraded Function serves again once a worker of its serving revision
 // passes its readiness probe; a Ready one keeps ADR-0161's rule.
 
-func bindApp(fn *v1.Function) { fn.Spec.Config = []v1.ObjectName{"app"} }
+func bindApp(fn *v1.Function) { fn.Spec.Bindings.Config = []v1.ObjectName{"app"} }
 
 func pooledApp(fn *v1.Function) {
 	bindApp(fn)

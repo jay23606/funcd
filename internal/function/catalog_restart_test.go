@@ -24,7 +24,7 @@ func storeReadyCatalog(t *testing.T, st store.Store) *v1.CatalogService {
 	require.True(t, ok)
 	cs := obj.(*v1.CatalogService)
 	cs.Name, cs.Namespace, cs.ResourceGroup = "lake", "default", "rg1"
-	cs.Spec.Blob = []v1.FunctionBlob{{Alias: "lakehouse", Bucket: "lakehouse", Prefix: "gold"}}
+	cs.Spec.Bindings.Blob = []v1.FunctionBlob{{Alias: "lakehouse", Bucket: "lakehouse", Prefix: "gold"}}
 	cs.Spec.Catalog = v1.CatalogRef{Bucket: "lakehouse", Prefix: "gold"}
 	cs.Status.Phase = v1.PhaseReady
 	cs.Status.Endpoint = "127.0.0.1:1"
@@ -34,7 +34,7 @@ func storeReadyCatalog(t *testing.T, st store.Store) *v1.CatalogService {
 }
 
 func bindLake(fn *v1.Function) {
-	fn.Spec.Catalogs = []v1.FunctionCatalog{{Alias: "lake", Catalog: "lake"}}
+	fn.Spec.Bindings.Catalog = []v1.FunctionCatalog{{Alias: "lake", Catalog: "lake"}}
 }
 
 // TestIssue662_ConsumerWaitsForTheLiveCatalogProxy: a restarted daemon binds no catalog listener until the
@@ -156,7 +156,7 @@ func TestMapCatalogServiceMapsConsumers(t *testing.T) {
 	cs := storeReadyCatalog(t, h.st)
 	h.create(t, "reader", bindLake)
 	h.create(t, "other", func(fn *v1.Function) {
-		fn.Spec.Catalogs = []v1.FunctionCatalog{{Alias: "sea", Catalog: "sea"}}
+		fn.Spec.Bindings.Catalog = []v1.FunctionCatalog{{Alias: "sea", Catalog: "sea"}}
 	})
 	h.createFn(t, "plain")
 
@@ -184,7 +184,7 @@ func TestIssue690_PooledMemberServesThroughAFailedGate(t *testing.T) {
 		}},
 		"config-missing": {
 			reason: "ConfigResolveFailed",
-			bind:   func(fn *v1.Function) { fn.Spec.Config = []v1.ObjectName{"app"} },
+			bind:   func(fn *v1.Function) { fn.Spec.Bindings.Config = []v1.ObjectName{"app"} },
 			fail:   func(t *testing.T, h *shimHarness) { h.deleteConfigMap(t, "app") },
 		},
 	} {

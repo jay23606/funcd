@@ -140,7 +140,7 @@ func TestScenarioAppSharedWriterRefused(t *testing.T) {
 		"a Function named like a step Function": {
 			edit: func(a *v1.App) {
 				fn := a.Spec.Functions[0]
-				fn.Name, fn.KV, fn.Blob = "todo-plan-due", nil, nil
+				fn.Name, fn.Bindings.KV, fn.Bindings.Blob = "todo-plan-due", nil, nil
 				a.Spec.Functions = append(a.Spec.Functions, fn)
 			},
 			want: []string{"spec.workflows[0].steps[0].name", "spec.functions[1]"},

@@ -31,7 +31,7 @@ func (workflowStepStores) Admit(_ context.Context, req Request) (v1.Object, erro
 		return req.Object, nil
 	}
 	if step, binding, store, found := wf.Spec.UndeclaredStepStore(); found {
-		return nil, fault.Invalidf(op, "spec.steps[%d].function.kv[%d].store %q is not declared in spec.kv", step, binding, store)
+		return nil, fault.Invalidf(op, "spec.steps[%d].function.bindings.kv[%d].store %q is not declared in spec.kv", step, binding, store)
 	}
 	return req.Object, nil
 }

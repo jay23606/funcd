@@ -12,7 +12,8 @@ spec:
   replicas: 1
   scaling:
     minReplicas: 1
-  config:
-    - app-config-v2
-  secrets:
-    - app-secret
+  bindings:
+    config:
+      - app-config-v2
+    secret:
+      - app-secret

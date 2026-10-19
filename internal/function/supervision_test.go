@@ -719,7 +719,7 @@ const gatedIdle = time.Minute
 
 // bindMissing binds fn to prefix raw of Bucket missing, which the tests apply only when the gate should clear.
 func bindMissing(fn *v1.Function) {
-	fn.Spec.Blob = []v1.FunctionBlob{{Alias: "data", Bucket: "missing", Prefix: "raw"}}
+	fn.Spec.Bindings.Blob = []v1.FunctionBlob{{Alias: "data", Bucket: "missing", Prefix: "raw"}}
 }
 
 // createGated creates a scale-to-zero Function bound to the absent Bucket missing and reconciles it to

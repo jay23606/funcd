@@ -115,9 +115,14 @@ func sqlApp(version, api, migrate string) *v1.App {
 			Version: version,
 			SQL:     []v1.AppSQLDatabase{{Name: "todo-db", SQLDatabaseSpec: v1.SQLDatabaseSpec{Owner: "todo-api"}}},
 			Functions: []v1.AppFunction{
-				{Name: "todo-api", FunctionSpec: v1.FunctionSpec{Runtime: "nodejs22", Handler: "handle", Image: api, SQL: bind,
-					Scaling: v1.Scaling{MinReplicas: 1}}},
-				{Name: "todo-migrate", FunctionSpec: v1.FunctionSpec{Runtime: "nodejs22", Handler: "handle", Image: migrate, SQL: bind}},
+				{Name: "todo-api", FunctionSpec: v1.FunctionSpec{
+					Runtime:  "nodejs22",
+					Handler:  "handle",
+					Image:    api,
+					Scaling:  v1.Scaling{MinReplicas: 1},
+					Bindings: v1.FunctionBindings{SQL: bind},
+				}},
+				{Name: "todo-migrate", FunctionSpec: v1.FunctionSpec{Runtime: "nodejs22", Handler: "handle", Image: migrate, Bindings: v1.FunctionBindings{SQL: bind}}},
 			},
 			Hooks: &v1.AppHooks{PreApply: []v1.AppHook{{Function: "todo-migrate"}}},
 		},
@@ -282,7 +287,7 @@ func TestScenarioPruningKeepsBoundDatabase(t *testing.T) {
 	e.waitSQLApp(t, "sqltodo-1")
 	reporter := &v1.Function{TypeMeta: v1.TypeMeta{APIVersion: v1.KindFunction.GVK().APIVersion(), Kind: v1.KindFunction},
 		ObjectMeta: v1.ObjectMeta{Name: "reporter", Namespace: "default", ResourceGroup: "rg1"},
-		Spec:       v1.FunctionSpec{Runtime: "nodejs22", Handler: "handle", Image: api, SQL: []v1.FunctionSQL{{Alias: "app", Database: "scratch-db"}}}}
+		Spec:       v1.FunctionSpec{Runtime: "nodejs22", Handler: "handle", Image: api, Bindings: v1.FunctionBindings{SQL: []v1.FunctionSQL{{Alias: "app", Database: "scratch-db"}}}}}
 	e.apply(t, reporter)
 	a = sqlApp("2.0.0", api, migrate)
 	e.apply(t, a)

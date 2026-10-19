@@ -28,7 +28,7 @@ type SecretResolver interface {
 // or a PDP-deny / missing Secret / unconfigured resolver → ErrSecret) returns an error so
 // Reconcile holds the function not-Ready (ConfigResolveFailed / SecretResolveFailed) with no worker.
 func (r *Reconciler) resolveBindingEnv(ctx context.Context, fn *v1.Function) (envresolve.Resolved, error) {
-	if len(fn.Spec.Config) == 0 && len(fn.Spec.Secrets) == 0 {
+	if len(fn.Spec.Bindings.Config) == 0 && len(fn.Spec.Bindings.Secret) == 0 {
 		return envresolve.Resolved{}, nil
 	}
 	return envresolve.Resolve(ctx, envresolve.Deps{
@@ -36,7 +36,7 @@ func (r *Reconciler) resolveBindingEnv(ctx context.Context, fn *v1.Function) (en
 		Store:    r.store,
 		Identity: r.developerFor,
 		Logger:   r.logger,
-	}, fn.Namespace, fn.Spec.Config, fn.Spec.Secrets)
+	}, fn.Namespace, fn.Spec.Bindings.Config, fn.Spec.Bindings.Secret)
 }
 
 // addBindingEnv merges resolved config and secret env vars into a worker's env with reserved-key

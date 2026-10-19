@@ -44,7 +44,7 @@ func seedObjects(t *testing.T, st store.Store, objs ...v1.Object) {
 func lakeFunction(ns v1.NamespaceName, blob ...v1.FunctionBlob) *v1.Function {
 	fn := &v1.Function{TypeMeta: v1.TypeMeta{APIVersion: v1.KindFunction.GVK().APIVersion(), Kind: v1.KindFunction}}
 	fn.Name, fn.Namespace, fn.ResourceGroup = "lake", ns, "rg1"
-	fn.Spec = v1.FunctionSpec{Runtime: "nodejs22", Blob: blob}
+	fn.Spec = v1.FunctionSpec{Runtime: "nodejs22", Bindings: v1.FunctionBindings{Blob: blob}}
 	return fn
 }
 
@@ -52,7 +52,7 @@ func lakeFunction(ns v1.NamespaceName, blob ...v1.FunctionBlob) *v1.Function {
 func lakeCatalogService(ns v1.NamespaceName) *v1.CatalogService {
 	cs := &v1.CatalogService{TypeMeta: v1.TypeMeta{APIVersion: v1.KindCatalogService.GVK().APIVersion(), Kind: v1.KindCatalogService}}
 	cs.Name, cs.Namespace, cs.ResourceGroup = "lake", ns, "rg1"
-	cs.Spec = v1.CatalogServiceSpec{Blob: []v1.FunctionBlob{{Alias: "raw", Bucket: "lakehouse", Prefix: "raw"}}, Catalog: v1.CatalogRef{Bucket: "lakehouse", Prefix: "raw"}}
+	cs.Spec = v1.CatalogServiceSpec{Catalog: v1.CatalogRef{Bucket: "lakehouse", Prefix: "raw"}, Bindings: v1.CatalogServiceBindings{Blob: []v1.FunctionBlob{{Alias: "raw", Bucket: "lakehouse", Prefix: "raw"}}}}
 	return cs
 }
 

@@ -148,28 +148,28 @@ func preHookParts(a *v1.App, ents []entry) []entry {
 		if !ok {
 			continue
 		}
-		for _, c := range fn.Spec.Config {
+		for _, c := range fn.Spec.Bindings.Config {
 			add(v1.KindConfigMap, c)
 		}
-		for _, b := range fn.Spec.KV {
+		for _, b := range fn.Spec.Bindings.KV {
 			add(v1.KindKVStore, b.Store)
 		}
-		for _, b := range fn.Spec.Blob {
+		for _, b := range fn.Spec.Bindings.Blob {
 			add(v1.KindBucket, b.Bucket)
 		}
-		for _, b := range fn.Spec.SQL {
+		for _, b := range fn.Spec.Bindings.SQL {
 			add(v1.KindSQLDatabase, b.Database)
 		}
-		for _, b := range fn.Spec.Catalogs {
+		for _, b := range fn.Spec.Bindings.Catalog {
 			add(v1.KindCatalogService, b.Catalog)
 			cs, ok := parts[v1.ObjectRef{Kind: v1.KindCatalogService, Namespace: a.Namespace, Name: b.Catalog}].(*v1.CatalogService)
 			if !ok {
 				continue
 			}
-			for _, c := range cs.Spec.Config {
+			for _, c := range cs.Spec.Bindings.Config {
 				add(v1.KindConfigMap, c)
 			}
-			for _, cb := range cs.Spec.Blob {
+			for _, cb := range cs.Spec.Bindings.Blob {
 				add(v1.KindBucket, cb.Bucket)
 			}
 			add(v1.KindBucket, cs.Spec.Catalog.Bucket)
@@ -252,7 +252,7 @@ func (r *Reconciler) hooks(ctx context.Context, a *v1.App, latest *v1.AppRevisio
 // databasesReady reports whether every SQLDatabase fn's spec.sql names is Ready (ADR-0236 Decision 3, ADR-0214 Decision
 // 4 superseded in part), with the first one that is not as SQLDatabase/<name>: <its Ready reason>.
 func (r *Reconciler) databasesReady(ctx context.Context, ns v1.NamespaceName, fn *v1.Function, objs map[v1.ObjectRef]v1.Object) (bool, string, error) {
-	for _, b := range fn.Spec.SQL {
+	for _, b := range fn.Spec.Bindings.SQL {
 		obj := objs[v1.ObjectRef{Kind: v1.KindSQLDatabase, Namespace: ns, Name: b.Database}]
 		if obj == nil {
 			var err error

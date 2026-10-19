@@ -253,7 +253,7 @@ func TestScenarioRestoreRefusesNonEmpty(t *testing.T) {
 	engines.engine(t, "todo-db").set(func(e *fileEngine) { e.data = sqlite("milk") })
 	engines.engine(t, "full-db").set(func(e *fileEngine) { e.data = sqlite("other") })
 	fn := &v1.Function{TypeMeta: tmeta(v1.KindFunction), ObjectMeta: ordersMeta("reader"),
-		Spec: v1.FunctionSpec{Runtime: "nodejs22", Handler: "handle", Image: "file:///nonexistent.mjs", SQL: []v1.FunctionSQL{{Alias: "app", Database: "bound-db"}}}}
+		Spec: v1.FunctionSpec{Runtime: "nodejs22", Handler: "handle", Image: "file:///nonexistent.mjs", Bindings: v1.FunctionBindings{SQL: []v1.FunctionSQL{{Alias: "app", Database: "bound-db"}}}}}
 	r.seed(fn)
 	r.create(r.dev, r.dbSchedule("todo-db"))
 	r.create(r.dev, r.backupObj("b1", "orders-db"))

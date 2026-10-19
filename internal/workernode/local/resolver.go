@@ -34,7 +34,7 @@ func (r storeResolver) Resolve(ctx context.Context, caller Ref, alias string) (R
 	if !ok {
 		return Ref{}, "", 0, fault.Internalf(op, "caller %s/%s is not a Function", caller.Namespace, caller.Function)
 	}
-	for _, l := range fn.Spec.Links {
+	for _, l := range fn.Spec.Bindings.Links {
 		if l.Alias != alias {
 			continue
 		}

@@ -177,7 +177,7 @@ func TestFunctionLinkValidateMatrix(t *testing.T) {
 		{"empty target", []FunctionLink{link("a", "")}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			err := fnWith(FunctionSpec{Links: tc.links}).Validate()
+			err := fnWith(FunctionSpec{Bindings: FunctionBindings{Links: tc.links}}).Validate()
 			if tc.valid {
 				require.NoError(t, err)
 			} else {
@@ -238,7 +238,7 @@ func TestFunctionKVValidateMatrix(t *testing.T) {
 		{"empty table", []FunctionKV{bind("a", "s", "")}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			err := fnWith(FunctionSpec{KV: tc.kv}).Validate()
+			err := fnWith(FunctionSpec{Bindings: FunctionBindings{KV: tc.kv}}).Validate()
 			if tc.valid {
 				require.NoError(t, err)
 			} else {
@@ -248,7 +248,7 @@ func TestFunctionKVValidateMatrix(t *testing.T) {
 	}
 }
 
-// scenario: function-config-validate (ADR-0093) — each spec.config entry names a ConfigMap and must
+// scenario: function-config-validate (ADR-0093) — each spec.bindings.config entry names a ConfigMap and must
 // be a valid DNS-1123 name (mirrors spec.secrets / CatalogService.spec.config). Cross-resource
 // existence is the reconciler's fail-closed read, not Validate.
 func TestFunctionConfigValidateMatrix(t *testing.T) {
@@ -265,7 +265,7 @@ func TestFunctionConfigValidateMatrix(t *testing.T) {
 		{"empty name", []ObjectName{""}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			err := fnWith(FunctionSpec{Config: tc.config}).Validate()
+			err := fnWith(FunctionSpec{Bindings: FunctionBindings{Config: tc.config}}).Validate()
 			if tc.valid {
 				require.NoError(t, err)
 			} else {

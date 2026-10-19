@@ -35,11 +35,13 @@ func todoApp(mutate func(*App)) *App {
 				Handler: "index.handler",
 				Image:   "oci-layout://todo-api:1",
 				Scaling: Scaling{MinReplicas: 1},
-				KV: []FunctionKV{
-					{Alias: "store", Store: "todo-store", Table: "todos"},
-					{Alias: "cache", Store: "todo-cache", Table: "entries"},
+				Bindings: FunctionBindings{
+					KV: []FunctionKV{
+						{Alias: "store", Store: "todo-store", Table: "todos"},
+						{Alias: "cache", Store: "todo-cache", Table: "entries"},
+					},
+					Blob: []FunctionBlob{{Alias: "files", Bucket: "todo-files", Prefix: "attachments"}},
 				},
-				Blob: []FunctionBlob{{Alias: "files", Bucket: "todo-files", Prefix: "attachments"}},
 			}}},
 			Workflows: []AppWorkflow{{Name: "todo-plan", WorkflowSpec: WorkflowSpec{
 				Steps: []WorkflowStep{{Name: "due", Function: &FunctionStep{Image: "oci-layout://todo-due:1"}}},
@@ -78,8 +80,8 @@ func fullApp() *App {
 		}
 		a.Spec.Catalogs = []AppCatalog{
 			{Name: "todo-lake", CatalogServiceSpec: CatalogServiceSpec{
-				Blob:    []FunctionBlob{{Alias: "lake", Bucket: "todo-files", Prefix: "lake"}},
-				Catalog: CatalogRef{Bucket: "todo-files", Prefix: "lake"},
+				Catalog:  CatalogRef{Bucket: "todo-files", Prefix: "lake"},
+				Bindings: CatalogServiceBindings{Blob: []FunctionBlob{{Alias: "lake", Bucket: "todo-files", Prefix: "lake"}}},
 			}},
 			{Ref: "lake"},
 		}

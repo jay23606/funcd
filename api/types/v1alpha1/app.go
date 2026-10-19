@@ -594,7 +594,7 @@ func (a *App) validateHooks(op string) error {
 		pre[hk.Function] = true
 	}
 	for i, hk := range h.PreApply {
-		for _, l := range declared[hk.Function].Links {
+		for _, l := range declared[hk.Function].Bindings.Links {
 			if declared[l.Target] != nil && !pre[l.Target] {
 				return fault.Invalidf(op, "spec.hooks.preApply[%d].function %q links to %q, written after the pre-hooks", i, hk.Function, l.Target)
 			}
@@ -730,7 +730,7 @@ func (a *App) entries() []appEntry {
 	}
 	for i, e := range s.Functions {
 		spec := e.FunctionSpec
-		spec.Config = repoint(spec.Config, stored)
+		spec.Bindings.Config = repoint(spec.Bindings.Config, stored)
 		out = append(out, newEntry("functions", i, entryHead{Name: e.Name, Ref: e.Ref}, e.FunctionSpec,
 			&Function{TypeMeta: typeMetaFor(KindFunction), ObjectMeta: meta(e.Name), Spec: spec}))
 	}
@@ -758,7 +758,7 @@ func (a *App) entries() []appEntry {
 	}
 	for i, e := range s.Catalogs {
 		spec := e.CatalogServiceSpec
-		spec.Config = repoint(spec.Config, stored)
+		spec.Bindings.Config = repoint(spec.Bindings.Config, stored)
 		out = append(out, newEntry("catalogs", i, entryHead{Name: e.Name, Ref: e.Ref}, e.CatalogServiceSpec,
 			&CatalogService{TypeMeta: typeMetaFor(KindCatalogService), ObjectMeta: meta(e.Name), Spec: spec}))
 	}
@@ -816,7 +816,7 @@ func repointSteps(spec WorkflowSpec, stored map[ObjectName]ObjectName) WorkflowS
 	for j := range spec.Steps {
 		if f := spec.Steps[j].Function; f != nil && f.Image != "" {
 			fc := *f
-			fc.Config = repoint(f.Config, stored)
+			fc.Bindings.Config = repoint(f.Bindings.Config, stored)
 			spec.Steps[j].Function = &fc
 		}
 	}

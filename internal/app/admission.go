@@ -112,14 +112,14 @@ func undeclaredSecret(app *v1.App) error {
 	check := func(path string, kind v1.Kind, name v1.ObjectName, secrets []v1.ObjectName) error {
 		for j, n := range secrets {
 			if !declared[n] {
-				return fault.Invalidf(admitOp, "%s.secrets[%d]: %s/%s names Secret %q, which spec.secrets does not declare", path, j, kind, name, n)
+				return fault.Invalidf(admitOp, "%s.bindings.secret[%d]: %s/%s names Secret %q, which spec.secrets does not declare", path, j, kind, name, n)
 			}
 		}
 		return nil
 	}
 	s := &app.Spec
 	for i, f := range s.Functions {
-		if err := check(fmt.Sprintf("spec.functions[%d]", i), v1.KindFunction, f.Name, f.Secrets); err != nil {
+		if err := check(fmt.Sprintf("spec.functions[%d]", i), v1.KindFunction, f.Name, f.Bindings.Secret); err != nil {
 			return err
 		}
 	}
@@ -128,13 +128,13 @@ func undeclaredSecret(app *v1.App) error {
 			if st.Function == nil || st.Function.Image == "" {
 				continue
 			}
-			if err := check(fmt.Sprintf("spec.workflows[%d].steps[%d].function", i, j), v1.KindWorkflow, w.Name, st.Function.Secrets); err != nil {
+			if err := check(fmt.Sprintf("spec.workflows[%d].steps[%d].function", i, j), v1.KindWorkflow, w.Name, st.Function.Bindings.Secret); err != nil {
 				return err
 			}
 		}
 	}
 	for i, c := range s.Catalogs {
-		if err := check(fmt.Sprintf("spec.catalogs[%d]", i), v1.KindCatalogService, c.Name, c.Secrets); err != nil {
+		if err := check(fmt.Sprintf("spec.catalogs[%d]", i), v1.KindCatalogService, c.Name, c.Bindings.Secret); err != nil {
 			return err
 		}
 	}

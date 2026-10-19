@@ -24,8 +24,8 @@ func configApp(mutate func(*v1.App)) *v1.App {
 	return todoApp(func(a *v1.App) {
 		a.Spec.ConfigMaps = []v1.AppConfigMap{{Name: "todo-settings", ConfigMapSpec: paris()}}
 		a.Spec.Secrets = []v1.AppSecret{{Name: "todo-stripe-key", Description: "Stripe API access", Keys: []string{"STRIPE_API_KEY"}}}
-		a.Spec.Functions[0].Config = []v1.ObjectName{"todo-settings"}
-		a.Spec.Functions[0].Secrets = []v1.ObjectName{"todo-stripe-key"}
+		a.Spec.Functions[0].Bindings.Config = []v1.ObjectName{"todo-settings"}
+		a.Spec.Functions[0].Bindings.Secret = []v1.ObjectName{"todo-stripe-key"}
 		if mutate != nil {
 			mutate(a)
 		}
@@ -259,7 +259,7 @@ func TestMapSecret(t *testing.T) {
 // writing its status.
 func TestAppOlderAppWritesStatus(t *testing.T) {
 	h := newHarness(t, nil)
-	h.install(todoApp(func(a *v1.App) { a.Spec.Functions[0].Secrets = []v1.ObjectName{"todo-billing"} }))
+	h.install(todoApp(func(a *v1.App) { a.Spec.Functions[0].Bindings.Secret = []v1.ObjectName{"todo-billing"} }))
 	h.edit(func(a *v1.App) { a.Spec.Routes[0].Rules[0].Path = "/v2" })
 	h.reconcile()
 	h.markAllReady()
@@ -290,9 +290,9 @@ func TestAppConfigMapsWrittenFirst(t *testing.T) {
 		require.Less(t, rv(cm), rv(h.get(c.Kind, c.Name)), "the ConfigMap is written before %s/%s", c.Kind, c.Name)
 	}
 	require.Equal(t, v1.AppChild{Kind: v1.KindConfigMap, Name: name, State: v1.AppChildReady}, h.app().Status.Children[0])
-	require.Equal(t, []v1.ObjectName{name}, h.get(v1.KindFunction, "todo-api").(*v1.Function).Spec.Config)
-	require.Equal(t, []v1.ObjectName{"todo-settings"}, h.app().Spec.Functions[0].Config, "the App's spec stays as declared")
-	require.Equal(t, []v1.ObjectName{"todo-settings"}, h.rev(1).Spec.Spec.Functions[0].Config)
+	require.Equal(t, []v1.ObjectName{name}, h.get(v1.KindFunction, "todo-api").(*v1.Function).Spec.Bindings.Config)
+	require.Equal(t, []v1.ObjectName{"todo-settings"}, h.app().Spec.Functions[0].Bindings.Config, "the App's spec stays as declared")
+	require.Equal(t, []v1.ObjectName{"todo-settings"}, h.rev(1).Spec.Spec.Functions[0].Bindings.Config)
 }
 
 // scenario: app-config-change-rolls (the reconciler half) — a data change writes a new ConfigMap and repoints
@@ -310,7 +310,7 @@ func TestAppConfigChangeRolls(t *testing.T) {
 		h.edit(setTZ(utc))
 		h.reconcile()
 		require.NotNil(t, h.get(v1.KindConfigMap, storedSettings(utc)))
-		require.Equal(t, []v1.ObjectName{storedSettings(utc)}, h.get(v1.KindFunction, "todo-api").(*v1.Function).Spec.Config)
+		require.Equal(t, []v1.ObjectName{storedSettings(utc)}, h.get(v1.KindFunction, "todo-api").(*v1.Function).Spec.Bindings.Config)
 		require.NotNil(t, h.get(v1.KindConfigMap, storedSettings(paris())), "kept until the switch")
 		require.Equal(t, v1.AppChild{Kind: v1.KindConfigMap, Name: storedSettings(paris()), State: v1.AppChildPruning, Reason: "NotCurrent"},
 			h.child(v1.KindConfigMap, storedSettings(paris())))
@@ -323,7 +323,7 @@ func TestAppConfigChangeRolls(t *testing.T) {
 		h.edit(setTZ(paris()))
 		h.reconcile()
 		require.NotNil(t, h.get(v1.KindConfigMap, storedSettings(paris())), "the rollback creates it again")
-		require.Equal(t, []v1.ObjectName{storedSettings(paris())}, h.get(v1.KindFunction, "todo-api").(*v1.Function).Spec.Config)
+		require.Equal(t, []v1.ObjectName{storedSettings(paris())}, h.get(v1.KindFunction, "todo-api").(*v1.Function).Spec.Bindings.Config)
 		h.markReady(v1.KindFunction, "todo-api")
 		h.reconcile()
 		require.Equal(t, v1.ObjectName("todo-3"), h.app().Status.CurrentRevision)
@@ -334,7 +334,7 @@ func TestAppConfigChangeRolls(t *testing.T) {
 		h.putSecret(stripeKey("v1"))
 		h.install(configApp(nil))
 		audit := apiSpec()
-		audit.Blob, audit.Config = nil, []v1.ObjectName{storedSettings(paris())}
+		audit.Bindings.Blob, audit.Bindings.Config = nil, []v1.ObjectName{storedSettings(paris())}
 		h.create(&v1.Function{TypeMeta: v1.TypeMeta{APIVersion: v1.KindFunction.GVK().APIVersion(), Kind: v1.KindFunction},
 			ObjectMeta: v1.ObjectMeta{Name: "audit", Namespace: ns, ResourceGroup: "rg1"}, Spec: audit})
 		h.edit(setTZ(utc))
@@ -369,8 +369,10 @@ func TestAppConfigChangeRolls(t *testing.T) {
 		h.putSecret(stripeKey("v1"))
 		shared := h.create(&v1.ConfigMap{TypeMeta: v1.TypeMeta{APIVersion: v1.KindConfigMap.GVK().APIVersion(), Kind: v1.KindConfigMap},
 			ObjectMeta: v1.ObjectMeta{Name: "shared", Namespace: ns, ResourceGroup: "rg1"}, Spec: paris()})
-		h.install(configApp(func(a *v1.App) { a.Spec.Functions[0].Config = append(a.Spec.Functions[0].Config, "shared") }))
-		require.Equal(t, []v1.ObjectName{storedSettings(paris()), "shared"}, h.get(v1.KindFunction, "todo-api").(*v1.Function).Spec.Config)
+		h.install(configApp(func(a *v1.App) {
+			a.Spec.Functions[0].Bindings.Config = append(a.Spec.Functions[0].Bindings.Config, "shared")
+		}))
+		require.Equal(t, []v1.ObjectName{storedSettings(paris()), "shared"}, h.get(v1.KindFunction, "todo-api").(*v1.Function).Spec.Bindings.Config)
 		shared.(*v1.ConfigMap).Spec = v1.ConfigMapSpec{Data: map[string]string{"TZ": "UTC"}}
 		h.update(shared)
 		h.quiet()
@@ -386,9 +388,8 @@ func TestAdmissionRefusesUndeclaredSecret(t *testing.T) {
 	lake := func(secrets []v1.ObjectName) func(*v1.App) {
 		return func(a *v1.App) {
 			a.Spec.Catalogs = []v1.AppCatalog{{Name: "todo-lake", CatalogServiceSpec: v1.CatalogServiceSpec{
-				Blob:    []v1.FunctionBlob{{Alias: "lake", Bucket: "todo-files", Prefix: "lake"}},
-				Catalog: v1.CatalogRef{Bucket: "todo-files", Prefix: "lake"},
-				Secrets: secrets,
+				Catalog:  v1.CatalogRef{Bucket: "todo-files", Prefix: "lake"},
+				Bindings: v1.CatalogServiceBindings{Blob: []v1.FunctionBlob{{Alias: "lake", Bucket: "todo-files", Prefix: "lake"}}, Secret: secrets},
 			}}}
 		}
 	}
@@ -397,14 +398,16 @@ func TestAdmissionRefusesUndeclaredSecret(t *testing.T) {
 		mutate func(*v1.App)
 		want   string
 	}{
-		{"a Function", func(a *v1.App) { a.Spec.Functions[0].Secrets = append(a.Spec.Functions[0].Secrets, "todo-billing") },
-			`spec.functions[0].secrets[1]: Function/todo-api names Secret "todo-billing", which spec.secrets does not declare`},
-		{"an image step", func(a *v1.App) { a.Spec.Workflows[0].Steps[0].Function.Secrets = billing },
-			`spec.workflows[0].steps[0].function.secrets[0]: Workflow/todo-plan names Secret "todo-billing", which spec.secrets does not declare`},
+		{"a Function", func(a *v1.App) {
+			a.Spec.Functions[0].Bindings.Secret = append(a.Spec.Functions[0].Bindings.Secret, "todo-billing")
+		},
+			`spec.functions[0].bindings.secret[1]: Function/todo-api names Secret "todo-billing", which spec.secrets does not declare`},
+		{"an image step", func(a *v1.App) { a.Spec.Workflows[0].Steps[0].Function.Bindings.Secret = billing },
+			`spec.workflows[0].steps[0].function.bindings.secret[0]: Workflow/todo-plan names Secret "todo-billing", which spec.secrets does not declare`},
 		{"a CatalogService", lake(billing),
-			`spec.catalogs[0].secrets[0]: CatalogService/todo-lake names Secret "todo-billing", which spec.secrets does not declare`},
+			`spec.catalogs[0].bindings.secret[0]: CatalogService/todo-lake names Secret "todo-billing", which spec.secrets does not declare`},
 		{"an App without the section", func(a *v1.App) { a.Spec.Secrets = nil },
-			`spec.functions[0].secrets[0]: Function/todo-api names Secret "todo-stripe-key", which spec.secrets does not declare`},
+			`spec.functions[0].bindings.secret[0]: Function/todo-api names Secret "todo-stripe-key", which spec.secrets does not declare`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			a := configApp(tc.mutate)
@@ -419,7 +422,7 @@ func TestAdmissionRefusesUndeclaredSecret(t *testing.T) {
 		"the fixture": nil,
 		"a ref step": func(a *v1.App) {
 			a.Spec.Workflows[0].Steps = append(a.Spec.Workflows[0].Steps, v1.WorkflowStep{Name: "notify",
-				Function: &v1.FunctionStep{Ref: "todo-api", Secrets: billing}})
+				Function: &v1.FunctionStep{Ref: "todo-api", Bindings: v1.StepBindings{Secret: billing}}})
 		},
 		"a declared CatalogService Secret": lake([]v1.ObjectName{"todo-stripe-key"}),
 	} {

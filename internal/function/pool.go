@@ -744,15 +744,15 @@ func (r *Reconciler) memberEnv(m *v1.Function, artifact string, shared map[strin
 	if artifact != "" {
 		env["FUNCD_BUNDLE_DIR"] = filepath.Dir(artifact)
 	}
-	if r.s3Gateway.Enabled && r.s3Gateway.Derive != nil && len(m.Spec.Blob) > 0 {
+	if r.s3Gateway.Enabled && r.s3Gateway.Derive != nil && len(m.Spec.Bindings.Blob) > 0 {
 		env["AWS_ACCESS_KEY_ID"], env["AWS_SECRET_ACCESS_KEY"] = r.s3Gateway.Derive(v1.KindFunction, string(m.Namespace), string(m.Name))
 	}
-	if len(m.Spec.Catalogs) > 0 {
+	if len(m.Spec.Bindings.Catalog) > 0 {
 		token, err := cataloggw.DeriveCatalogToken(r.catalogMaster, m.Namespace, m.Name)
 		if err != nil {
 			return nil, err
 		}
-		for _, c := range m.Spec.Catalogs {
+		for _, c := range m.Spec.Bindings.Catalog {
 			env["FUNCD_CATALOG_"+strings.ToUpper(c.Alias)+"_TOKEN"] = token
 		}
 	}

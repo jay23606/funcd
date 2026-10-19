@@ -26,7 +26,7 @@ func mkFunctionWithBlob(name string, blob ...v1.FunctionBlob) *v1.Function {
 	f := &v1.Function{}
 	f.TypeMeta = v1.TypeMeta{APIVersion: v1.KindFunction.GVK().APIVersion(), Kind: v1.KindFunction}
 	f.Name, f.Namespace, f.ResourceGroup = v1.ObjectName(name), "default", "rg1"
-	f.Spec.Blob = blob
+	f.Spec.Bindings.Blob = blob
 	return f
 }
 

@@ -108,8 +108,8 @@ func kvCapability(writers WriterLister) Capability {
 				if !ok {
 					return nil // providers have no spec.kv → contribute nothing (inert)
 				}
-				out := make([]cedartypes.EntityUID, 0, len(fn.Spec.KV))
-				for _, b := range fn.Spec.KV {
+				out := make([]cedartypes.EntityUID, 0, len(fn.Spec.Bindings.KV))
+				for _, b := range fn.Spec.Bindings.KV {
 					out = append(out, kvTableUID(ns, b.Store, b.Table))
 				}
 				return out
@@ -201,8 +201,8 @@ func InvokeCapability() Capability {
 				if !ok {
 					return nil // providers have no spec.links → contribute nothing (inert)
 				}
-				out := make([]cedartypes.EntityUID, 0, len(fn.Spec.Links))
-				for _, l := range fn.Spec.Links {
+				out := make([]cedartypes.EntityUID, 0, len(fn.Spec.Bindings.Links))
+				for _, l := range fn.Spec.Bindings.Links {
 					out = append(out, functionUID(ns, l.Target))
 				}
 				return out
@@ -254,9 +254,9 @@ func s3Capability(builtin string, writers WriterLister) Capability {
 				var blobs []v1.FunctionBlob
 				switch o := src.(type) {
 				case *v1.Function:
-					blobs = o.Spec.Blob
+					blobs = o.Spec.Bindings.Blob
 				case *v1.CatalogService:
-					blobs = o.Spec.Blob // ADR-0088: a provider's spec.blob are its blobBindings
+					blobs = o.Spec.Bindings.Blob // ADR-0088: a provider's spec.blob are its blobBindings
 				default:
 					return nil
 				}
@@ -357,7 +357,7 @@ func catalogServiceOwnsPrefix(ctx context.Context, r MetaReader, ns v1.Namespace
 	if !ok {
 		return false
 	}
-	for _, b := range cs.Spec.Blob {
+	for _, b := range cs.Spec.Bindings.Blob {
 		if b.Bucket == bucket && b.Prefix == prefix {
 			return true
 		}
@@ -384,8 +384,8 @@ func CatalogCapability() Capability {
 				if !ok {
 					return nil // providers have no spec.catalogs → contribute nothing (inert)
 				}
-				out := make([]cedartypes.EntityUID, 0, len(fn.Spec.Catalogs))
-				for _, b := range fn.Spec.Catalogs {
+				out := make([]cedartypes.EntityUID, 0, len(fn.Spec.Bindings.Catalog))
+				for _, b := range fn.Spec.Bindings.Catalog {
 					out = append(out, catalogServiceUID(ns, b.Catalog))
 				}
 				return out
@@ -547,7 +547,7 @@ func sqlCapability(writers WriterLister) Capability {
 		},
 		PrincipalBinding: PrincipalBinding{
 			Attr: "sqlBindings",
-			Bind: bindFunction(func(fn *v1.Function) []v1.FunctionSQL { return fn.Spec.SQL },
+			Bind: bindFunction(func(fn *v1.Function) []v1.FunctionSQL { return fn.Spec.Bindings.SQL },
 				func(ns v1.NamespaceName, b v1.FunctionSQL) cedartypes.EntityUID {
 					return sqlDatabaseUID(ns, b.Database)
 				}),

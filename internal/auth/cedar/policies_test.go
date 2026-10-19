@@ -243,7 +243,7 @@ func TestScenario_synthetic_stays_in_namespace(t *testing.T) {
 func TestScenario_deny_reason_names_forbid(t *testing.T) {
 	t.Parallel()
 	m := twoNamespaces()
-	m.fns["team-a/f"].Spec.KV = []v1.FunctionKV{{Alias: "o", Store: "orders", Table: "items"}}
+	m.fns["team-a/f"].Spec.Bindings.KV = []v1.FunctionKV{{Alias: "o", Store: "orders", Table: "items"}}
 
 	a, _ := nsDriver(t, m)
 	require.True(t, decide(t, a, fnRef("team-a", "f"), auth.ActionKVRead, itemsRef("team-a")).Allowed,

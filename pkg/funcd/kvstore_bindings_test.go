@@ -44,7 +44,7 @@ func TestIssue147_KVStoreBindingsFollowFunctions(t *testing.T) {
 		f.TypeMeta = v1.TypeMeta{APIVersion: v1.KindFunction.GVK().APIVersion(), Kind: v1.KindFunction}
 		f.Name, f.Namespace, f.ResourceGroup = name, "default", "rg1"
 		for _, a := range aliases {
-			f.Spec.KV = append(f.Spec.KV, v1.FunctionKV{Alias: a, Store: "s", Table: "t"})
+			f.Spec.Bindings.KV = append(f.Spec.Bindings.KV, v1.FunctionKV{Alias: a, Store: "s", Table: "t"})
 		}
 		_, err = st.Create(ctx, f)
 		require.NoError(t, err)
@@ -56,7 +56,7 @@ func TestIssue147_KVStoreBindingsFollowFunctions(t *testing.T) {
 		obj, gerr := st.Get(ctx, v1.KindFunction.GVK(), "default", "r2")
 		require.NoError(t, gerr)
 		r2 := obj.(*v1.Function)
-		r2.Spec.KV = nil
+		r2.Spec.Bindings.KV = nil
 		_, uerr := st.Update(ctx, r2)
 		return uerr == nil
 	}, 5*time.Second, 10*time.Millisecond, "unbind r2")

@@ -1084,14 +1084,15 @@ functions:
     image: ${{ images.api }}
     scaling:
       minReplicas: ${{ values.minReplicas }}
-    kv:
-      - alias: todos
-        store: ${{ app.name + "-store" }}
-        table: todos
-    blob:
-      - alias: attachments
-        bucket: ${{ app.name + "-files" }}
-        prefix: attachments
+    bindings:
+      kv:
+        - alias: todos
+          store: ${{ app.name + "-store" }}
+          table: todos
+      blob:
+        - alias: attachments
+          bucket: ${{ app.name + "-files" }}
+          prefix: attachments
 routes:
   - name: ${{ app.name + "-api" }}
     host: ${{ values.host }}
@@ -1154,49 +1155,53 @@ spec:
       image: registry.example/todo-api:1.0.0@sha256:4f1c…
       scaling:
         minReplicas: 1
-      kv:
-        - alias: todos
-          store: todo-store
-          table: todos
-      blob:
-        - alias: attachments
-          bucket: todo-files
-          prefix: attachments
-      config:
-        - todo-settings
-      secrets:
-        - todo-stripe-key        # declared below, values set by an operator
+      bindings:
+        kv:
+          - alias: todos
+            store: todo-store
+            table: todos
+        blob:
+          - alias: attachments
+            bucket: todo-files
+            prefix: attachments
+        config:
+          - todo-settings
+        secret:
+          - todo-stripe-key        # declared below, values set by an operator
     - name: todo-planner
       runtime: nodejs22
       handler: handle
       image: registry.example/todo-planner:1.0.0@sha256:b81e…
-      kv:
-        - alias: todos
-          store: todo-store
-          table: todos
-        - alias: runs
-          store: todo-store
-          table: runs
-      blob:
-        - alias: events
-          bucket: todo-files
-          prefix: events
+      bindings:
+        kv:
+          - alias: todos
+            store: todo-store
+            table: todos
+          - alias: runs
+            store: todo-store
+            table: runs
+        blob:
+          - alias: events
+            bucket: todo-files
+            prefix: events
     - name: todo-stats
       runtime: nodejs22
       handler: handle
       image: registry.example/todo-stats:1.0.3@sha256:7d2a…
-      catalogs:
-        - alias: lake
-          catalog: todo-lake
+      bindings:
+        catalog:
+          - alias: lake
+            catalog: todo-lake
     - name: todo-migrate             # a hook (spec.hooks), called once per rollout
       runtime: nodejs22
       handler: handle
       image: registry.example/todo-migrate:1.2.0@sha256:c09f…
       timeout: 10m                   # the hook's limit
-      kv:
-        - alias: todos
-          store: todo-store
-          table: todos
+      bindings:
+        kv:
+          - alias: todos
+            store: todo-store
+            table: todos
   workflows:
     - name: todo-plan
       steps:
@@ -1247,13 +1252,14 @@ spec:
         public: true
   catalogs:
     - name: todo-lake
-      blob:
-        - alias: events
-          bucket: todo-files
-          prefix: events
-        - alias: lake
-          bucket: todo-files
-          prefix: lake
+      bindings:
+        blob:
+          - alias: events
+            bucket: todo-files
+            prefix: events
+          - alias: lake
+            bucket: todo-files
+            prefix: lake
       catalog:
         bucket: todo-files
         prefix: lake

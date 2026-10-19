@@ -24,9 +24,11 @@ func providerS3Meta() s3Meta {
 		css: map[string]*v1.CatalogService{
 			"default/lake": {
 				ObjectMeta: v1.ObjectMeta{Name: "lake", Namespace: "default", ResourceGroup: "rg1"},
-				Spec: v1.CatalogServiceSpec{Blob: []v1.FunctionBlob{
-					{Alias: "gold", Bucket: "lakehouse", Prefix: "gold"},
-				}},
+				Spec: v1.CatalogServiceSpec{
+					Bindings: v1.CatalogServiceBindings{Blob: []v1.FunctionBlob{
+						{Alias: "gold", Bucket: "lakehouse", Prefix: "gold"},
+					}},
+				},
 			},
 		},
 		buckets: map[string]*v1.Bucket{

@@ -39,7 +39,7 @@ func TestScenarioBlobBindingWaitsForBucket(t *testing.T) {
 	t.Parallel()
 	r := newShimReconciler(t, fakeResolver{})
 	fn := sampleFn()
-	fn.Spec.Blob = []v1.FunctionBlob{{Alias: "lake", Bucket: "data", Prefix: "bronze"}}
+	fn.Spec.Bindings.Blob = []v1.FunctionBlob{{Alias: "lake", Bucket: "data", Prefix: "bronze"}}
 
 	requeue, reason, _, err := r.resolveDataReferences(context.Background(), fn)
 	require.NoError(t, err)
@@ -55,7 +55,7 @@ func TestScenarioBlobBindingWaitsForBucket(t *testing.T) {
 
 	// the bound prefix exists ⇒ resolves.
 	seedBucket(t, r, "data2", "bronze")
-	fn.Spec.Blob = []v1.FunctionBlob{{Alias: "lake", Bucket: "data2", Prefix: "bronze"}}
+	fn.Spec.Bindings.Blob = []v1.FunctionBlob{{Alias: "lake", Bucket: "data2", Prefix: "bronze"}}
 	requeue, _, _, err = r.resolveDataReferences(context.Background(), fn)
 	require.NoError(t, err)
 	require.False(t, requeue, "the bound bucket/prefix now exists ⇒ resolves")
@@ -66,7 +66,7 @@ func TestScenarioKVBindingWaitsForStore(t *testing.T) {
 	t.Parallel()
 	r := newShimReconciler(t, fakeResolver{})
 	fn := sampleFn()
-	fn.Spec.KV = []v1.FunctionKV{{Alias: "kv", Store: "orders", Table: "customers"}}
+	fn.Spec.Bindings.KV = []v1.FunctionKV{{Alias: "kv", Store: "orders", Table: "customers"}}
 
 	requeue, reason, _, err := r.resolveDataReferences(context.Background(), fn)
 	require.NoError(t, err)
@@ -93,7 +93,7 @@ func TestSQLBindingWaitsForDatabase(t *testing.T) {
 	t.Parallel()
 	r := newShimReconciler(t, fakeResolver{})
 	fn := sampleFn()
-	fn.Spec.SQL = []v1.FunctionSQL{{Alias: "app", Database: "todo-db"}}
+	fn.Spec.Bindings.SQL = []v1.FunctionSQL{{Alias: "app", Database: "todo-db"}}
 	requeue, reason, _, err := r.resolveDataReferences(context.Background(), fn)
 	require.NoError(t, err)
 	require.True(t, requeue)

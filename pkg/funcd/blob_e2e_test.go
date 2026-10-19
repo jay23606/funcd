@@ -58,7 +58,7 @@ func TestScenarioE2EBlobObjectViaContextBlob(t *testing.T) {
 	// scenario (e2e): unbound-access-denied — WITHOUT spec.blob, context.blob.put('gold', …) is Forbidden
 	// (default-deny): the un-caught put throws, so the invocation does NOT return a 200 success.
 	unbound := fn
-	unbound.Spec.Blob = nil
+	unbound.Spec.Bindings.Blob = nil
 	applyFnObj(t, c, &unbound)
 	waitReady(t, c, "blob-object")
 	status, body := call()

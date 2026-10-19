@@ -78,7 +78,7 @@ func TestSQLDatabaseDeletionProtection(t *testing.T) {
 func TestSQLDatabaseDeleteRefusedWhileBound(t *testing.T) {
 	gvk := v1.KindSQLDatabase.GVK()
 	fn := mkFn("todo-api")
-	fn.Spec.SQL = []v1.FunctionSQL{{Alias: "app", Database: "todo-db"}}
+	fn.Spec.Bindings.SQL = []v1.FunctionSQL{{Alias: "app", Database: "todo-db"}}
 	adm := admission.NewSQLDatabaseDeletionProtectionAdmission(kvReader{fns: []*v1.Function{fn}}, sqlProber{})
 	_, err := adm.Admit(context.Background(), admission.Request{Operation: admission.Delete, GVK: gvk, Old: mkDB("todo-db")})
 	require.Equal(t, fault.Conflict, fault.KindOf(err))

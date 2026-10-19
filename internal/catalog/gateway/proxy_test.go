@@ -376,7 +376,7 @@ func TestCatalogProxy_DeniesCrossNamespaceCaller(t *testing.T) {
 		return &v1.Function{
 			TypeMeta:   v1.TypeMeta{APIVersion: v1.KindFunction.GVK().APIVersion(), Kind: v1.KindFunction},
 			ObjectMeta: v1.ObjectMeta{Name: name, Namespace: ns, ResourceGroup: "rg1"},
-			Spec:       v1.FunctionSpec{Catalogs: []v1.FunctionCatalog{{Alias: "lake", Catalog: "lake"}}},
+			Spec:       v1.FunctionSpec{Bindings: v1.FunctionBindings{Catalog: []v1.FunctionCatalog{{Alias: "lake", Catalog: "lake"}}}},
 		}
 	}
 	createObj(t, st, fn("victim", "reader"))

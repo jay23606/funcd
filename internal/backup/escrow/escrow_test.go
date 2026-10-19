@@ -136,7 +136,7 @@ func TestScenarioNewMasterSecretListsChanges(t *testing.T) {
 	blobs := []v1.FunctionBlob{{Alias: "data", Bucket: "lake", Prefix: "raw"}}
 	catalog := func(o v1.Object) {
 		cs := o.(*v1.CatalogService)
-		cs.Spec.Blob, cs.Spec.Catalog = blobs, v1.CatalogRef{Bucket: "lake", Prefix: "raw"}
+		cs.Spec.Bindings.Blob, cs.Spec.Catalog = blobs, v1.CatalogRef{Bucket: "lake", Prefix: "raw"}
 	}
 	create := func(kind v1.Kind, ns, name string, set func(v1.Object)) {
 		obj, ok := v1.NewObject(kind)
@@ -147,9 +147,9 @@ func TestScenarioNewMasterSecretListsChanges(t *testing.T) {
 		_, err := st.Create(ctx, obj)
 		require.NoError(t, err)
 	}
-	create(v1.KindFunction, "team", "a", func(o v1.Object) { o.(*v1.Function).Spec.Blob = blobs })
+	create(v1.KindFunction, "team", "a", func(o v1.Object) { o.(*v1.Function).Spec.Bindings.Blob = blobs })
 	create(v1.KindFunction, "team", "b", func(o v1.Object) {
-		o.(*v1.Function).Spec.Catalogs = []v1.FunctionCatalog{{Alias: "lake", Catalog: "c"}}
+		o.(*v1.Function).Spec.Bindings.Catalog = []v1.FunctionCatalog{{Alias: "lake", Catalog: "c"}}
 	})
 	create(v1.KindFunction, "team", "d", func(v1.Object) {})
 	create(v1.KindCatalogService, "team", "c", catalog)
@@ -188,7 +188,7 @@ func dropBlob(t *testing.T, eng store.Engine, name string) {
 	var obj, spec map[string]json.RawMessage
 	require.NoError(t, json.Unmarshal(val, &obj))
 	require.NoError(t, json.Unmarshal(obj["spec"], &spec))
-	delete(spec, "blob")
+	delete(spec, "bindings")
 	obj["spec"], err = json.Marshal(spec)
 	require.NoError(t, err)
 	val, err = json.Marshal(obj)

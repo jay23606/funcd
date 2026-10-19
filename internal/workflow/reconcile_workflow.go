@@ -339,17 +339,17 @@ func (m *Materializer) stripBindings(ctx context.Context, wf *v1.Workflow, kvs *
 	}
 	for _, obj := range res.Items {
 		fn := obj.(*v1.Function)
-		if len(fn.Spec.KV) == 0 || !controlledByUID(fn.OwnerReferences, wf) {
+		if len(fn.Spec.Bindings.KV) == 0 || !controlledByUID(fn.OwnerReferences, wf) {
 			continue
 		}
-		keep, err := kvs.ownedBindings(ctx, wf, fn.Spec.KV)
+		keep, err := kvs.ownedBindings(ctx, wf, fn.Spec.Bindings.KV)
 		if err != nil {
 			return err
 		}
-		if len(keep) == len(fn.Spec.KV) {
+		if len(keep) == len(fn.Spec.Bindings.KV) {
 			continue
 		}
-		fn.Spec.KV = keep
+		fn.Spec.Bindings.KV = keep
 		if _, err := m.store.Update(ctx, fn); err != nil {
 			return fault.Wrapf(err, fault.KindOf(err), materializeOp, "strip kv bindings of function %q", fn.Name)
 		}
@@ -449,14 +449,16 @@ func buildFunction(wf *v1.Workflow, st *v1.WorkflowStep, rt v1.RuntimeName, owne
 			// supplies runtime + handler). funcd's convention (and the shim's FUNCD_HANDLER default)
 			// is the `handle` export; a materialized step function carries it so it passes shape
 			// validation and serves without the author restating it on every step.
-			Handler:  materializedHandler,
-			Image:    st.Function.Image,
-			Scaling:  v1.Scaling{MinReplicas: pool.MinReplicas, IdleTimeout: v1.Duration(stepIdleTimeout)},
-			Blob:     st.Function.Blob,
-			Secrets:  st.Function.Secrets,
-			Config:   st.Function.Config,
-			Catalogs: st.Function.Catalogs,
-			SQL:      st.Function.SQL,
+			Handler: materializedHandler,
+			Image:   st.Function.Image,
+			Scaling: v1.Scaling{MinReplicas: pool.MinReplicas, IdleTimeout: v1.Duration(stepIdleTimeout)},
+			Bindings: v1.FunctionBindings{
+				Blob:    st.Function.Bindings.Blob,
+				Secret:  st.Function.Bindings.Secret,
+				Config:  st.Function.Bindings.Config,
+				Catalog: st.Function.Bindings.Catalog,
+				SQL:     st.Function.Bindings.SQL,
+			},
 		},
 	}
 	if pool.Mode != v1.PoolingIsolated { // shared (default): co-locate under a pool worker
@@ -517,15 +519,15 @@ func (m *Materializer) ensureFunction(ctx context.Context, wf *v1.Workflow, fn *
 	}
 	var kv []v1.FunctionKV
 	if controlledByUID(cur.OwnerReferences, wf) {
-		if kv, err = kvs.ownedBindings(ctx, wf, cur.Spec.KV); err != nil {
+		if kv, err = kvs.ownedBindings(ctx, wf, cur.Spec.Bindings.KV); err != nil {
 			return err
 		}
 	}
 	owners, group := fn.OwnerReferences, fn.ResourceGroup
 	fn.ObjectMeta = cur.ObjectMeta // preserve UID/RV
 	fn.OwnerReferences, fn.ResourceGroup = owners, group
-	fn.Spec.KV = kv        // kv is applied in the patch phase
-	fn.Status = cur.Status // the Function reconciler owns the status, which tracks a redeploy (ADR-0143)
+	fn.Spec.Bindings.KV = kv // kv is applied in the patch phase
+	fn.Status = cur.Status   // the Function reconciler owns the status, which tracks a redeploy (ADR-0143)
 	if _, err := m.store.Update(ctx, fn); err != nil {
 		return fault.Wrapf(err, fault.KindOf(err), materializeOp, "update function %q", fn.Name)
 	}
@@ -561,7 +563,7 @@ func (m *Materializer) ensureKVStore(ctx context.Context, wf *v1.Workflow, st *v
 // patchFunctionKV writes a step's kv bindings after re-reading each bound store: one whose UID is not the
 // one checked, or that lost the marker, is refused with no write.
 func (m *Materializer) patchFunctionKV(ctx context.Context, wf *v1.Workflow, st *v1.WorkflowStep, checked map[v1.ObjectName]v1.UID) error {
-	for _, b := range st.Function.KV {
+	for _, b := range st.Function.Bindings.KV {
 		obj, err := m.store.Get(ctx, v1.KindKVStore.GVK(), wf.Namespace, b.Store)
 		if fault.KindOf(err) == fault.NotFound {
 			return kvNotOwned(b.Store, wf)
@@ -579,10 +581,10 @@ func (m *Materializer) patchFunctionKV(ctx context.Context, wf *v1.Workflow, st 
 		return fault.Wrapf(err, fault.KindOf(err), materializeOp, "get function %q for kv patch", name)
 	}
 	fn := obj.(*v1.Function)
-	if len(fn.Spec.KV) == 0 && len(st.Function.KV) == 0 {
+	if len(fn.Spec.Bindings.KV) == 0 && len(st.Function.Bindings.KV) == 0 {
 		return nil
 	}
-	fn.Spec.KV = st.Function.KV
+	fn.Spec.Bindings.KV = st.Function.Bindings.KV
 	if _, err := m.store.Update(ctx, fn); err != nil {
 		return fault.Wrapf(err, fault.KindOf(err), materializeOp, "patch kv on function %q", name)
 	}

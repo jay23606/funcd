@@ -354,19 +354,23 @@ func TestResolveDevFunctionsGenericInPlace(t *testing.T) {
 	require.Equal(t, "handler.mjs", pfs[0].entry)
 }
 
-// TestSynthesizeFunctionCarriesLinks — the synthesized Function carries spec.links so context.invoke
-// resolves (Phase 3 restored what Phase 1 dropped).
-func TestSynthesizeFunctionCarriesLinks(t *testing.T) {
-	m := &sdk.Manifest{
-		Runtime: "nodejs22",
-		Handler: "handle",
-		Bindings: sdk.Bindings{
-			Links: []v1.FunctionLink{{Alias: "greeter", Target: "greeter"}},
-		},
+// TestScenario_dev_still_runs covers scenario: dev-still-runs (ADR-0246) — a funcdctl.yaml project's bindings reach
+// the synthesized Function under spec.bindings, links included, so context.invoke resolves (Phase 3 restored what
+// Phase 1 dropped); TestScenarioDevFnToFnLinks runs such a project end to end.
+func TestScenario_dev_still_runs(t *testing.T) {
+	b := sdk.Bindings{
+		KV:       []v1.FunctionKV{{Alias: "counters", Store: "counters", Table: "counts"}},
+		Blob:     []v1.FunctionBlob{{Alias: "files", Bucket: "files", Prefix: "uploads"}},
+		SQL:      []v1.FunctionSQL{{Alias: "db", Database: "todo-db"}},
+		Catalogs: []v1.FunctionCatalog{{Alias: "lake", Catalog: "lake"}},
+		Links:    []v1.FunctionLink{{Alias: "greeter", Target: "greeter"}},
+		Config:   []v1.ObjectName{"settings"},
+		Secrets:  []v1.ObjectName{"api-keys"},
 	}
+	m := &sdk.Manifest{Runtime: "nodejs22", Handler: "handle", Bindings: b}
 	fn := synthesizeFunction(plannedFunc{m: m, name: "front"}, "/tmp/front.mjs")
-	require.Equal(t, []v1.FunctionLink{{Alias: "greeter", Target: "greeter"}}, fn.Spec.Links,
-		"spec.links are carried into the synthesized Function")
+	require.Equal(t, v1.FunctionBindings{KV: b.KV, Blob: b.Blob, SQL: b.SQL, Catalog: b.Catalogs, Links: b.Links,
+		Config: b.Config, Secret: b.Secrets}, fn.Spec.Bindings, "every funcdctl.yaml binding lands under spec.bindings")
 	require.Equal(t, "file:///tmp/front.mjs", string(fn.Spec.Image))
 	require.Equal(t, 1, fn.Spec.Scaling.MinReplicas, "MinReplicas=1 so it serves immediately")
 }

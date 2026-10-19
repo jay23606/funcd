@@ -310,9 +310,10 @@ metadata:
 spec:
   runtime: nodejs22
   handler: handle
-  sql:
-    - alias: app
-      database: todo-db
+  bindings:
+    sql:
+      - alias: app
+        database: todo-db
 ```
 
 ```ts
@@ -349,16 +350,18 @@ spec:
       runtime: nodejs22
       handler: handle
       image: registry.example/todo-api:1.0.0
-      sql:
-        - alias: app
-          database: todo-db
+      bindings:
+        sql:
+          - alias: app
+            database: todo-db
     - name: todo-migrate
       runtime: nodejs22
       handler: handle
       image: registry.example/todo-migrate:1.0.0
-      sql:
-        - alias: app
-          database: todo-db
+      bindings:
+        sql:
+          - alias: app
+            database: todo-db
   hooks:
     preApply:
       - function: todo-migrate
@@ -473,9 +476,10 @@ workflows:
       - name: summarize
         function:
           image: registry.example/todo-summarize:1.0.0
-          sql:
-            - alias: app
-              database: todo-db
+          bindings:
+            sql:
+              - alias: app
+                database: todo-db
 ```
 
 ```yaml

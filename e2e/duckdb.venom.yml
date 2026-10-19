@@ -263,7 +263,7 @@ testcases:
             [ -n "$pid" ] || exit 1
             echo "$pid" > /tmp/lake-engine-pid
             sed -e "s/^  name: catalog-reader/  name: lake/" /opt/lane/consumer.yaml > /tmp/lake-function.yaml
-            printf "  blob:\n    - alias: gold\n      bucket: lakehouse\n      prefix: gold\n" >> /tmp/lake-function.yaml
+            printf "    blob:\n      - alias: gold\n        bucket: lakehouse\n        prefix: gold\n" >> /tmp/lake-function.yaml
             funcdctl apply -f /tmp/lake-function.yaml >/dev/null
             echo "ENGINE_PID=$(cat /tmp/lake-engine-pid)"'
         info: "applied Function lake → {{.result.systemout}}"
