@@ -29,15 +29,16 @@ metadata:
   namespace: a-b
   resourceGroup: rg1
 spec:
-  blob:
-    - alias: gold
-      bucket: cni-ab
-      prefix: gold
+  bindings:
+    blob:
+      - alias: gold
+        bucket: cni-ab
+        prefix: gold
+    secret:
+      - quack-token
   catalog:
     bucket: cni-ab
     prefix: gold
-  secrets:
-    - quack-token
 ---
 apiVersion: funcd.io/v1alpha1
 kind: Secret
@@ -68,12 +69,13 @@ metadata:
   namespace: a
   resourceGroup: rg1
 spec:
-  blob:
-    - alias: gold
-      bucket: cni-a
-      prefix: gold
+  bindings:
+    blob:
+      - alias: gold
+        bucket: cni-a
+        prefix: gold
+    secret:
+      - quack-token
   catalog:
     bucket: cni-a
     prefix: gold
-  secrets:
-    - quack-token

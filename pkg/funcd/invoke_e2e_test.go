@@ -240,7 +240,7 @@ func TestScenarioUnlinkedAliasDeniedE2E(t *testing.T) {
 	fRef, fDig := pushExampleFn(t, layout, exDir, "front")
 
 	lonely := loadFn(t, "front.yaml", fRef, fDig)
-	lonely.Name, lonely.Spec.Links = "lonely", nil // front's code, but NO declared link
+	lonely.Name, lonely.Spec.Bindings.Links = "lonely", nil // front's code, but NO declared link
 	applyFnObj(t, c, lonely)
 	waitReady(t, c, "lonely")
 

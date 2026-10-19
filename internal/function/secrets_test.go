@@ -58,7 +58,7 @@ func (h *harness) createSecretFn(t *testing.T, name string, secrets ...v1.Object
 	fn.Spec.Replicas = 1
 	fn.Spec.Runtime, fn.Spec.Handler = "nodejs22", "app.handler"
 	fn.Spec.Image = "blob://artifacts/" + name
-	fn.Spec.Secrets = secrets
+	fn.Spec.Bindings.Secret = secrets
 	_, err := h.st.Create(context.Background(), fn)
 	require.NoError(t, err)
 }
@@ -120,7 +120,7 @@ func TestScenarioConfigMissingFailsClosedReconcile(t *testing.T) {
 	fn.Spec.Replicas = 1
 	fn.Spec.Runtime, fn.Spec.Handler = "nodejs22", "app.handler"
 	fn.Spec.Image = "blob://artifacts/cfg"
-	fn.Spec.Config = []v1.ObjectName{"absent"}
+	fn.Spec.Bindings.Config = []v1.ObjectName{"absent"}
 	_, err := h.st.Create(context.Background(), fn)
 	require.NoError(t, err)
 
@@ -146,7 +146,7 @@ func TestScenarioSecretValueNotPersisted(t *testing.T) {
 	require.NoError(t, err)
 
 	fn := h.getFn(t, "echo")
-	require.Equal(t, []v1.ObjectName{"api-creds"}, fn.Spec.Secrets, "only the secret name is persisted")
+	require.Equal(t, []v1.ObjectName{"api-creds"}, fn.Spec.Bindings.Secret, "only the secret name is persisted")
 	raw, err := json.Marshal(fn)
 	require.NoError(t, err)
 	require.NotContains(t, string(raw), plaintext, "the resolved secret value is never written to the Function resource")
@@ -178,9 +178,9 @@ func TestIssue77_MissingBindingRecoversWhenApplied(t *testing.T) {
 			fn.Spec.Replicas = 1
 			fn.Spec.Runtime, fn.Spec.Handler, fn.Spec.Image = "nodejs22", "app.handler", "blob://artifacts/early"
 			if tc.kind == v1.KindConfigMap {
-				fn.Spec.Config = []v1.ObjectName{"late"}
+				fn.Spec.Bindings.Config = []v1.ObjectName{"late"}
 			} else {
-				fn.Spec.Secrets = []v1.ObjectName{"late"}
+				fn.Spec.Bindings.Secret = []v1.ObjectName{"late"}
 			}
 			_, err := h.st.Create(ctx, fn)
 			require.NoError(t, err)

@@ -46,7 +46,7 @@ type poolStore struct{ *poolCalls }
 
 func (p poolStore) Get(_ context.Context, _ v1.GroupVersionKind, ns v1.NamespaceName, name v1.ObjectName) (v1.Object, error) {
 	p.add("store " + string(ns) + "/" + string(name))
-	f := &v1.Function{Spec: v1.FunctionSpec{Links: []v1.FunctionLink{{Alias: "x", Target: "t"}}}}
+	f := &v1.Function{Spec: v1.FunctionSpec{Bindings: v1.FunctionBindings{Links: []v1.FunctionLink{{Alias: "x", Target: "t"}}}}}
 	f.Name, f.Namespace = name, ns
 	return f, nil
 }

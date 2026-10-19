@@ -12,7 +12,8 @@ functions:
     handler: handle
     image: ${{ images.migrate }}
     timeout: 10m
-    kv:
-      - alias: todos
-        store: ${{ app.name + "-store" }}
-        table: todos
+    bindings:
+      kv:
+        - alias: todos
+          store: ${{ app.name + "-store" }}
+          table: todos

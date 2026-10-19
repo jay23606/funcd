@@ -58,7 +58,7 @@ func (w writerList) SQLWriters(_ context.Context, ns v1.NamespaceName, db string
 func sqlFn(name v1.ObjectName, dbs ...v1.ObjectName) *v1.Function {
 	f := &v1.Function{ObjectMeta: v1.ObjectMeta{Name: name, Namespace: "default", ResourceGroup: "rg1"}}
 	for _, d := range dbs {
-		f.Spec.SQL = append(f.Spec.SQL, v1.FunctionSQL{Alias: "app", Database: d})
+		f.Spec.Bindings.SQL = append(f.Spec.Bindings.SQL, v1.FunctionSQL{Alias: "app", Database: d})
 	}
 	return f
 }

@@ -33,7 +33,7 @@ import (
 // reconciler, which sets its own FUNCD_QUACK_PORT/FUNCD_DUCKLAKE_CATALOG directly.)
 func (r *Reconciler) resolveCatalogEnv(ctx context.Context, fn *v1.Function) (env map[string]string, requeue bool, err error) {
 	const op = "function.resolveCatalogEnv"
-	if len(fn.Spec.Catalogs) == 0 {
+	if len(fn.Spec.Bindings.Catalog) == 0 {
 		return nil, false, nil
 	}
 	// The per-function catalog token is keyed by (ns, fn), so it is the SAME across every binding of
@@ -43,8 +43,8 @@ func (r *Reconciler) resolveCatalogEnv(ctx context.Context, fn *v1.Function) (en
 	if terr != nil {
 		return nil, false, fault.Wrapf(terr, fault.KindOf(terr), op, "derive catalog token for %s/%s", fn.Namespace, fn.Name)
 	}
-	out := make(map[string]string, len(fn.Spec.Catalogs)*2)
-	for _, bnd := range fn.Spec.Catalogs {
+	out := make(map[string]string, len(fn.Spec.Bindings.Catalog)*2)
+	for _, bnd := range fn.Spec.Bindings.Catalog {
 		obj, gerr := r.store.Get(ctx, v1.KindCatalogService.GVK(), fn.Namespace, bnd.Catalog)
 		if gerr != nil {
 			if fault.KindOf(gerr) == fault.NotFound {
@@ -84,7 +84,7 @@ func (r *Reconciler) resolveCatalogEnv(ctx context.Context, fn *v1.Function) (en
 // catalogsReady reports whether every CatalogService fn binds exists with phase Ready (ADR-0162 Decision 5): one store
 // Get per binding, no write; true with no spec.catalogs and no read.
 func (r *Reconciler) catalogsReady(ctx context.Context, fn *v1.Function) bool {
-	for _, bnd := range fn.Spec.Catalogs {
+	for _, bnd := range fn.Spec.Bindings.Catalog {
 		obj, err := r.store.Get(ctx, v1.KindCatalogService.GVK(), fn.Namespace, bnd.Catalog)
 		if err != nil {
 			return false
@@ -112,7 +112,7 @@ func (r *Reconciler) MapCatalogService(ctx context.Context, obj v1.Object) []con
 		if !ok {
 			continue
 		}
-		for _, b := range fn.Spec.Catalogs {
+		for _, b := range fn.Spec.Bindings.Catalog {
 			if b.Catalog == meta.Name {
 				out = append(out, controller.Request{GVK: v1.KindFunction.GVK(), Namespace: fn.Namespace, Name: fn.Name})
 				break
@@ -137,7 +137,7 @@ func (r *Reconciler) addCatalogEnv(env, catalogEnv map[string]string) {
 // extensions locally. Empty dir, or a function with no catalog binding, gets nothing (prod path:
 // the bundle carries duckdb-ext under FUNCD_BUNDLE_DIR, so catalogExtensionDir stays empty there).
 func (r *Reconciler) addCatalogExtensionDir(env map[string]string, fn *v1.Function) {
-	if r.catalogExtensionDir == "" || len(fn.Spec.Catalogs) == 0 {
+	if r.catalogExtensionDir == "" || len(fn.Spec.Bindings.Catalog) == 0 {
 		return
 	}
 	env["DUCKDB_EXTENSION_DIRECTORY"] = r.catalogExtensionDir

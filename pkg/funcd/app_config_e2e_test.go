@@ -44,7 +44,7 @@ func configTodo(t *testing.T, e *gcEnv) *v1.App {
 	a.Spec.ConfigMaps = []v1.AppConfigMap{{Name: "todo-settings", ConfigMapSpec: v1.ConfigMapSpec{Data: map[string]string{"TZ": "Europe/Paris"}}}}
 	a.Spec.Secrets = []v1.AppSecret{{Name: "todo-stripe-key", Description: "Stripe API access for billing", Keys: []string{"STRIPE_API_KEY"}}}
 	fn := &a.Spec.Functions[0]
-	fn.Image, fn.Config, fn.Secrets = e.imageEnv(t, "env"), []v1.ObjectName{"todo-settings"}, []v1.ObjectName{"todo-stripe-key"}
+	fn.Image, fn.Bindings.Config, fn.Bindings.Secret = e.imageEnv(t, "env"), []v1.ObjectName{"todo-settings"}, []v1.ObjectName{"todo-stripe-key"}
 	return a
 }
 
@@ -220,12 +220,16 @@ func TestScenarioAppSecretUndeclaredRefused(t *testing.T) {
 		want []string
 	}{
 		"todo-api names todo-billing": {
-			edit: func(a *v1.App) { a.Spec.Functions[0].Secrets = append(a.Spec.Functions[0].Secrets, "todo-billing") },
-			want: []string{"spec.functions[0].secrets[1]", "Function/todo-api", `Secret "todo-billing"`},
+			edit: func(a *v1.App) {
+				a.Spec.Functions[0].Bindings.Secret = append(a.Spec.Functions[0].Bindings.Secret, "todo-billing")
+			},
+			want: []string{"spec.functions[0].bindings.secret[1]", "Function/todo-api", `Secret "todo-billing"`},
 		},
 		"the step due names todo-billing": {
-			edit: func(a *v1.App) { a.Spec.Workflows[0].Steps[0].Function.Secrets = []v1.ObjectName{"todo-billing"} },
-			want: []string{"spec.workflows[0].steps[0].function.secrets[0]", "Workflow/todo-plan", `Secret "todo-billing"`},
+			edit: func(a *v1.App) {
+				a.Spec.Workflows[0].Steps[0].Function.Bindings.Secret = []v1.ObjectName{"todo-billing"}
+			},
+			want: []string{"spec.workflows[0].steps[0].function.bindings.secret[0]", "Workflow/todo-plan", `Secret "todo-billing"`},
 		},
 		"a secrets entry without keys": {
 			edit: func(a *v1.App) { a.Spec.Secrets[0].Keys = nil },
@@ -282,7 +286,7 @@ func TestScenarioAppConfigChangeRolls(t *testing.T) {
 	applyConfigMap(t, e.c, "shared", map[string]string{"SHARED": "one"})
 	e.stripeKey(t, map[string]string{"STRIPE_API_KEY": "sk-test-1"})
 	a := configTodo(t, e)
-	a.Spec.Functions[0].Config = append(a.Spec.Functions[0].Config, "shared")
+	a.Spec.Functions[0].Bindings.Config = append(a.Spec.Functions[0].Bindings.Config, "shared")
 	e.apply(t, a)
 	e.waitCurrent(t, "todo-1")
 	e.waitApp(t, "todo", v1.ConditionTrue, "", appWithin)
@@ -295,19 +299,19 @@ func TestScenarioAppConfigChangeRolls(t *testing.T) {
 	e.apply(t, a)
 	e.waitCurrent(t, "todo-2")
 	fn := e.object(t, v1.KindFunction, "todo-api").(*v1.Function)
-	require.Equal(t, []v1.ObjectName{v1.ObjectName(utc), "shared"}, fn.Spec.Config)
+	require.Equal(t, []v1.ObjectName{v1.ObjectName(utc), "shared"}, fn.Spec.Bindings.Config)
 	created := firstRV(t, cms.events(t), "ConfigMap/"+utc+" is created", func(ev store.Event) bool {
 		return ev.Type == store.Added && ev.Object.GetObjectMeta().Name == v1.ObjectName(utc)
 	})
 	written := firstRV(t, fns.events(t), "Function/todo-api names it", func(ev store.Event) bool {
 		f, ok := ev.Object.(*v1.Function)
-		return ok && f.Name == "todo-api" && len(f.Spec.Config) > 0 && f.Spec.Config[0] == v1.ObjectName(utc)
+		return ok && f.Name == "todo-api" && len(f.Spec.Bindings.Config) > 0 && f.Spec.Bindings.Config[0] == v1.ObjectName(utc)
 	})
 	require.Less(t, created, written, "the ConfigMap is created before todo-api is written")
 	e.waitAPIEnv(t, apiEnv{TZ: "UTC", Stripe: "sk-test-1"})
 	require.NotEqual(t, rev1, e.object(t, v1.KindFunction, "todo-api").(*v1.Function).Status.CurrentRevision, "todo-api switched to a new Revision")
 	e.waitGone(t, v1.KindConfigMap, paris)
-	require.Equal(t, []v1.ObjectName{"todo-settings", "shared"}, e.app(t, "todo").Spec.Functions[0].Config, "the App keeps the declared names")
+	require.Equal(t, []v1.ObjectName{"todo-settings", "shared"}, e.app(t, "todo").Spec.Functions[0].Bindings.Config, "the App keeps the declared names")
 
 	out, err := funcdctl(t, e)("app", "rollback", "todo", "1")
 	require.NoError(t, err, out)
@@ -322,7 +326,7 @@ func TestScenarioAppConfigChangeRolls(t *testing.T) {
 	applyConfigMap(t, e.c, "shared", map[string]string{"SHARED": "two"})
 	stays(t, func() bool { return maps.Equal(before, e.generations(t, parts)) }, 2*time.Second, 100*time.Millisecond,
 		"a ConfigMap the App does not define rolls nothing: no part's spec is written")
-	require.Equal(t, []v1.ObjectName{v1.ObjectName(paris), "shared"}, e.object(t, v1.KindFunction, "todo-api").(*v1.Function).Spec.Config)
+	require.Equal(t, []v1.ObjectName{v1.ObjectName(paris), "shared"}, e.object(t, v1.KindFunction, "todo-api").(*v1.Function).Spec.Bindings.Config)
 	require.Empty(t, e.object(t, v1.KindConfigMap, "shared").GetObjectMeta().OwnerReferences)
 	require.Equal(t, v1.ObjectName("todo-3"), e.app(t, "todo").Status.LatestRevision)
 }
@@ -334,7 +338,7 @@ func TestScenarioAppPreF116App(t *testing.T) {
 	applySecret(t, e.c, "todo-billing", map[string][]byte{"BILLING_KEY": []byte("bk-test")})
 	older := todoApp(t, e)
 	older.Spec.Version = "1.0.0"
-	older.Spec.Functions[0].Secrets = []v1.ObjectName{"todo-billing"}
+	older.Spec.Functions[0].Bindings.Secret = []v1.ObjectName{"todo-billing"}
 	_, err := st.Create(e.ctx, older)
 	require.NoError(t, err, "an App stored before ADR-0213, written without the admission")
 	e.waitCurrent(t, "todo-1")
@@ -344,7 +348,7 @@ func TestScenarioAppPreF116App(t *testing.T) {
 	a.Spec.Version = "2.0.0"
 	_, err = e.c.Apply(e.ctx, a)
 	require.Equal(t, fault.Invalid, fault.KindOf(err), "%v", err)
-	require.ErrorContains(t, err, `spec.functions[0].secrets[0]: Function/todo-api names Secret "todo-billing", which spec.secrets does not declare`)
+	require.ErrorContains(t, err, `spec.functions[0].bindings.secret[0]: Function/todo-api names Secret "todo-billing", which spec.secrets does not declare`)
 	require.Equal(t, "1.0.0", e.app(t, "todo").Spec.Version, "nothing is stored")
 
 	a = e.app(t, "todo")

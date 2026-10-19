@@ -139,7 +139,7 @@ func TestScenarioAppStoreInUseKept(t *testing.T) {
 	require.True(t, e.exists(t, v1.KindKVStore, "todo-cache"))
 	require.True(t, e.hasAppKey(t, cacheKey))
 
-	a.Spec.Functions[0].KV = a.Spec.Functions[0].KV[:1]
+	a.Spec.Functions[0].Bindings.KV = a.Spec.Functions[0].Bindings.KV[:1]
 	e.apply(t, a)
 	require.Eventually(t, func() bool {
 		return !e.exists(t, v1.KindKVStore, "todo-cache") && !e.hasAppKey(t, cacheKey)
@@ -156,10 +156,10 @@ func TestScenarioAppStoreInUseKept(t *testing.T) {
 		TypeMeta:   v1.TypeMeta{APIVersion: v1.KindFunction.GVK().APIVersion(), Kind: v1.KindFunction},
 		ObjectMeta: v1.ObjectMeta{Name: "audit", Namespace: "default", ResourceGroup: "rg1"},
 		Spec: v1.FunctionSpec{
-			Runtime: "nodejs22",
-			Handler: "handle",
-			Image:   e.image(t),
-			KV:      []v1.FunctionKV{{Alias: "cache", Store: "todo-cache", Table: "entries"}},
+			Runtime:  "nodejs22",
+			Handler:  "handle",
+			Image:    e.image(t),
+			Bindings: v1.FunctionBindings{KV: []v1.FunctionKV{{Alias: "cache", Store: "todo-cache", Table: "entries"}}},
 		},
 	}
 	e.apply(t, audit)
@@ -171,7 +171,7 @@ func TestScenarioAppStoreInUseKept(t *testing.T) {
 	require.True(t, poll.Never(func() bool { return !e.exists(t, v1.KindKVStore, "todo-cache") }, 3*time.Second, 50*time.Millisecond), "todo-cache waits while Function/audit binds it")
 	require.True(t, e.hasAppKey(t, cacheKey))
 
-	audit.Spec.KV = nil
+	audit.Spec.Bindings.KV = nil
 	e.apply(t, audit)
 	require.Eventually(t, func() bool {
 		return !e.exists(t, v1.KindKVStore, "todo-cache") && !e.hasAppKey(t, cacheKey)

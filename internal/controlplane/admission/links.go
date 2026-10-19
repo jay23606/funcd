@@ -37,7 +37,7 @@ func (linkValidity) Handles(gvk v1.GroupVersionKind, op Operation) bool {
 func (a linkValidity) Admit(ctx context.Context, req Request) (v1.Object, error) {
 	const op = "admission.link-validity"
 	fn, ok := req.Object.(*v1.Function)
-	if !ok || len(fn.Spec.Links) == 0 {
+	if !ok || len(fn.Spec.Bindings.Links) == 0 {
 		return req.Object, nil
 	}
 	ns := fn.Namespace
@@ -59,19 +59,19 @@ func (a linkValidity) Admit(ctx context.Context, req Request) (v1.Object, error)
 		if f.Name == fn.Name {
 			continue // applied function's edges come from the incoming object below
 		}
-		for _, l := range f.Spec.Links {
+		for _, l := range f.Spec.Bindings.Links {
 			adj[string(f.Name)] = append(adj[string(f.Name)], string(l.Target))
 		}
 	}
-	for _, l := range fn.Spec.Links {
+	for _, l := range fn.Spec.Bindings.Links {
 		if !exists[string(l.Target)] {
-			return nil, fault.Invalidf(op, "spec.links[%s].target %q does not exist in namespace %q", l.Alias, l.Target, ns)
+			return nil, fault.Invalidf(op, "spec.bindings.links[%s].target %q does not exist in namespace %q", l.Alias, l.Target, ns)
 		}
 		adj[string(fn.Name)] = append(adj[string(fn.Name)], string(l.Target))
 	}
 
 	if cyc := FindCycle(string(fn.Name), adj); cyc != "" {
-		return nil, fault.Invalidf(op, "spec.links would create a dependency cycle (%s)", cyc)
+		return nil, fault.Invalidf(op, "spec.bindings.links would create a dependency cycle (%s)", cyc)
 	}
 	return req.Object, nil
 }
@@ -141,7 +141,7 @@ func (a linkDeletionProtection) Admit(ctx context.Context, req Request) (v1.Obje
 		if !ok || f.Name == target {
 			continue
 		}
-		for _, l := range f.Spec.Links {
+		for _, l := range f.Spec.Bindings.Links {
 			if l.Target == target {
 				return nil, fault.Conflictf(op, "function %q is linked by %q (alias %q); remove the link first", target, f.Name, l.Alias)
 			}

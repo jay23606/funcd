@@ -186,7 +186,7 @@ func TestScenarioAppDependencyCheck(t *testing.T) {
 	e.waitPhase(t, "mailer", v1.PhaseIdle)
 
 	a := todoV1(t, e)
-	a.Spec.Functions[0].Links = []v1.FunctionLink{{Alias: "mailer", Target: "mailer"}}
+	a.Spec.Functions[0].Bindings.Links = []v1.FunctionLink{{Alias: "mailer", Target: "mailer"}}
 	e.apply(t, a)
 	e.waitCurrent(t, "todo-1")
 	a.Spec.Version = "2.0.0"
@@ -200,7 +200,7 @@ func TestScenarioAppDependencyCheck(t *testing.T) {
 	a.Spec.Version = "3.0.0"
 	a.Spec.KV[0].Tables = append(a.Spec.KV[0].Tables, v1.KVTable{Name: "audit"})
 	a.Spec.Functions[0].Image = echo
-	a.Spec.Functions[0].KV = append(a.Spec.Functions[0].KV, v1.FunctionKV{Alias: "audit", Store: "todo-store", Table: "audit"})
+	a.Spec.Functions[0].Bindings.KV = append(a.Spec.Functions[0].Bindings.KV, v1.FunctionKV{Alias: "audit", Store: "todo-store", Table: "audit"})
 	e.apply(t, a)
 
 	var fn *v1.Function

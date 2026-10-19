@@ -40,7 +40,7 @@ func requireSlowDown(t *testing.T, err error, msgAndArgs ...any) {
 // maxUploadBytes of parts across all its uploads; past that its parts answer 503 SlowDown and buffer nothing.
 func TestScenarioMultipartSharePerPrincipal(t *testing.T) {
 	meta := lakehouseMeta()
-	meta.fns["default/etl-svc"].Spec.Blob = []v1.FunctionBlob{{Alias: "bronze", Bucket: "lakehouse", Prefix: "bronze"}}
+	meta.fns["default/etl-svc"].Spec.Bindings.Blob = []v1.FunctionBlob{{Alias: "bronze", Bucket: "lakehouse", Prefix: "bronze"}}
 	g := newGateway(t, meta, fixedPolicies{rev: "0"}, nil, memBucket, func(d *s3gateway.Deps) {
 		d.MaxUploadBytes = budgetMaxUpload
 	})

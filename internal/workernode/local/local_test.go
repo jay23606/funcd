@@ -194,7 +194,7 @@ func (f fakeStore) Get(_ context.Context, _ v1.GroupVersionKind, _ v1.NamespaceN
 }
 
 func callerFn(links ...v1.FunctionLink) *v1.Function {
-	f := &v1.Function{Spec: v1.FunctionSpec{Links: links}}
+	f := &v1.Function{Spec: v1.FunctionSpec{Bindings: v1.FunctionBindings{Links: links}}}
 	f.Name, f.Namespace = "a", "team-a"
 	return f
 }

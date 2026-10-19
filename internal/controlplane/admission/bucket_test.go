@@ -59,7 +59,7 @@ func mkBucket(name string, prefixes ...v1.BucketPrefix) *v1.Bucket {
 func mkBlobFn(name string, blobs ...v1.FunctionBlob) *v1.Function {
 	f := &v1.Function{TypeMeta: v1.TypeMeta{APIVersion: v1.KindFunction.GVK().APIVersion(), Kind: v1.KindFunction}}
 	f.Name, f.Namespace, f.ResourceGroup = v1.ObjectName(name), "default", "rg1"
-	f.Spec.Blob = blobs
+	f.Spec.Bindings.Blob = blobs
 	return f
 }
 

@@ -26,7 +26,7 @@ func createCM(t *testing.T, r *Reconciler, ns v1.NamespaceName, name string, dat
 
 func configFn(names ...v1.ObjectName) *v1.Function {
 	fn := sampleFn()
-	fn.Spec.Config = names
+	fn.Spec.Bindings.Config = names
 	return fn
 }
 
@@ -52,7 +52,7 @@ func TestScenarioConfigThenSecretOrder(t *testing.T) {
 	createCM(t, r, "default", "tuning", map[string]string{"SHARED": "from-config", "ONLY_CFG": "c"})
 
 	fn := configFn("tuning")
-	fn.Spec.Secrets = []v1.ObjectName{"creds"}
+	fn.Spec.Bindings.Secret = []v1.ObjectName{"creds"}
 	env, err := r.resolveBindingEnv(context.Background(), fn)
 	require.NoError(t, err)
 	require.Equal(t, "from-secret", env.Env["SHARED"], "the secret overrides the config default (config-then-secret)")
@@ -79,7 +79,7 @@ func TestScenarioPooledConfigSoloGated(t *testing.T) {
 	createCM(t, r, "default", "tuning", map[string]string{"DUCKDB_THREADS": "4"})
 	fn := configFn("tuning")
 	fn.Spec.Pooling.Worker = "agents"
-	fn.Spec.Secrets = []v1.ObjectName{"creds"}
+	fn.Spec.Bindings.Secret = []v1.ObjectName{"creds"}
 	env, err := r.resolveBindingEnv(context.Background(), fn)
 	require.NoError(t, err, "a pooled member resolves its config and secrets")
 	require.Equal(t, "4", env.Env["DUCKDB_THREADS"])

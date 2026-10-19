@@ -87,9 +87,9 @@ func mkCatalogService(name string, blob ...v1.FunctionBlob) *v1.CatalogService {
 		}
 	}
 	if !hasCatalogBinding {
-		cs.Spec.Blob = append(cs.Spec.Blob, v1.FunctionBlob{Alias: "catalog", Bucket: "lakehouse", Prefix: "gold"})
+		cs.Spec.Bindings.Blob = append(cs.Spec.Bindings.Blob, v1.FunctionBlob{Alias: "catalog", Bucket: "lakehouse", Prefix: "gold"})
 	}
-	cs.Spec.Blob = append(cs.Spec.Blob, blob...)
+	cs.Spec.Bindings.Blob = append(cs.Spec.Bindings.Blob, blob...)
 	return cs
 }
 
@@ -181,9 +181,10 @@ func TestReconcile_catalogservice_uses_provider_runtime(t *testing.T) {
 	require.Equal(t, engineIdentity("lake"), cs.Status.Function)
 }
 
-// scenario: provider-bindings-injected — spec.secrets (QUACK_TOKEN) + spec.config (DUCKDB_*) appear
-// in the ProviderSpec.Env merged from the resolved Secret + ConfigMap Data.
-func TestReconcile_provider_bindings_injected(t *testing.T) {
+// scenario: provider-bindings-injected (ADR-0087) and catalog-service-bindings (ADR-0246) — spec.bindings.secret
+// (QUACK_TOKEN) + spec.bindings.config (DUCKDB_*) appear in the ProviderSpec.Env merged from the resolved Secret +
+// ConfigMap Data, as spec.secrets and spec.config did.
+func TestScenario_catalog_service_bindings(t *testing.T) {
 	ctx := context.Background()
 	st := store.New(storemem.New())
 	seedCatalogBucket(t, st) // ADR-0121: reconcile-time bucket-existence gate needs the bound Bucket present
@@ -201,8 +202,8 @@ func TestReconcile_provider_bindings_injected(t *testing.T) {
 		d.Secrets = fakeSecrets{env: map[string]string{"QUACK_TOKEN": "change-me"}}
 	})
 	cs := mkCatalogService("lake", v1.FunctionBlob{Alias: "gold", Bucket: "lakehouse", Prefix: "gold"})
-	cs.Spec.Secrets = []v1.ObjectName{"lake-quack-token"}
-	cs.Spec.Config = []v1.ObjectName{"lake-engine-config"}
+	cs.Spec.Bindings.Secret = []v1.ObjectName{"lake-quack-token"}
+	cs.Spec.Bindings.Config = []v1.ObjectName{"lake-engine-config"}
 	_, err = st.Create(ctx, cs)
 	require.NoError(t, err)
 
@@ -494,7 +495,7 @@ func TestIssue372_NotReadyGateStopsServing(t *testing.T) {
 				d.Proxy = mgr
 			})
 			cs := mkCatalogService("lake")
-			cs.Spec.Secrets = []v1.ObjectName{"quack"}
+			cs.Spec.Bindings.Secret = []v1.ObjectName{"quack"}
 			_, err := st.Create(ctx, cs)
 			require.NoError(t, err)
 			get := func() *v1.CatalogService {
@@ -566,7 +567,7 @@ func TestReconcile_secrets_without_resolver_fails_closed(t *testing.T) {
 	prov := &fakeProvider{}
 	r := newReconciler(t, st, prov, nil) // no Secrets resolver
 	cs := mkCatalogService("lake")
-	cs.Spec.Secrets = []v1.ObjectName{"lake-quack-token"}
+	cs.Spec.Bindings.Secret = []v1.ObjectName{"lake-quack-token"}
 	_, err := st.Create(ctx, cs)
 	require.NoError(t, err)
 
@@ -627,9 +628,9 @@ func TestIssue77_MissingBindingRecoversWhenApplied(t *testing.T) {
 			r := newReconciler(t, st, prov, func(d *catalogsvc.ReconcilerDeps) { d.Secrets = sr })
 			cs := mkCatalogService("lake")
 			if kind == v1.KindConfigMap {
-				cs.Spec.Config = []v1.ObjectName{"late"}
+				cs.Spec.Bindings.Config = []v1.ObjectName{"late"}
 			} else {
-				cs.Spec.Secrets = []v1.ObjectName{"late"}
+				cs.Spec.Bindings.Secret = []v1.ObjectName{"late"}
 			}
 			_, err = st.Create(ctx, cs)
 			require.NoError(t, err)
@@ -827,7 +828,7 @@ func storeFunction(t *testing.T, st store.Store, name string, processed bool, ch
 }
 
 func bindsLake(fn *v1.Function) {
-	fn.Spec.Catalogs = []v1.FunctionCatalog{{Alias: "lake", Catalog: "lake"}}
+	fn.Spec.Bindings.Catalog = []v1.FunctionCatalog{{Alias: "lake", Catalog: "lake"}}
 }
 
 // TestReconcileRecordsProxyPort: every pass with the proxy wired records the listener's port before its branch writes
@@ -932,7 +933,7 @@ func TestAnyFunctionBindsCountsSwitchingFunction(t *testing.T) {
 		want      bool
 	}{
 		"steady":      {processed: true, change: func(fn *v1.Function) { fn.Status.CurrentRevision, fn.Status.ServingRevision = "r1", "r1" }},
-		"other":       {processed: true, change: func(fn *v1.Function) { fn.Spec.Catalogs = []v1.FunctionCatalog{{Alias: "sea", Catalog: "sea"}} }},
+		"other":       {processed: true, change: func(fn *v1.Function) { fn.Spec.Bindings.Catalog = []v1.FunctionCatalog{{Alias: "sea", Catalog: "sea"}} }},
 		"binds":       {processed: true, change: bindsLake, want: true},
 		"unprocessed": {want: true},
 		"switching":   {processed: true, change: func(fn *v1.Function) { fn.Status.CurrentRevision, fn.Status.ServingRevision = "r2", "r1" }, want: true},
@@ -1016,7 +1017,7 @@ func TestIssue716_NotReadyEngineStopsServing(t *testing.T) {
 				d.Proxy = mgr
 			})
 			cs := mkCatalogService("lake")
-			cs.Spec.Secrets = []v1.ObjectName{"quack"}
+			cs.Spec.Bindings.Secret = []v1.ObjectName{"quack"}
 			_, err := st.Create(ctx, cs)
 			require.NoError(t, err)
 			req := controller.Request{GVK: v1.KindCatalogService.GVK(), Namespace: "default", Name: "lake"}

@@ -119,7 +119,7 @@ func TestAdmissionViewHoldsTheOtherParts(t *testing.T) {
 	st := store.New(memory.New())
 	link := func(target v1.ObjectName) func(*v1.App) {
 		return func(a *v1.App) {
-			a.Spec.Functions[0].Links = []v1.FunctionLink{{Alias: "mail", Target: target}}
+			a.Spec.Functions[0].Bindings.Links = []v1.FunctionLink{{Alias: "mail", Target: target}}
 			a.Spec.Functions = append(a.Spec.Functions, v1.AppFunction{Name: "todo-mail", FunctionSpec: apiSpec()})
 		}
 	}

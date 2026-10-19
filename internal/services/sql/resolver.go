@@ -52,7 +52,7 @@ func (m *metaResolver) Resolve(ctx context.Context, ns v1.NamespaceName, fn v1.O
 	if !ok {
 		return "", fault.Internalf(op, "object %q is not a Function", fn)
 	}
-	for _, b := range caller.Spec.SQL {
+	for _, b := range caller.Spec.Bindings.SQL {
 		if b.Alias == alias {
 			m.cache.Put(ns, fn, alias, b.Database)
 			return b.Database, nil

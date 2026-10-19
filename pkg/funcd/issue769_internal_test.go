@@ -231,10 +231,10 @@ func (r *asleepRig) requireAsleep(t *testing.T, start time.Time, writes func() [
 }
 
 func bindLake(fn *v1.Function) {
-	fn.Spec.Catalogs = []v1.FunctionCatalog{{Alias: "lake", Catalog: "lake"}}
+	fn.Spec.Bindings.Catalog = []v1.FunctionCatalog{{Alias: "lake", Catalog: "lake"}}
 }
 
-func bindCreds(fn *v1.Function) { fn.Spec.Secrets = []v1.ObjectName{"creds"} }
+func bindCreds(fn *v1.Function) { fn.Spec.Bindings.Secret = []v1.ObjectName{"creds"} }
 
 // scenario: catalog-gate-while-asleep-goes-pending (ADR-0192, issue #769) — a woken scale-to-zero catalog consumer whose
 // catalog goes away is reclaimed, then held Pending/CatalogNotReady with Asleep=True and no worker, and stays quiet.
@@ -339,7 +339,7 @@ func TestScenarioDependencyReturnsStaysAsleep(t *testing.T) {
 		r := newAsleepRig(t, time.Minute)
 		r.bucket(t, "data", "in", "reader")
 		r.reader(t, replicas1(func(fn *v1.Function) {
-			fn.Spec.Blob = []v1.FunctionBlob{{Alias: "in", Bucket: "data", Prefix: "in"}}
+			fn.Spec.Bindings.Blob = []v1.FunctionBlob{{Alias: "in", Bucket: "data", Prefix: "in"}}
 		}))
 		r.wakeReady(t)
 		writes := r.phases(t)

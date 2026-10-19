@@ -73,9 +73,9 @@ func (m *metaResolver) Resolve(ctx context.Context, ns v1.NamespaceName, fn v1.O
 		return Binding{}, fault.Internalf(op, "object %q is not a Function", fn)
 	}
 	var bind *v1.FunctionBlob
-	for i := range caller.Spec.Blob {
-		if caller.Spec.Blob[i].Alias == alias {
-			bind = &caller.Spec.Blob[i]
+	for i := range caller.Spec.Bindings.Blob {
+		if caller.Spec.Bindings.Blob[i].Alias == alias {
+			bind = &caller.Spec.Bindings.Blob[i]
 			break
 		}
 	}

@@ -55,10 +55,12 @@ func newS3Meta() s3Meta {
 			"default/etl-svc":   {ObjectMeta: v1.ObjectMeta{Name: "etl-svc", Namespace: "default", ResourceGroup: "rg1"}},
 			"default/analytics": {
 				ObjectMeta: v1.ObjectMeta{Name: "analytics", Namespace: "default", ResourceGroup: "rg1"},
-				Spec: v1.FunctionSpec{Blob: []v1.FunctionBlob{
-					{Alias: "bronze", Bucket: "lakehouse", Prefix: "bronze"},
-					{Alias: "gold", Bucket: "lakehouse", Prefix: "gold"},
-				}},
+				Spec: v1.FunctionSpec{
+					Bindings: v1.FunctionBindings{Blob: []v1.FunctionBlob{
+						{Alias: "bronze", Bucket: "lakehouse", Prefix: "bronze"},
+						{Alias: "gold", Bucket: "lakehouse", Prefix: "gold"},
+					}},
+				},
 			},
 		},
 		buckets: map[string]*v1.Bucket{

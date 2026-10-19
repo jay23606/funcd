@@ -19,7 +19,7 @@ func fnWithLinks(name v1.ObjectName, targets ...v1.ObjectName) *v1.Function {
 	}
 	return &v1.Function{
 		ObjectMeta: v1.ObjectMeta{Name: name, Namespace: "default", ResourceGroup: "rg1"},
-		Spec:       v1.FunctionSpec{Links: links},
+		Spec:       v1.FunctionSpec{Bindings: v1.FunctionBindings{Links: links}},
 	}
 }
 

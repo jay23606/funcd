@@ -154,11 +154,11 @@ func keyOf(f *v1.Function) pooling.PoolKey {
 
 func TestAccessHashOfIgnoresBindingOrderAndTreatsNilAsEmpty(t *testing.T) {
 	a := fn("ns", "nodejs22", "w", "a").Spec
-	a.KV = []v1.FunctionKV{{Alias: "x", Store: "s", Table: "t"}, {Alias: "y", Store: "s", Table: "u"}}
-	a.Links = []v1.FunctionLink{{Alias: "p", Target: "b", Timeout: 5}, {Alias: "q", Target: "c"}}
+	a.Bindings.KV = []v1.FunctionKV{{Alias: "x", Store: "s", Table: "t"}, {Alias: "y", Store: "s", Table: "u"}}
+	a.Bindings.Links = []v1.FunctionLink{{Alias: "p", Target: "b", Timeout: 5}, {Alias: "q", Target: "c"}}
 	b := fn("ns", "nodejs22", "w", "b").Spec
-	b.KV = []v1.FunctionKV{a.KV[1], a.KV[0]}
-	b.Links = []v1.FunctionLink{{Alias: "q", Target: "c"}, {Alias: "p", Target: "b"}}
+	b.Bindings.KV = []v1.FunctionKV{a.Bindings.KV[1], a.Bindings.KV[0]}
+	b.Bindings.Links = []v1.FunctionLink{{Alias: "q", Target: "c"}, {Alias: "p", Target: "b"}}
 	require.Equal(t, pooling.AccessHashOf(a, []string{"kv/s/t", "blob/k/raw"}, nil),
 		pooling.AccessHashOf(b, []string{"blob/k/raw", "kv/s/t"}, []string{}), "alias order, owned order, a link timeout and nil vs empty never change the hash")
 	require.Len(t, pooling.AccessHashOf(a, nil, nil), 16)
@@ -167,8 +167,8 @@ func TestAccessHashOfIgnoresBindingOrderAndTreatsNilAsEmpty(t *testing.T) {
 	require.Equal(t, pooling.AccessHashOf(empty, nil, nil), pooling.AccessHashOf(v1.FunctionSpec{}, []string{}, []string{}))
 	require.NotEqual(t, pooling.AccessHashOf(empty, nil, nil), pooling.AccessHashOf(a, nil, nil))
 
-	s1 := v1.FunctionSpec{Secrets: []v1.ObjectName{"x", "y"}}
-	s2 := v1.FunctionSpec{Secrets: []v1.ObjectName{"y", "x"}}
+	s1 := v1.FunctionSpec{Bindings: v1.FunctionBindings{Secret: []v1.ObjectName{"x", "y"}}}
+	s2 := v1.FunctionSpec{Bindings: v1.FunctionBindings{Secret: []v1.ObjectName{"y", "x"}}}
 	require.NotEqual(t, pooling.AccessHashOf(s1, nil, nil), pooling.AccessHashOf(s2, nil, nil), "secrets keep their declared order")
 	require.NotEqual(t, pooling.AccessHashOf(empty, []string{"kv/s/t"}, nil), pooling.AccessHashOf(empty, nil, nil), "owned data counts")
 	require.NotEqual(t, pooling.AccessHashOf(empty, nil, []string{"group/g"}), pooling.AccessHashOf(empty, nil, nil), "grants count")
@@ -202,9 +202,9 @@ func TestPoolFullNamesThePool(t *testing.T) {
 
 // ADR-0233: a SQL binding is access, so it splits pools; a Function with none keeps the key it had before spec.sql.
 func TestAccessHashOfCountsSQL(t *testing.T) {
-	plain := v1.FunctionSpec{KV: []v1.FunctionKV{{Alias: "a", Store: "s", Table: "t"}}}
+	plain := v1.FunctionSpec{Bindings: v1.FunctionBindings{KV: []v1.FunctionKV{{Alias: "a", Store: "s", Table: "t"}}}}
 	withSQL := plain
-	withSQL.SQL = []v1.FunctionSQL{{Alias: "app", Database: "todo-db"}}
+	withSQL.Bindings.SQL = []v1.FunctionSQL{{Alias: "app", Database: "todo-db"}}
 	require.NotEqual(t, pooling.AccessHashOf(plain, nil, nil), pooling.AccessHashOf(withSQL, nil, nil))
 	before := sha256.Sum256([]byte(`{"kv":[],"blob":[],"catalogs":[],"links":[],"secrets":[],"config":[],"owned":[],"grants":[]}`))
 	require.Equal(t, hex.EncodeToString(before[:])[:16], pooling.AccessHashOf(v1.FunctionSpec{}, nil, nil),

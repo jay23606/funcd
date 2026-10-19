@@ -37,9 +37,9 @@ func durationFields() []durationField {
 			}},
 		{"spec.timeout", reflect.TypeFor[FunctionSpec](), "Timeout", 0, Duration(MaxInvokeTimeout),
 			func(d Duration) interface{ Validate() error } { return fnWith(FunctionSpec{Timeout: d}) }},
-		{"spec.links[0].timeout", reflect.TypeFor[FunctionLink](), "Timeout", 0, MaxLinkTimeout,
+		{"spec.bindings.links[0].timeout", reflect.TypeFor[FunctionLink](), "Timeout", 0, MaxLinkTimeout,
 			func(d Duration) interface{ Validate() error } {
-				return fnWith(FunctionSpec{Links: []FunctionLink{{Alias: "a", Target: "b", Timeout: d}}})
+				return fnWith(FunctionSpec{Bindings: FunctionBindings{Links: []FunctionLink{{Alias: "a", Target: "b", Timeout: d}}}})
 			}},
 		{"spec.scaling.idleTimeout", reflect.TypeFor[Scaling](), "IdleTimeout", 0, MaxIdleTimeout,
 			func(d Duration) interface{ Validate() error } {

@@ -3031,7 +3031,7 @@ func (r *Reconciler) invokeSocket(fn *v1.Function) (string, error) {
 // function never chooses its secret; it cannot derive a peer's. A function without spec.blob,
 // or a disabled gateway, gets nothing. The secret is set into env but never logged.
 func (r *Reconciler) addS3Env(env map[string]string, fn *v1.Function) {
-	if !r.s3Gateway.Enabled || r.s3Gateway.Derive == nil || len(fn.Spec.Blob) == 0 {
+	if !r.s3Gateway.Enabled || r.s3Gateway.Derive == nil || len(fn.Spec.Bindings.Blob) == 0 {
 		return
 	}
 	access, secret := r.s3Gateway.Derive(v1.KindFunction, string(fn.Namespace), string(fn.Name))

@@ -338,7 +338,7 @@ func TestScenarioHTTPFetch(t *testing.T) {
 }
 `)
 	bridge := warmFn("purge-bridge", pushStepImage(t, e.layout, e.src, "bridge"))
-	bridge.Spec.Links = []v1.FunctionLink{{Alias: "devices", Target: devicesAPI}, {Alias: "events", Target: "echo"}}
+	bridge.Spec.Bindings.Links = []v1.FunctionLink{{Alias: "devices", Target: devicesAPI}, {Alias: "events", Target: "echo"}}
 	e.apply(t, warmFn("echo", e.image(t)))
 	e.apply(t, bridge)
 	waitReady(t, e.c, "echo", "purge-bridge")

@@ -616,10 +616,10 @@ func TestIssue490_DevReloadDropsBoundTableAndPrefix(t *testing.T) {
 		if err != nil {
 			return false
 		}
-		for _, b := range fn.(*v1.Function).Spec.KV {
+		for _, b := range fn.(*v1.Function).Spec.Bindings.KV {
 			got = append(got, "kv "+b.Table)
 		}
-		for _, b := range fn.(*v1.Function).Spec.Blob {
+		for _, b := range fn.(*v1.Function).Spec.Bindings.Blob {
 			got = append(got, "blob "+b.Prefix)
 		}
 		return slices.Equal(got, []string{"table hot", "prefix fresh", "prefix raw", "kv hot", "blob raw", "blob fresh"})

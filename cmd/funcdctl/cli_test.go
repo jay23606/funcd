@@ -461,17 +461,18 @@ spec:
       image: oci-layout://todo-api:1
       scaling:
         minReplicas: 1
-      kv:
-        - alias: store
-          store: todo-store
-          table: todos
-        - alias: cache
-          store: todo-cache
-          table: entries
-      blob:
-        - alias: files
-          bucket: todo-files
-          prefix: attachments
+      bindings:
+        kv:
+          - alias: store
+            store: todo-store
+            table: todos
+          - alias: cache
+            store: todo-cache
+            table: entries
+        blob:
+          - alias: files
+            bucket: todo-files
+            prefix: attachments
     - ref: mailer
   workflows:
     - name: todo-plan

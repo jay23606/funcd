@@ -64,7 +64,7 @@ func sqlFunction(name string, databases ...string) *v1.Function {
 	fn.Name, fn.Namespace, fn.ResourceGroup = v1.ObjectName(name), "default", "rg1"
 	fn.Spec = v1.FunctionSpec{Runtime: "nodejs22", Handler: "handle", Image: "file:///nonexistent.mjs"}
 	for _, db := range databases {
-		fn.Spec.SQL = append(fn.Spec.SQL, v1.FunctionSQL{Alias: "app", Database: v1.ObjectName(db)})
+		fn.Spec.Bindings.SQL = append(fn.Spec.Bindings.SQL, v1.FunctionSQL{Alias: "app", Database: v1.ObjectName(db)})
 	}
 	return fn
 }
@@ -230,7 +230,7 @@ func (nodeRuntime) Runtime(context.Context, string) (v1.RuntimeName, error) { re
 func TestScenarioWorkflowStepBindsDatabase(t *testing.T) {
 	t.Parallel()
 	wf := &v1.Workflow{TypeMeta: tmeta(v1.KindWorkflow), Spec: v1.WorkflowSpec{Steps: []v1.WorkflowStep{{Name: "report",
-		Function: &v1.FunctionStep{Image: "file:///nonexistent.mjs", SQL: []v1.FunctionSQL{{Alias: "app", Database: "todo-db"}}}}}}}
+		Function: &v1.FunctionStep{Image: "file:///nonexistent.mjs", Bindings: v1.StepBindings{SQL: []v1.FunctionSQL{{Alias: "app", Database: "todo-db"}}}}}}}}
 	wf.Name, wf.Namespace, wf.ResourceGroup = "nightly", "default", "rg1"
 	e := startAccess(t, true, wf)
 	e.todo().Seed("milk")
@@ -242,7 +242,7 @@ func TestScenarioWorkflowStepBindsDatabase(t *testing.T) {
 	step := string(v1.StepFunctionName("nightly", "report"))
 	obj, err := e.p.cfg.store.Get(e.ctx, v1.KindFunction.GVK(), "default", v1.ObjectName(step))
 	require.NoError(t, err)
-	require.Equal(t, []v1.FunctionSQL{{Alias: "app", Database: "todo-db"}}, obj.(*v1.Function).Spec.SQL, "the step's Function carries the binding")
+	require.Equal(t, []v1.FunctionSQL{{Alias: "app", Database: "todo-db"}}, obj.(*v1.Function).Spec.Bindings.SQL, "the step's Function carries the binding")
 	code, body := e.call(t, step, "query", "app", `[["SELECT id, title FROM todos"]]`)
 	require.Equal(t, http.StatusOK, code, body)
 	require.Contains(t, body, "milk")

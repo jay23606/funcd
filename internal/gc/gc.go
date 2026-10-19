@@ -567,21 +567,21 @@ func uses(u, obj v1.Object) bool {
 	switch obj.(type) {
 	case *v1.Function:
 		f, ok := u.(*v1.Function)
-		return ok && f.Name != name && slices.ContainsFunc(f.Spec.Links, func(l v1.FunctionLink) bool { return l.Target == name })
+		return ok && f.Name != name && slices.ContainsFunc(f.Spec.Bindings.Links, func(l v1.FunctionLink) bool { return l.Target == name })
 	case *v1.KVStore:
 		f, ok := u.(*v1.Function)
-		return ok && slices.ContainsFunc(f.Spec.KV, func(b v1.FunctionKV) bool { return b.Store == name })
+		return ok && slices.ContainsFunc(f.Spec.Bindings.KV, func(b v1.FunctionKV) bool { return b.Store == name })
 	case *v1.SQLDatabase:
 		f, ok := u.(*v1.Function)
-		return ok && slices.ContainsFunc(f.Spec.SQL, func(b v1.FunctionSQL) bool { return b.Database == name })
+		return ok && slices.ContainsFunc(f.Spec.Bindings.SQL, func(b v1.FunctionSQL) bool { return b.Database == name })
 	case *v1.Bucket:
 		return usesBucket(u, name)
 	case *v1.ConfigMap:
 		switch o := u.(type) {
 		case *v1.Function:
-			return slices.Contains(o.Spec.Config, name)
+			return slices.Contains(o.Spec.Bindings.Config, name)
 		case *v1.CatalogService:
-			return slices.Contains(o.Spec.Config, name)
+			return slices.Contains(o.Spec.Bindings.Config, name)
 		case *v1.Site:
 			return o.Spec.RuntimeConfig != nil && o.Spec.RuntimeConfig.ConfigMap == name
 		}
@@ -594,9 +594,9 @@ func usesBucket(u v1.Object, name v1.ObjectName) bool {
 	bound := func(b v1.FunctionBlob) bool { return b.Bucket == name }
 	switch o := u.(type) {
 	case *v1.Function:
-		return slices.ContainsFunc(o.Spec.Blob, bound)
+		return slices.ContainsFunc(o.Spec.Bindings.Blob, bound)
 	case *v1.CatalogService:
-		return slices.ContainsFunc(o.Spec.Blob, bound)
+		return slices.ContainsFunc(o.Spec.Bindings.Blob, bound)
 	case *v1.EventSource:
 		return o.Spec.Blob != nil && o.Spec.Blob.Bucket == name
 	case *v1.Route:

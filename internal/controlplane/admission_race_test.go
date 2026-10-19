@@ -77,7 +77,7 @@ func linkedFunctionBody(t *testing.T, ns v1.NamespaceName, name, target string) 
 	fn.Name, fn.Namespace, fn.ResourceGroup = v1.ObjectName(name), ns, "rg1"
 	fn.Spec.Runtime, fn.Spec.Handler, fn.Spec.Image = "nodejs22", "app.handler", "oci://example/app:v1"
 	if target != "" {
-		fn.Spec.Links = []v1.FunctionLink{{Alias: "peer", Target: v1.ObjectName(target)}}
+		fn.Spec.Bindings.Links = []v1.FunctionLink{{Alias: "peer", Target: v1.ObjectName(target)}}
 	}
 	b, err := json.Marshal(fn)
 	require.NoError(t, err)
@@ -144,7 +144,7 @@ func linksOf(t *testing.T, st store.Store, ns v1.NamespaceName) map[v1.ObjectNam
 	for _, o := range res.Items {
 		f := o.(*v1.Function)
 		out[f.Name] = nil
-		for _, l := range f.Spec.Links {
+		for _, l := range f.Spec.Bindings.Links {
 			out[f.Name] = append(out[f.Name], l.Target)
 		}
 	}

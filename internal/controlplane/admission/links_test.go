@@ -24,7 +24,7 @@ func (f fakeReader) List(_ context.Context, _ v1.GroupVersionKind, ns v1.Namespa
 }
 
 func fn(name string, links ...v1.FunctionLink) *v1.Function {
-	f := &v1.Function{Spec: v1.FunctionSpec{Links: links}}
+	f := &v1.Function{Spec: v1.FunctionSpec{Bindings: v1.FunctionBindings{Links: links}}}
 	f.TypeMeta = v1.TypeMeta{APIVersion: v1.KindFunction.GVK().APIVersion(), Kind: v1.KindFunction}
 	f.Name, f.Namespace, f.ResourceGroup = v1.ObjectName(name), "default", "rg1"
 	return f

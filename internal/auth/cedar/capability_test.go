@@ -135,7 +135,7 @@ func TestScenarioBindingGrantStillSelfEnforces(t *testing.T) {
 		fns: map[string]*v1.Function{
 			"default/analytics": {
 				ObjectMeta: v1.ObjectMeta{Name: "analytics", Namespace: "default", ResourceGroup: "rg1"},
-				Spec:       v1.FunctionSpec{KV: []v1.FunctionKV{{Alias: "cust", Store: "orders", Table: "customers"}}},
+				Spec:       v1.FunctionSpec{Bindings: v1.FunctionBindings{KV: []v1.FunctionKV{{Alias: "cust", Store: "orders", Table: "customers"}}}},
 			},
 		},
 		stores: map[string]*v1.KVStore{

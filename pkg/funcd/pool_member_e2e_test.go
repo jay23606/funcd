@@ -128,7 +128,9 @@ func (h *shimRig) samePool(t *testing.T, names ...string) string {
 	return pool
 }
 
-func bindTable(fn *v1.Function) { fn.Spec.KV = []v1.FunctionKV{{Alias: "t", Store: "s", Table: "t"}} }
+func bindTable(fn *v1.Function) {
+	fn.Spec.Bindings.KV = []v1.FunctionKV{{Alias: "t", Store: "s", Table: "t"}}
+}
 
 func ownedKVStore(owner v1.ObjectName) *v1.KVStore {
 	obj, _ := v1.NewObject(v1.KindKVStore)
@@ -190,7 +192,7 @@ func TestScenarioPooledMemberS3Identity(t *testing.T) {
 		h.applyObj(t, b)
 		for _, n := range []string{"a", "b"} {
 			h.deploy(t, n, l.fn(l.creds).pooled("s3").with(func(fn *v1.Function) {
-				fn.Spec.Blob = []v1.FunctionBlob{{Alias: "raw", Bucket: "lake", Prefix: "raw"}}
+				fn.Spec.Bindings.Blob = []v1.FunctionBlob{{Alias: "raw", Bucket: "lake", Prefix: "raw"}}
 			}))
 		}
 		waitReady(t, h.c, "a", "b")
@@ -411,7 +413,7 @@ func TestScenarioWorkflowStepsSplitBySecrets(t *testing.T) {
 		wf.Name = "wf"
 		wf.Spec.Pooling.MinReplicas = 1
 		wf.Spec.Steps = []v1.WorkflowStep{
-			{Name: "s1", Function: &v1.FunctionStep{Image: ref, Secrets: []v1.ObjectName{"db"}}},
+			{Name: "s1", Function: &v1.FunctionStep{Image: ref, Bindings: v1.StepBindings{Secret: []v1.ObjectName{"db"}}}},
 			{Name: "s2", Function: &v1.FunctionStep{Image: ref}},
 		}
 		h.applyObj(t, wf)

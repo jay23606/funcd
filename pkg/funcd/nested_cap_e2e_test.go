@@ -90,7 +90,7 @@ func raceFunction(ns v1.NamespaceName, name, target string) *v1.Function {
 	fn.Name, fn.Namespace, fn.ResourceGroup = v1.ObjectName(name), ns, "rg1"
 	fn.Spec.Runtime, fn.Spec.Handler, fn.Spec.Image = "nodejs22", "handle", "oci://example/app:v1"
 	if target != "" {
-		fn.Spec.Links = []v1.FunctionLink{{Alias: "peer", Target: v1.ObjectName(target)}}
+		fn.Spec.Bindings.Links = []v1.FunctionLink{{Alias: "peer", Target: v1.ObjectName(target)}}
 	}
 	return fn
 }
@@ -141,7 +141,7 @@ func storedLinks(t *testing.T, c *sdk.Client, ns v1.NamespaceName) map[v1.Object
 	for _, o := range objs {
 		f := o.(*v1.Function)
 		out[f.Name] = nil
-		for _, l := range f.Spec.Links {
+		for _, l := range f.Spec.Bindings.Links {
 			out[f.Name] = append(out[f.Name], l.Target)
 		}
 	}
@@ -390,7 +390,7 @@ export const handle = async (context) => {
 		obj, err := st.Get(ctx, v1.KindFunction.GVK(), "default", "b")
 		require.NoError(t, err)
 		b := obj.(*v1.Function)
-		b.Spec.Links = []v1.FunctionLink{{Alias: "peer", Target: "a"}}
+		b.Spec.Bindings.Links = []v1.FunctionLink{{Alias: "peer", Target: "a"}}
 		_, err = st.Update(ctx, b)
 		return err == nil
 	}, 10*time.Second, 20*time.Millisecond, "write the b → a link straight to the store")

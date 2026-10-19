@@ -46,7 +46,7 @@ func TestScenarioE2EKVCounterViaContextKV(t *testing.T) {
 	// proves unbound is Forbidden), then the store (its owner now exists), then UPDATE the function to add
 	// spec.kv (the store/table now exist) — proving the binding is the capability.
 	unbound := fn
-	unbound.Spec.KV = nil
+	unbound.Spec.Bindings.KV = nil
 	applyFnObj(t, c, &unbound)
 	waitReady(t, c, "counter")
 

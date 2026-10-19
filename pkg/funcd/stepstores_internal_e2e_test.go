@@ -44,8 +44,8 @@ func TestScenarioStoredWorkflowStillRefused(t *testing.T) {
 		Spec: v1.WorkflowSpec{
 			KV: []v1.WorkflowKVStore{{Name: "w-kv", Tables: []v1.KVTable{{Name: "t"}}}},
 			Steps: []v1.WorkflowStep{
-				{Name: "a", Function: &v1.FunctionStep{Image: img, KV: []v1.FunctionKV{{Alias: "own", Store: "w-kv", Table: "t"}}}},
-				{Name: "s", Function: &v1.FunctionStep{Image: img, KV: []v1.FunctionKV{{Alias: "shared", Store: "shared", Table: "t"}}}},
+				{Name: "a", Function: &v1.FunctionStep{Image: img, Bindings: v1.StepBindings{KV: []v1.FunctionKV{{Alias: "own", Store: "w-kv", Table: "t"}}}}},
+				{Name: "s", Function: &v1.FunctionStep{Image: img, Bindings: v1.StepBindings{KV: []v1.FunctionKV{{Alias: "shared", Store: "shared", Table: "t"}}}}},
 			},
 		},
 	})
@@ -74,7 +74,7 @@ func TestScenarioStoredWorkflowStillRefused(t *testing.T) {
 	for _, name := range []v1.ObjectName{"w-a", "w-s"} {
 		fn, err := s.Get(ctx, v1.KindFunction.GVK(), "default", name)
 		require.NoError(t, err)
-		require.Empty(t, fn.(*v1.Function).Spec.KV, "no binding is written to %s", name)
+		require.Empty(t, fn.(*v1.Function).Spec.Bindings.KV, "no binding is written to %s", name)
 	}
 	for _, name := range []v1.ObjectName{"w-kv", "shared"} {
 		_, err = s.Get(ctx, v1.KindKVStore.GVK(), "default", name)

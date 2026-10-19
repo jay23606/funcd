@@ -1437,9 +1437,9 @@ func synthesizeResources(op string, pfs []plannedFunc) ([]v1.Object, error) {
 		cobj, _ := v1.NewObject(v1.KindCatalogService)
 		cs := cobj.(*v1.CatalogService)
 		setMeta(&cs.ObjectMeta, name)
-		cs.Spec.Blob = dc.Blob
+		cs.Spec.Bindings.Blob = dc.Blob
 		cs.Spec.Catalog = dc.Catalog
-		cs.Spec.Secrets = []v1.ObjectName{tokenSecret}
+		cs.Spec.Bindings.Secret = []v1.ObjectName{tokenSecret}
 		objs = append(objs, cs)
 	}
 
@@ -1560,13 +1560,13 @@ func synthesizeFunction(pf plannedFunc, imagePath string) *v1.Function {
 	fn.Spec.Image = "file://" + imagePath
 	fn.Spec.Replicas = 1
 	fn.Spec.Scaling = v1.Scaling{MinReplicas: 1}
-	fn.Spec.KV = pf.m.Bindings.KV
-	fn.Spec.Blob = pf.m.Bindings.Blob
-	fn.Spec.SQL = pf.m.Bindings.SQL
-	fn.Spec.Catalogs = pf.m.Bindings.Catalogs // so resolveCatalogEnv injects FUNCD_CATALOG_<ALIAS>_URL/_TOKEN (ADR-0091)
-	fn.Spec.Config = pf.m.Bindings.Config
-	fn.Spec.Secrets = pf.m.Bindings.Secrets
-	fn.Spec.Links = pf.m.Bindings.Links
+	fn.Spec.Bindings.KV = pf.m.Bindings.KV
+	fn.Spec.Bindings.Blob = pf.m.Bindings.Blob
+	fn.Spec.Bindings.SQL = pf.m.Bindings.SQL
+	fn.Spec.Bindings.Catalog = pf.m.Bindings.Catalogs // so resolveCatalogEnv injects FUNCD_CATALOG_<ALIAS>_URL/_TOKEN (ADR-0091)
+	fn.Spec.Bindings.Config = pf.m.Bindings.Config
+	fn.Spec.Bindings.Secret = pf.m.Bindings.Secrets
+	fn.Spec.Bindings.Links = pf.m.Bindings.Links
 	return fn
 }
 
@@ -1744,7 +1744,7 @@ func orderFunctionsByLinks(fns []v1.Object) []v1.Object {
 			return
 		}
 		state[fn.Name] = visiting
-		for _, l := range fn.Spec.Links {
+		for _, l := range fn.Spec.Bindings.Links {
 			if dep, ok := inSet[l.Target]; ok {
 				dfs(dep)
 			}

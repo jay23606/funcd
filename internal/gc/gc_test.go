@@ -85,7 +85,7 @@ func object(t testing.TB, kind v1.Kind, name v1.ObjectName) v1.Object {
 		o.Spec.On = []v1.Dependency{{Name: "tick", Source: "tick", Event: "hourly"}}
 		o.Spec.Do = []v1.Action{{Name: "plan", On: "tick", Workflow: "wf"}}
 	case *v1.CatalogService:
-		o.Spec.Blob = []v1.FunctionBlob{{Alias: "lake", Bucket: "lake", Prefix: "lake"}}
+		o.Spec.Bindings.Blob = []v1.FunctionBlob{{Alias: "lake", Bucket: "lake", Prefix: "lake"}}
 		o.Spec.Catalog = v1.CatalogRef{Bucket: "lake", Prefix: "lake"}
 	case *v1.AppRevision:
 		o.Spec.App, o.Spec.Number = v1.ObjectRef{Kind: v1.KindApp, Namespace: ns, Name: "app"}, 1
@@ -703,13 +703,13 @@ func TestInUse(t *testing.T) {
 		user   v1.Object
 	}{
 		{"a Function's spec.links", object(t, v1.KindFunction, "callee"), fn("caller", func(s *v1.FunctionSpec) {
-			s.Links = []v1.FunctionLink{{Alias: "callee", Target: "callee"}}
+			s.Bindings.Links = []v1.FunctionLink{{Alias: "callee", Target: "callee"}}
 		})},
 		{"a Function's spec.kv", object(t, v1.KindKVStore, "cache"), fn("api", func(s *v1.FunctionSpec) {
-			s.KV = []v1.FunctionKV{{Alias: "cache", Store: "cache", Table: "entries"}}
+			s.Bindings.KV = []v1.FunctionKV{{Alias: "cache", Store: "cache", Table: "entries"}}
 		})},
 		{"a Function's spec.blob", object(t, v1.KindBucket, "lake"), fn("api", func(s *v1.FunctionSpec) {
-			s.Blob = []v1.FunctionBlob{{Alias: "lake", Bucket: "lake", Prefix: "raw"}}
+			s.Bindings.Blob = []v1.FunctionBlob{{Alias: "lake", Bucket: "lake", Prefix: "raw"}}
 		})},
 		{"a CatalogService's spec.blob", object(t, v1.KindBucket, "lake"), object(t, v1.KindCatalogService, "catalog")},
 		{"an EventSource's spec.blob.bucket", object(t, v1.KindBucket, "lake"), func() v1.Object {
@@ -725,11 +725,11 @@ func TestInUse(t *testing.T) {
 		}()},
 		{"a Site's spec.bucket.name", object(t, v1.KindBucket, "assets"), object(t, v1.KindSite, "web")},
 		{"a Function's spec.config", object(t, v1.KindConfigMap, "settings"), fn("api", func(s *v1.FunctionSpec) {
-			s.Config = []v1.ObjectName{"settings"}
+			s.Bindings.Config = []v1.ObjectName{"settings"}
 		})},
 		{"a CatalogService's spec.config", object(t, v1.KindConfigMap, "settings"), func() v1.Object {
 			c := object(t, v1.KindCatalogService, "catalog").(*v1.CatalogService)
-			c.Spec.Config = []v1.ObjectName{"settings"}
+			c.Spec.Bindings.Config = []v1.ObjectName{"settings"}
 			return c
 		}()},
 		{"a Site's spec.runtimeConfig.configMap", object(t, v1.KindConfigMap, "settings"), func() v1.Object {
@@ -807,11 +807,11 @@ func TestAppStoreInUseWaitsForALaterSweep(t *testing.T) {
 		put(t, st, ownedBy(object(t, v1.KindBucket, "todo-files"), app, false, true))
 		put(t, st, ownedBy(object(t, v1.KindBucket, "unmarked"), app, true, false))
 		api := object(t, v1.KindFunction, "todo-api").(*v1.Function)
-		api.Spec.KV = []v1.FunctionKV{{Alias: "cache", Store: "todo-cache", Table: "entries"}}
-		api.Spec.Blob = []v1.FunctionBlob{{Alias: "tmp", Bucket: "todo-tmp", Prefix: "tmp"}}
+		api.Spec.Bindings.KV = []v1.FunctionKV{{Alias: "cache", Store: "todo-cache", Table: "entries"}}
+		api.Spec.Bindings.Blob = []v1.FunctionBlob{{Alias: "tmp", Bucket: "todo-tmp", Prefix: "tmp"}}
 		put(t, st, ownedBy(api, app, true, false))
 		audit := object(t, v1.KindFunction, "audit").(*v1.Function)
-		audit.Spec.KV = []v1.FunctionKV{{Alias: "cache", Store: "todo-cache", Table: "entries"}}
+		audit.Spec.Bindings.KV = []v1.FunctionKV{{Alias: "cache", Store: "todo-cache", Table: "entries"}}
 		audit = put(t, st, audit).(*v1.Function)
 		del(t, st, v1.KindApp, "todo")
 
@@ -826,7 +826,7 @@ func TestAppStoreInUseWaitsForALaterSweep(t *testing.T) {
 		require.True(t, exists(t, st, v1.KindBucket, "todo-files"), "a retained Bucket has no controller reference")
 		require.True(t, exists(t, st, v1.KindBucket, "unmarked"), "a Bucket without the marker is never collected")
 
-		audit.Spec.KV = nil
+		audit.Spec.Bindings.KV = nil
 		_, err = st.Update(ctx, audit)
 		require.NoError(t, err)
 		require.NoError(t, c.CollectNamespace(ctx, ns))
@@ -837,7 +837,7 @@ func TestAppStoreInUseWaitsForALaterSweep(t *testing.T) {
 		app := create(t, st, v1.KindApp, "todo", nil)
 		put(t, st, ownedBy(object(t, v1.KindKVStore, "todo-cache"), app, true, true))
 		api := object(t, v1.KindFunction, "todo-api").(*v1.Function)
-		api.Spec.KV = []v1.FunctionKV{{Alias: "cache", Store: "todo-cache", Table: "entries"}}
+		api.Spec.Bindings.KV = []v1.FunctionKV{{Alias: "cache", Store: "todo-cache", Table: "entries"}}
 		run := holdPins(t, st, put(t, st, ownedBy(api, app, true, false)), "todo-api-1").(*v1.WorkflowRun)
 		del(t, st, v1.KindApp, "todo")
 
@@ -865,10 +865,10 @@ func TestAppConfigMapInUseWaitsForALaterSweep(t *testing.T) {
 	put(t, st, ownedBy(object(t, v1.KindConfigMap, "todo-settings-0000000002"), app, true, false))
 	put(t, st, ownedBy(object(t, v1.KindConfigMap, "todo-unused-0000000003"), app, true, false))
 	api := object(t, v1.KindFunction, "todo-api").(*v1.Function)
-	api.Spec.Config = []v1.ObjectName{"todo-settings-0000000002"}
+	api.Spec.Bindings.Config = []v1.ObjectName{"todo-settings-0000000002"}
 	run := holdPins(t, st, put(t, st, ownedBy(api, app, true, false)), "todo-api-1").(*v1.WorkflowRun)
 	audit := object(t, v1.KindFunction, "audit").(*v1.Function)
-	audit.Spec.Config = []v1.ObjectName{"todo-settings-0000000001"}
+	audit.Spec.Bindings.Config = []v1.ObjectName{"todo-settings-0000000001"}
 	audit = put(t, st, audit).(*v1.Function)
 	del(t, st, v1.KindApp, "todo")
 
@@ -878,7 +878,7 @@ func TestAppConfigMapInUseWaitsForALaterSweep(t *testing.T) {
 	require.True(t, exists(t, st, v1.KindConfigMap, "todo-settings-0000000001"), "audit, outside the App, still names it")
 	require.True(t, exists(t, st, v1.KindConfigMap, "todo-settings-0000000002"), "a held Function counts as a user")
 
-	audit.Spec.Config = nil
+	audit.Spec.Bindings.Config = nil
 	_, err := st.Update(ctx, audit)
 	require.NoError(t, err)
 	run.Status.Phase = v1.RunCancelled

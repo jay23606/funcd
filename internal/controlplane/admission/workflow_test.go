@@ -16,9 +16,9 @@ import (
 func stepStoresSpec(stores ...v1.ObjectName) v1.WorkflowSpec {
 	s := v1.WorkflowStep{Name: "s", Function: &v1.FunctionStep{Image: "oci:s"}}
 	for _, st := range stores {
-		s.Function.KV = append(s.Function.KV, v1.FunctionKV{Alias: string(st), Store: st, Table: "t"})
+		s.Function.Bindings.KV = append(s.Function.Bindings.KV, v1.FunctionKV{Alias: string(st), Store: st, Table: "t"})
 	}
-	r := v1.WorkflowStep{Name: "r", Function: &v1.FunctionStep{Ref: "f", KV: []v1.FunctionKV{{Alias: "e", Store: "elsewhere", Table: "t"}}}}
+	r := v1.WorkflowStep{Name: "r", Function: &v1.FunctionStep{Ref: "f", Bindings: v1.StepBindings{KV: []v1.FunctionKV{{Alias: "e", Store: "elsewhere", Table: "t"}}}}}
 	return v1.WorkflowSpec{KV: []v1.WorkflowKVStore{{Name: "own", Tables: []v1.KVTable{{Name: "t"}}}}, Steps: []v1.WorkflowStep{r, s}}
 }
 
@@ -54,7 +54,7 @@ func TestWorkflowStepStoresAdmission(t *testing.T) {
 		}
 		_, err := a.Admit(ctx, req)
 		require.Equal(t, fault.Invalid, fault.KindOf(err), "%s", op)
-		require.EqualError(t, err, `admission.workflow-step-stores: spec.steps[1].function.kv[1].store "shared" is not declared in spec.kv`, "%s", op)
+		require.EqualError(t, err, `admission.workflow-step-stores: spec.steps[1].function.bindings.kv[1].store "shared" is not declared in spec.kv`, "%s", op)
 
 		declared := stepStoresWorkflow("own")
 		req.Object = declared

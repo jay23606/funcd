@@ -126,7 +126,7 @@ func (w *catalogWorld) applyCatalog(t *testing.T) {
 	cs := obj.(*v1.CatalogService)
 	cs.Name, cs.Namespace, cs.ResourceGroup = "lake", "default", "rg1"
 	cs.Spec.Catalog = v1.CatalogRef{Bucket: "lakehouse", Prefix: "gold"}
-	cs.Spec.Blob = []v1.FunctionBlob{{Alias: "catalog", Bucket: "lakehouse", Prefix: "gold"}}
+	cs.Spec.Bindings.Blob = []v1.FunctionBlob{{Alias: "catalog", Bucket: "lakehouse", Prefix: "gold"}}
 	_, err := w.st.Create(context.Background(), cs)
 	require.NoError(t, err)
 }
@@ -151,7 +151,7 @@ func (w *catalogWorld) applyFunction(t *testing.T, name string, consumer bool) {
 	fn.Spec.Handler = "handle"
 	fn.Spec.Image = "file://" + w.artifact
 	if consumer {
-		fn.Spec.Catalogs = []v1.FunctionCatalog{{Alias: "lake", Catalog: "lake"}}
+		fn.Spec.Bindings.Catalog = []v1.FunctionCatalog{{Alias: "lake", Catalog: "lake"}}
 	}
 	_, err := w.st.Create(context.Background(), fn)
 	require.NoError(t, err)
@@ -464,7 +464,7 @@ func TestScenarioLastBinderClosesListener(t *testing.T) {
 		},
 		"binding-dropped": func(t *testing.T, r *catalogRun) {
 			fn := r.w.function(t, "reader")
-			fn.Spec.Catalogs = nil
+			fn.Spec.Bindings.Catalog = nil
 			_, err := r.w.st.Update(context.Background(), fn)
 			require.NoError(t, err)
 			for range 10 {

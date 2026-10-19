@@ -23,7 +23,7 @@ func TestPacingDepsPaceTheFunctionReconciler(t *testing.T) {
 		h := newHarness(t, opt)
 		h.createFn(t, "fn", 1, true)
 		fn := h.getFn(t, "fn")
-		fn.Spec.KV = []v1.FunctionKV{{Alias: "cache", Store: "nostore", Table: "t"}}
+		fn.Spec.Bindings.KV = []v1.FunctionKV{{Alias: "cache", Store: "nostore", Table: "t"}}
 		_, err := h.st.Update(context.Background(), fn)
 		require.NoError(t, err)
 		res, err := h.r.Reconcile(context.Background(), controller.Request{GVK: v1.KindFunction.GVK(), Namespace: "default", Name: "fn"})

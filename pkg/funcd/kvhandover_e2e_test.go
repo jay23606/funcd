@@ -32,8 +32,8 @@ func (e *gcEnv) boundWorkflow(t *testing.T, store v1.WorkflowKVStore) {
 		Spec: v1.WorkflowSpec{
 			KV: []v1.WorkflowKVStore{store},
 			Steps: []v1.WorkflowStep{{Name: "s", Function: &v1.FunctionStep{
-				Image: img,
-				KV:    []v1.FunctionKV{{Alias: "keep", Store: store.Name, Table: "t"}},
+				Image:    img,
+				Bindings: v1.StepBindings{KV: []v1.FunctionKV{{Alias: "keep", Store: store.Name, Table: "t"}}},
 			}}},
 		},
 	})
@@ -71,7 +71,7 @@ func (e *gcEnv) workflowReady(t *testing.T) bool {
 
 func (e *gcEnv) stepBinds(t *testing.T, fn string) []v1.FunctionKV {
 	t.Helper()
-	return e.get(t, v1.KindFunction, fn).(*v1.Function).Spec.KV
+	return e.get(t, v1.KindFunction, fn).(*v1.Function).Spec.Bindings.KV
 }
 
 // scenario: recreated-workflow-needs-handover

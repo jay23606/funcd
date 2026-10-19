@@ -23,7 +23,7 @@ func (r *Reconciler) resolveDataReferences(ctx context.Context, fn *v1.Function)
 	const op = "function.resolveDataReferences"
 	ns := fn.Namespace
 
-	if len(fn.Spec.Blob) > 0 {
+	if len(fn.Spec.Bindings.Blob) > 0 {
 		bl, lerr := r.store.List(ctx, v1.KindBucket.GVK(), store.ListOptions{Namespace: ns})
 		if lerr != nil {
 			return false, "", "", fault.Wrapf(lerr, fault.KindOf(lerr), op, "list buckets in %q", ns)
@@ -40,18 +40,18 @@ func (r *Reconciler) resolveDataReferences(ctx context.Context, fn *v1.Function)
 			}
 			prefixes[b.Name] = set
 		}
-		for _, bnd := range fn.Spec.Blob {
+		for _, bnd := range fn.Spec.Bindings.Blob {
 			set, ok := prefixes[bnd.Bucket]
 			if !ok {
-				return true, "BucketNotFound", fmt.Sprintf("spec.blob[%s] → bucket %q not found in namespace %q; waiting", bnd.Alias, bnd.Bucket, ns), nil
+				return true, "BucketNotFound", fmt.Sprintf("spec.bindings.blob[%s] → bucket %q not found in namespace %q; waiting", bnd.Alias, bnd.Bucket, ns), nil
 			}
 			if !set[bnd.Prefix] {
-				return true, "BucketNotFound", fmt.Sprintf("spec.blob[%s] → prefix %q not found in bucket %q; waiting", bnd.Alias, bnd.Prefix, bnd.Bucket), nil
+				return true, "BucketNotFound", fmt.Sprintf("spec.bindings.blob[%s] → prefix %q not found in bucket %q; waiting", bnd.Alias, bnd.Prefix, bnd.Bucket), nil
 			}
 		}
 	}
 
-	if len(fn.Spec.KV) > 0 {
+	if len(fn.Spec.Bindings.KV) > 0 {
 		sl, lerr := r.store.List(ctx, v1.KindKVStore.GVK(), store.ListOptions{Namespace: ns})
 		if lerr != nil {
 			return false, "", "", fault.Wrapf(lerr, fault.KindOf(lerr), op, "list kvstores in %q", ns)
@@ -68,23 +68,23 @@ func (r *Reconciler) resolveDataReferences(ctx context.Context, fn *v1.Function)
 			}
 			tables[ks.Name] = set
 		}
-		for _, bnd := range fn.Spec.KV {
+		for _, bnd := range fn.Spec.Bindings.KV {
 			set, ok := tables[bnd.Store]
 			if !ok {
-				return true, "KVStoreNotFound", fmt.Sprintf("spec.kv[%s] → store %q not found in namespace %q; waiting", bnd.Alias, bnd.Store, ns), nil
+				return true, "KVStoreNotFound", fmt.Sprintf("spec.bindings.kv[%s] → store %q not found in namespace %q; waiting", bnd.Alias, bnd.Store, ns), nil
 			}
 			if !set[bnd.Table] {
-				return true, "KVStoreNotFound", fmt.Sprintf("spec.kv[%s] → table %q not found in store %q; waiting", bnd.Alias, bnd.Table, bnd.Store), nil
+				return true, "KVStoreNotFound", fmt.Sprintf("spec.bindings.kv[%s] → table %q not found in store %q; waiting", bnd.Alias, bnd.Table, bnd.Store), nil
 			}
 		}
 	}
 
 	// ADR-0233 Decision 1: every spec.sql binding names a SQLDatabase of the namespace.
-	for _, bnd := range fn.Spec.SQL {
+	for _, bnd := range fn.Spec.Bindings.SQL {
 		_, gerr := r.store.Get(ctx, v1.KindSQLDatabase.GVK(), ns, bnd.Database)
 		switch {
 		case fault.KindOf(gerr) == fault.NotFound:
-			return true, "SQLDatabaseNotFound", fmt.Sprintf("spec.sql[%s] → database %q not found in namespace %q; waiting", bnd.Alias, bnd.Database, ns), nil
+			return true, "SQLDatabaseNotFound", fmt.Sprintf("spec.bindings.sql[%s] → database %q not found in namespace %q; waiting", bnd.Alias, bnd.Database, ns), nil
 		case gerr != nil:
 			return false, "", "", fault.Wrapf(gerr, fault.KindOf(gerr), op, "get sqldatabase %q", bnd.Database)
 		}

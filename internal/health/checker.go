@@ -50,21 +50,21 @@ func (c checker) Check(ctx context.Context, caller local.Ref) *local.DependencyR
 		return nil
 	}
 	if c.d.KV != nil {
-		for _, b := range fn.Spec.KV {
+		for _, b := range fn.Spec.Bindings.KV {
 			if r := c.read(ctx, caller, local.DependencyKV, b.Alias, c.d.KV, TargetKV); r != nil {
 				return r
 			}
 		}
 	}
 	if c.d.Blob != nil {
-		for _, b := range fn.Spec.Blob {
+		for _, b := range fn.Spec.Bindings.Blob {
 			if r := c.read(ctx, caller, local.DependencyBlob, b.Alias, c.d.Blob, TargetBlob); r != nil {
 				return r
 			}
 		}
 	}
 	if c.d.SQL != nil {
-		for _, b := range fn.Spec.SQL {
+		for _, b := range fn.Spec.Bindings.SQL {
 			if r := timedOut(ctx, local.DependencySQL, b.Alias); r != nil {
 				return r
 			}
@@ -74,7 +74,7 @@ func (c checker) Check(ctx context.Context, caller local.Ref) *local.DependencyR
 		}
 	}
 	if c.d.Links != nil {
-		for _, l := range fn.Spec.Links {
+		for _, l := range fn.Spec.Bindings.Links {
 			if r := c.link(ctx, caller, l.Alias); r != nil {
 				return r
 			}

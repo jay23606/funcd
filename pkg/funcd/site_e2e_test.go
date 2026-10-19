@@ -250,7 +250,7 @@ func startSitePlatform(t *testing.T, reserve func(*testing.T) string, image stri
 		seed(t, st, siteObj)
 		uploader := &v1.Function{TypeMeta: v1.TypeMeta{APIVersion: v1.KindFunction.GVK().APIVersion(), Kind: v1.KindFunction}}
 		uploader.Name, uploader.Namespace, uploader.ResourceGroup = "uploader", siteNS, "rg1"
-		uploader.Spec = v1.FunctionSpec{Runtime: "nodejs22", Blob: []v1.FunctionBlob{{Alias: "bi", Bucket: "reports", Prefix: "bi"}}}
+		uploader.Spec = v1.FunctionSpec{Runtime: "nodejs22", Bindings: v1.FunctionBindings{Blob: []v1.FunctionBlob{{Alias: "bi", Bucket: "reports", Prefix: "bi"}}}}
 		seed(t, st, uploader)
 		ext := &v1.Identity{TypeMeta: v1.TypeMeta{APIVersion: v1.KindIdentity.GVK().APIVersion(), Kind: v1.KindIdentity}}
 		ext.Name, ext.Namespace, ext.ResourceGroup = "publisher", siteNS, "rg1"

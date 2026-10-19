@@ -55,12 +55,11 @@ func todoApp(mutate func(*v1.App)) *v1.App {
 
 func apiSpec(kv ...v1.FunctionKV) v1.FunctionSpec {
 	return v1.FunctionSpec{
-		Runtime: "nodejs22",
-		Handler: "index.handler",
-		Image:   "oci-layout://todo-api:1",
-		Scaling: v1.Scaling{MinReplicas: 1},
-		KV:      kv,
-		Blob:    []v1.FunctionBlob{{Alias: "files", Bucket: "todo-files", Prefix: "attachments"}},
+		Runtime:  "nodejs22",
+		Handler:  "index.handler",
+		Image:    "oci-layout://todo-api:1",
+		Scaling:  v1.Scaling{MinReplicas: 1},
+		Bindings: v1.FunctionBindings{KV: kv, Blob: []v1.FunctionBlob{{Alias: "files", Bucket: "todo-files", Prefix: "attachments"}}},
 	}
 }
 
@@ -500,8 +499,8 @@ func TestAppReadiness(t *testing.T) {
 	}
 	catalog := func(a *v1.App) {
 		a.Spec.Catalogs = []v1.AppCatalog{{Name: "todo-lake", CatalogServiceSpec: v1.CatalogServiceSpec{
-			Blob:    []v1.FunctionBlob{{Alias: "lake", Bucket: "lake", Prefix: "lake"}},
-			Catalog: v1.CatalogRef{Bucket: "lake", Prefix: "lake"},
+			Catalog:  v1.CatalogRef{Bucket: "lake", Prefix: "lake"},
+			Bindings: v1.CatalogServiceBindings{Blob: []v1.FunctionBlob{{Alias: "lake", Bucket: "lake", Prefix: "lake"}}},
 		}}}
 	}
 	bucket := func(a *v1.App) { a.Spec.Buckets = []v1.AppBucket{{Name: "todo-files"}} }
@@ -667,7 +666,7 @@ func TestScenarioAppPruneDroppedPart(t *testing.T) {
 	h.edit(func(a *v1.App) {
 		a.Spec.Routes = nil
 		a.Spec.KV = a.Spec.KV[1:]
-		a.Spec.Functions[0].KV = a.Spec.Functions[0].KV[1:]
+		a.Spec.Functions[0].Bindings.KV = a.Spec.Functions[0].Bindings.KV[1:]
 	})
 	require.Equal(t, controller.SupervisionPeriod, h.reconcile().RequeueAfter, "the edited Function is Pending: prune waits")
 	require.NotNil(t, h.get(v1.KindRoute, "todo-api"))
@@ -696,7 +695,7 @@ func TestScenarioAppStoreInUseKept(t *testing.T) {
 	require.Equal(t, v1.ConditionTrue, h.ready().Status)
 	require.Equal(t, v1.PhaseReady, h.app().Status.Phase)
 
-	h.edit(func(a *v1.App) { a.Spec.Functions[0].KV = a.Spec.Functions[0].KV[:1] })
+	h.edit(func(a *v1.App) { a.Spec.Functions[0].Bindings.KV = a.Spec.Functions[0].Bindings.KV[:1] })
 	h.reconcile()
 	h.markReady(v1.KindFunction, "todo-api")
 	require.Zero(t, h.reconcile())

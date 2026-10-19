@@ -208,15 +208,15 @@ func ListChanged(ctx context.Context, plan MasterPlan, st store.Store) ([]Derive
 		if !ok {
 			continue
 		}
-		if len(fn.Spec.Blob) > 0 {
+		if len(fn.Spec.Bindings.Blob) > 0 {
 			out = append(out, Derived{v1.KindFunction, string(fn.Namespace), string(fn.Name), s3Keypair})
 		}
-		if len(fn.Spec.Catalogs) > 0 {
+		if len(fn.Spec.Bindings.Catalog) > 0 {
 			out = append(out, Derived{v1.KindFunction, string(fn.Namespace), string(fn.Name), catalogToken})
 		}
 	}
 	for _, o := range css.Items {
-		if cs, ok := o.(*v1.CatalogService); ok && len(cs.Spec.Blob) > 0 {
+		if cs, ok := o.(*v1.CatalogService); ok && len(cs.Spec.Bindings.Blob) > 0 {
 			out = append(out, Derived{v1.KindCatalogService, string(cs.Namespace), string(cs.Name), s3Keypair})
 		}
 	}

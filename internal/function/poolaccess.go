@@ -163,9 +163,9 @@ func (r *Reconciler) poolKeyFor(fn *v1.Function, idx accessIndex) (pooling.PoolK
 	}
 	var owned []string
 	for _, o := range idx.owned[fn.Name] {
-		if strings.HasPrefix(o, "blob/") || slices.ContainsFunc(fn.Spec.KV, func(b v1.FunctionKV) bool {
+		if strings.HasPrefix(o, "blob/") || slices.ContainsFunc(fn.Spec.Bindings.KV, func(b v1.FunctionKV) bool {
 			return o == "kv/"+string(b.Store)+"/"+b.Table
-		}) || slices.ContainsFunc(fn.Spec.SQL, func(b v1.FunctionSQL) bool { return o == "sql/"+string(b.Database) }) {
+		}) || slices.ContainsFunc(fn.Spec.Bindings.SQL, func(b v1.FunctionSQL) bool { return o == "sql/"+string(b.Database) }) {
 			owned = append(owned, o)
 		}
 	}

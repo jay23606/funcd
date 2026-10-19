@@ -223,7 +223,7 @@ func TestPlanPrune(t *testing.T) {
 	got := h.plan(h.dryRun(func(a *v1.App) {
 		a.Spec.Routes = a.Spec.Routes[:1]
 		a.Spec.KV = a.Spec.KV[:1]
-		a.Spec.Functions[0].KV = a.Spec.Functions[0].KV[:1]
+		a.Spec.Functions[0].Bindings.KV = a.Spec.Functions[0].Bindings.KV[:1]
 	}))
 	require.Equal(t, "todo-2", string(got.Revision))
 	require.Equal(t, []v1.PlanPart{

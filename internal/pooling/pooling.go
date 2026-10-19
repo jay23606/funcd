@@ -74,17 +74,17 @@ const accessHashLen = 16
 // a Function with no access has one fixed hash. Pure.
 func AccessHashOf(spec v1.FunctionSpec, owned, grants []string) string {
 	doc := accessDoc{
-		KV:       append([]v1.FunctionKV{}, spec.KV...),
-		Blob:     append([]v1.FunctionBlob{}, spec.Blob...),
-		Catalogs: append([]v1.FunctionCatalog{}, spec.Catalogs...),
-		SQL:      append([]v1.FunctionSQL(nil), spec.SQL...),
-		Links:    make([]accessLink, 0, len(spec.Links)),
-		Secrets:  append([]v1.ObjectName{}, spec.Secrets...),
-		Config:   append([]v1.ObjectName{}, spec.Config...),
+		KV:       append([]v1.FunctionKV{}, spec.Bindings.KV...),
+		Blob:     append([]v1.FunctionBlob{}, spec.Bindings.Blob...),
+		Catalogs: append([]v1.FunctionCatalog{}, spec.Bindings.Catalog...),
+		SQL:      append([]v1.FunctionSQL(nil), spec.Bindings.SQL...),
+		Links:    make([]accessLink, 0, len(spec.Bindings.Links)),
+		Secrets:  append([]v1.ObjectName{}, spec.Bindings.Secret...),
+		Config:   append([]v1.ObjectName{}, spec.Bindings.Config...),
 		Owned:    sortedCopy(owned),
 		Grants:   sortedCopy(grants),
 	}
-	for _, l := range spec.Links {
+	for _, l := range spec.Bindings.Links {
 		doc.Links = append(doc.Links, accessLink{Alias: l.Alias, Target: l.Target})
 	}
 	sort.SliceStable(doc.KV, func(i, j int) bool { return doc.KV[i].Alias < doc.KV[j].Alias })

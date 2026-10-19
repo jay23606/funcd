@@ -47,18 +47,18 @@ func previousStore(t *testing.T, s store.Store, name v1.ObjectName, wf *v1.Workf
 }
 
 func bindStep(wf *v1.Workflow, step int, stores ...v1.ObjectName) {
-	wf.Spec.Steps[step].Function.KV = nil
+	wf.Spec.Steps[step].Function.Bindings.KV = nil
 	for _, st := range stores {
-		wf.Spec.Steps[step].Function.KV = append(wf.Spec.Steps[step].Function.KV, v1.FunctionKV{Alias: string(st), Store: st, Table: "t"})
+		wf.Spec.Steps[step].Function.Bindings.KV = append(wf.Spec.Steps[step].Function.Bindings.KV, v1.FunctionKV{Alias: string(st), Store: st, Table: "t"})
 	}
 }
 
 func setFunctionKV(t *testing.T, s store.Store, name v1.ObjectName, stores ...v1.ObjectName) {
 	t.Helper()
 	fn := getObj(t, s, v1.KindFunction, name).(*v1.Function)
-	fn.Spec.KV = nil
+	fn.Spec.Bindings.KV = nil
 	for _, st := range stores {
-		fn.Spec.KV = append(fn.Spec.KV, v1.FunctionKV{Alias: string(st), Store: st, Table: "t"})
+		fn.Spec.Bindings.KV = append(fn.Spec.Bindings.KV, v1.FunctionKV{Alias: string(st), Store: st, Table: "t"})
 	}
 	_, err := s.Update(context.Background(), fn)
 	require.NoError(t, err)
@@ -67,7 +67,7 @@ func setFunctionKV(t *testing.T, s store.Store, name v1.ObjectName, stores ...v1
 func boundStores(t *testing.T, s store.Store, fn v1.ObjectName) []v1.ObjectName {
 	t.Helper()
 	var out []v1.ObjectName
-	for _, b := range getObj(t, s, v1.KindFunction, fn).(*v1.Function).Spec.KV {
+	for _, b := range getObj(t, s, v1.KindFunction, fn).(*v1.Function).Spec.Bindings.KV {
 		out = append(out, b.Store)
 	}
 	return out

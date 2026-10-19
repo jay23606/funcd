@@ -39,10 +39,12 @@ func lakehouseMeta() fakeMeta {
 			"default/etl-svc":   {ObjectMeta: v1.ObjectMeta{Name: "etl-svc", Namespace: "default", ResourceGroup: "rg1"}},
 			"default/analytics": {
 				ObjectMeta: v1.ObjectMeta{Name: "analytics", Namespace: "default", ResourceGroup: "rg1"},
-				Spec: v1.FunctionSpec{Blob: []v1.FunctionBlob{
-					{Alias: "bronze", Bucket: "lakehouse", Prefix: "bronze"},
-					{Alias: "gold", Bucket: "lakehouse", Prefix: "gold"},
-				}},
+				Spec: v1.FunctionSpec{
+					Bindings: v1.FunctionBindings{Blob: []v1.FunctionBlob{
+						{Alias: "bronze", Bucket: "lakehouse", Prefix: "bronze"},
+						{Alias: "gold", Bucket: "lakehouse", Prefix: "gold"},
+					}},
+				},
 			},
 		},
 		buckets: map[string]*v1.Bucket{
@@ -514,10 +516,10 @@ func TestIssue30_MultipartTotalCappedAtUploadPart(t *testing.T) {
 // op on the victim's id, and so does the creator on another key; the upload itself stays intact.
 func TestMultipartUploadIsBoundToItsNamespaceBucketAndKey(t *testing.T) {
 	meta := lakehouseMeta()
-	meta.fns["default/etl-svc"].Spec.Blob = []v1.FunctionBlob{{Alias: "bronze", Bucket: "lakehouse", Prefix: "bronze"}}
+	meta.fns["default/etl-svc"].Spec.Bindings.Blob = []v1.FunctionBlob{{Alias: "bronze", Bucket: "lakehouse", Prefix: "bronze"}}
 	meta.fns["evil/attacker"] = &v1.Function{
 		ObjectMeta: v1.ObjectMeta{Name: "attacker", Namespace: "evil", ResourceGroup: "rg1"},
-		Spec:       v1.FunctionSpec{Blob: []v1.FunctionBlob{{Alias: "loot", Bucket: "lakehouse", Prefix: "bronze"}}},
+		Spec:       v1.FunctionSpec{Bindings: v1.FunctionBindings{Blob: []v1.FunctionBlob{{Alias: "loot", Bucket: "lakehouse", Prefix: "bronze"}}}},
 	}
 	meta.buckets["evil/lakehouse"] = &v1.Bucket{
 		ObjectMeta: v1.ObjectMeta{Name: "lakehouse", Namespace: "evil", ResourceGroup: "rg1"},

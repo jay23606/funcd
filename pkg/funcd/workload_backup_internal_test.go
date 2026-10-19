@@ -886,8 +886,9 @@ func TestScenarioCatalogCheckpointVerified(t *testing.T) {
 		r.seed(&v1.Bucket{TypeMeta: tmeta(v1.KindBucket), ObjectMeta: ordersMeta("lake-files")})
 		for _, c := range []struct{ name, prefix string }{{"lake", "lake"}, {"lake-two", "lake-two"}} {
 			r.seed(&v1.CatalogService{TypeMeta: tmeta(v1.KindCatalogService), ObjectMeta: ordersMeta(c.name), Spec: v1.CatalogServiceSpec{
-				Blob:    []v1.FunctionBlob{{Alias: "lake", Bucket: "lake-files", Prefix: c.prefix}},
-				Catalog: v1.CatalogRef{Bucket: "lake-files", Prefix: c.prefix}}})
+				Catalog:  v1.CatalogRef{Bucket: "lake-files", Prefix: c.prefix},
+				Bindings: v1.CatalogServiceBindings{Blob: []v1.FunctionBlob{{Alias: "lake", Bucket: "lake-files", Prefix: c.prefix}}},
+			}})
 		}
 		for key, data := range map[string][]byte{
 			root + "lake/_ducklake/catalog.db":     lakeCheckpoint(t, "lake", "f1.parquet"),

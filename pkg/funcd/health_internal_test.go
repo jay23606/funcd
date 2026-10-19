@@ -103,8 +103,10 @@ func todoParts(t *testing.T, p *Platform) {
 	fn := &v1.Function{TypeMeta: v1.TypeMeta{APIVersion: v1.KindFunction.GVK().APIVersion(), Kind: v1.KindFunction}}
 	fn.Name, fn.Namespace, fn.ResourceGroup = "todo-api", "default", "rg1"
 	fn.Spec = v1.FunctionSpec{Runtime: "nodejs22", Handler: "index.handler", Image: "oci-layout://todo-api:1",
-		KV:   []v1.FunctionKV{{Alias: "store", Store: "todo-store", Table: "todos"}},
-		Blob: []v1.FunctionBlob{{Alias: "files", Bucket: "todo-files", Prefix: "attachments"}}}
+		Bindings: v1.FunctionBindings{
+			KV:   []v1.FunctionKV{{Alias: "store", Store: "todo-store", Table: "todos"}},
+			Blob: []v1.FunctionBlob{{Alias: "files", Bucket: "todo-files", Prefix: "attachments"}},
+		}}
 	create(t, p.cfg.store, fn)
 }
 

@@ -43,7 +43,7 @@ func TestMaterializeOwnedFunctionsAndKV(t *testing.T) {
 				Name: "counters-kv", Deletion: v1.DeletionDelete, Tables: []v1.KVTable{{Name: "t", Owner: "ingest"}},
 			}},
 			Steps: []v1.WorkflowStep{
-				{Name: "ingest", Function: &v1.FunctionStep{Image: "oci:ingest-v1", KV: []v1.FunctionKV{{Alias: "c", Store: "counters-kv", Table: "t"}}}},
+				{Name: "ingest", Function: &v1.FunctionStep{Image: "oci:ingest-v1", Bindings: v1.StepBindings{KV: []v1.FunctionKV{{Alias: "c", Store: "counters-kv", Table: "t"}}}}},
 				{Name: "solo", Function: &v1.FunctionStep{Image: "oci:solo-v1", Pooling: &v1.WorkflowPooling{Mode: v1.PoolingIsolated}}},
 			},
 		},
@@ -74,8 +74,8 @@ func TestMaterializeOwnedFunctionsAndKV(t *testing.T) {
 		t.Fatalf("owner ref missing/wrong: %+v", fn.OwnerReferences)
 	}
 	// kv binding patched on after the store exists (the ADR-0073 cycle).
-	if len(fn.Spec.KV) != 1 || fn.Spec.KV[0].Store != "counters-kv" {
-		t.Fatalf("kv binding not patched: %+v", fn.Spec.KV)
+	if len(fn.Spec.Bindings.KV) != 1 || fn.Spec.Bindings.KV[0].Store != "counters-kv" {
+		t.Fatalf("kv binding not patched: %+v", fn.Spec.Bindings.KV)
 	}
 
 	// the isolated step gets no shared worker.
@@ -245,7 +245,7 @@ func TestIssue19_RematerializeKeepsKVStoreStatus(t *testing.T) {
 		Spec: v1.WorkflowSpec{
 			KV: []v1.WorkflowKVStore{{Name: "counters-kv", Tables: []v1.KVTable{{Name: "t", Owner: "ingest"}}}},
 			Steps: []v1.WorkflowStep{
-				{Name: "ingest", Function: &v1.FunctionStep{Image: "oci:ingest-v1", KV: []v1.FunctionKV{{Alias: "c", Store: "counters-kv", Table: "t"}}}},
+				{Name: "ingest", Function: &v1.FunctionStep{Image: "oci:ingest-v1", Bindings: v1.StepBindings{KV: []v1.FunctionKV{{Alias: "c", Store: "counters-kv", Table: "t"}}}}},
 			},
 		},
 	}
@@ -340,7 +340,8 @@ func TestIssue722_GroupMoveRestampsChildren(t *testing.T) {
 		Spec: v1.WorkflowSpec{
 			KV: []v1.WorkflowKVStore{{Name: "keep", Tables: []v1.KVTable{{Name: "t", Owner: "s1"}}}},
 			Steps: []v1.WorkflowStep{{Name: "s1", Function: &v1.FunctionStep{
-				Image: "oci:x", KV: []v1.FunctionKV{{Alias: "c", Store: "keep", Table: "t"}},
+				Image:    "oci:x",
+				Bindings: v1.StepBindings{KV: []v1.FunctionKV{{Alias: "c", Store: "keep", Table: "t"}}},
 			}}},
 		},
 	}
@@ -365,7 +366,7 @@ func TestIssue722_GroupMoveRestampsChildren(t *testing.T) {
 	if g := kv.GetObjectMeta().ResourceGroup; g != "other" {
 		t.Errorf("retain kvstore group = %q, want other (with no controller ref it stays a member of the old group)", g)
 	}
-	if b := fn.(*v1.Function).Spec.KV; len(b) != 1 || b[0].Store != "keep" {
+	if b := fn.(*v1.Function).Spec.Bindings.KV; len(b) != 1 || b[0].Store != "keep" {
 		t.Errorf("kv binding after the move = %+v, want the keep binding", b)
 	}
 }

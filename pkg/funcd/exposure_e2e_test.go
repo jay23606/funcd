@@ -255,7 +255,7 @@ func TestScenario_exposure_catalog(t *testing.T) {
 	t.Parallel()
 	h := startNSHost(t, nil)
 	body := `{"apiVersion":"funcd.io/v1alpha1","kind":"CatalogService","metadata":{"name":"bi","namespace":"default","resourceGroup":"rg1"},` +
-		`"spec":{"catalog":{"bucket":"lakehouse","prefix":"gold"},"blob":[{"alias":"catalog","bucket":"lakehouse","prefix":"gold"}],` +
+		`"spec":{"catalog":{"bucket":"lakehouse","prefix":"gold"},"bindings":{"blob":[{"alias":"catalog","bucket":"lakehouse","prefix":"gold"}]},` +
 		`"ingress":{"enabled":true,"auth":{"mode":"open"}}}}`
 	code, msg := h.post("catalogservices", body)
 	require.Equal(t, http.StatusBadRequest, code, msg)
@@ -269,7 +269,7 @@ func TestScenario_exposure_removed_keys(t *testing.T) {
 	for plural, body := range map[string]string{
 		"sites":           `{"apiVersion":"funcd.io/v1alpha1","kind":"Site",` + meta + `,"spec":{"image":"oci-layout:///x:v1","bucket":{"name":"web"},"prefix":"web","ingress":{"public":true}}}`,
 		"routes":          `{"apiVersion":"funcd.io/v1alpha1","kind":"Route",` + meta + `,"spec":{"rules":[{"path":"/","backend":{"static":{"bucket":"web","public":true}}}]}}`,
-		"catalogservices": `{"apiVersion":"funcd.io/v1alpha1","kind":"CatalogService",` + meta + `,"spec":{"catalog":{"bucket":"lakehouse","prefix":"gold"},"blob":[{"alias":"catalog","bucket":"lakehouse","prefix":"gold"}],"ingress":{"pathPrefix":"/catalog/lake"}}}`,
+		"catalogservices": `{"apiVersion":"funcd.io/v1alpha1","kind":"CatalogService",` + meta + `,"spec":{"catalog":{"bucket":"lakehouse","prefix":"gold"},"bindings":{"blob":[{"alias":"catalog","bucket":"lakehouse","prefix":"gold"}]},"ingress":{"pathPrefix":"/catalog/lake"}}}`,
 	} {
 		code, msg := h.post(plural, body)
 		require.Equal(t, http.StatusUnprocessableEntity, code, "%s: %s", plural, msg)

@@ -28,7 +28,7 @@ func lakeMeta() fakeMeta {
 		css: map[string]*v1.CatalogService{
 			"default/lake": {
 				ObjectMeta: v1.ObjectMeta{Name: "lake", Namespace: "default", ResourceGroup: "rg1"},
-				Spec:       v1.CatalogServiceSpec{Blob: []v1.FunctionBlob{{Alias: "raw", Bucket: "lakehouse", Prefix: "raw"}}},
+				Spec:       v1.CatalogServiceSpec{Bindings: v1.CatalogServiceBindings{Blob: []v1.FunctionBlob{{Alias: "raw", Bucket: "lakehouse", Prefix: "raw"}}}},
 			},
 		},
 		buckets: map[string]*v1.Bucket{
