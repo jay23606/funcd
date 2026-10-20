@@ -11878,5 +11878,35 @@
     "dod_total": 12,
     "report": "docs/reviews/issue-1118-fix-claude-opus-5-5.md",
     "notes": "pass; minor (model): devSettle pending guard untested (mutant survived), closed by TestDevSettleKeepsAConfigReload; minor (model): reload comment past 120 cols; found pre-existing defect fixed in review (reload at every poll for a Function added after start)"
+  },
+  {
+    "date": "2026-10-21",
+    "adr": "0255",
+    "phase": "implementation",
+    "model": "claude-opus-5-5",
+    "verdict": "changes-requested",
+    "blockers": 0,
+    "majors": 1,
+    "minors": 4,
+    "model_attributed": 5,
+    "dod_passed": 5,
+    "dod_total": 7,
+    "report": "docs/reviews/adr-0255-implementation-claude-opus-5-5.md",
+    "notes": "round 1: major (model) live reload refused a symlinked Site root; minors (model) untested early checks, backoff reset, index miss; grace copy + weak dir assert; live check pending (env)"
+  },
+  {
+    "date": "2026-10-21",
+    "adr": "0255",
+    "phase": "implementation",
+    "model": "claude-opus-5-5",
+    "verdict": "pass",
+    "blockers": 0,
+    "majors": 0,
+    "minors": 0,
+    "model_attributed": 0,
+    "dod_passed": 7,
+    "dod_total": 7,
+    "report": "docs/reviews/adr-0255-implementation-claude-opus-5-5.md",
+    "notes": "round 2 (a87a2048): all round-1 findings closed with tests; 4 review mutants killed; live check 53/53"
   }
 ]
