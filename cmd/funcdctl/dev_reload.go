@@ -4,9 +4,11 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -127,7 +129,9 @@ func watchFolder(ctx context.Context, op string, c *sdk.Client, s *devSession, a
 	}
 }
 
-// changed reports whether a file the folder was read from, its listing, or a build changed since it was read.
+// changed reports whether a file the folder was read from, its listing, or a build changed since it was read. The
+// build of a Function or step added after boot is left out: dev runs none (prepare), so it never holds a delivery to
+// compare with.
 func (s *devSession) changed() bool {
 	for path, stamp := range s.folder.stamps {
 		if strings.HasSuffix(path, string(filepath.Separator)) {
@@ -142,11 +146,17 @@ func (s *devSession) changed() bool {
 		}
 	}
 	for _, fn := range s.folder.functions {
+		if !s.started[fn.fn.Name] {
+			continue
+		}
 		if fp, err := fn.build.fingerprint(s.stateDirs); err == nil && fp != s.seen[fn.fn.Name] {
 			return true
 		}
 	}
 	for _, st := range s.folder.steps {
+		if !s.started[st.name] {
+			continue
+		}
 		if fp, err := st.build.fingerprint(s.stateDirs); err == nil &&
 			filepath.Base(s.stepDirs[st.name]) != string(st.name)+"-"+strings.TrimPrefix(fp, "sha256:")[:16] {
 			return true
@@ -155,11 +165,16 @@ func (s *devSession) changed() bool {
 	return false
 }
 
-// reload re-reads the folder when it changed, re-applies it as the boot did and prunes what *applied holds that the
-// folder no longer does. A folder that does not load is reported once and retried on the next change; an apply that
-// lost a race with a status write (Conflict) is retried on the next poll.
+// reload re-reads the folder once it changed and reads the same on two polls in a row (devSettle), re-applies it as
+// the boot did and prunes what *applied holds that the folder no longer does. A folder that does not load is reported
+// once and retried on the next change; an apply that lost a race with a status write (Conflict) is retried on the next
+// poll.
 func (s *devSession) reload(ctx context.Context, op string, c *sdk.Client, applied *[]v1.Object, logger *slog.Logger) error {
-	if !s.file.reloadFile(op, &s.secrets, logger.Warn) && !s.changed() {
+	forced := s.file.reloadFile(op, &s.secrets, logger.Warn)
+	if !forced && !s.settle.pending && !s.changed() {
+		return nil
+	}
+	if !s.settle.ready(s.pollStamp(), true) {
 		return nil
 	}
 	folder, err := loadDevFolder(op, s.folder.dir)
@@ -189,13 +204,55 @@ func (s *devSession) reload(ctx context.Context, op string, c *sdk.Client, appli
 	return nil
 }
 
-// currentStamps re-stamps every file the folder was read from, so a folder that fails to load is reported once.
+// devSettle holds a reload back until dev's inputs stop changing (#1118): a build tool writes its output over time
+// (vite build empties its outDir first), so a change reloads only once the inputs read the same on two polls in a row.
+type devSettle struct {
+	polled  string // the inputs' stamp at the previous poll
+	pending bool   // a change seen at an earlier poll, waiting for the inputs to settle
+}
+
+// ready records stamp, the inputs at this poll, and reports whether the reload runs now: a change was seen, at this
+// poll or an earlier one, and stamp is the previous poll's.
+func (d *devSettle) ready(stamp string, changed bool) bool {
+	same := stamp == d.polled
+	d.polled = stamp
+	d.pending = d.pending || changed
+	if !d.pending || !same {
+		return false
+	}
+	d.pending = false
+	return true
+}
+
+// pollStamp digests the folder's inputs as they are now: the stamps currentStamps takes and each build's fingerprint.
+func (s *devSession) pollStamp() string {
+	sum := sha256.New()
+	stamps := s.currentStamps()
+	for _, path := range slices.Sorted(maps.Keys(stamps)) {
+		_, _ = fmt.Fprintf(sum, "%s\x00%s\n", path, stamps[path])
+	}
+	for _, fn := range s.folder.functions {
+		fp, _ := fn.build.fingerprint(s.stateDirs)
+		_, _ = fmt.Fprintf(sum, "%s\x00%s\n", fn.fn.Name, fp)
+	}
+	for _, st := range s.folder.steps {
+		fp, _ := st.build.fingerprint(s.stateDirs)
+		_, _ = fmt.Fprintf(sum, "%s\x00%s\n", st.name, fp)
+	}
+	return fmt.Sprintf("%x", sum.Sum(nil))
+}
+
+// currentStamps re-stamps every file the folder was read from, and every *.yaml file its listings hold now, so a folder
+// that fails to load is reported once and a file added with an error is read again once it is saved.
 func (s *devSession) currentStamps() map[string]string {
 	out := make(map[string]string, len(s.folder.stamps))
 	for path := range s.folder.stamps {
 		if strings.HasSuffix(path, string(filepath.Separator)) {
 			files, _ := filepath.Glob(filepath.Join(path, "*.yaml"))
 			out[path] = listingStamp(slices.Sorted(slices.Values(files)))
+			for _, f := range files {
+				out[f], _ = fileStamp(f)
+			}
 			continue
 		}
 		out[path], _ = fileStamp(path)
