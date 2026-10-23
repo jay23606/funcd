@@ -771,6 +771,12 @@ components:
                 pattern: ^([0-9]+h([0-9]+m)?([0-9]+s)?([0-9]+ms)?|[0-9]+m([0-9]+s)?([0-9]+ms)?|[0-9]+s([0-9]+ms)?|[0-9]+ms)$
                 patternDescription: "a duration: whole numbers with the units h, m, s and ms, largest unit first (10m, 1h30m, 500ms)"
                 type: string
+              volumes:
+                items:
+                  $ref: "#/components/schemas/VolumeEntry"
+                type:
+                  - array
+                  - "null"
             type: object
           type:
             - array
@@ -1571,6 +1577,11 @@ components:
           minLength: 1
           pattern: ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$
           type: string
+        volume:
+          maxLength: 63
+          minLength: 1
+          pattern: ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$
+          type: string
       required:
         - kind
         - name
@@ -1712,6 +1723,12 @@ components:
           minLength: 1
           pattern: ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$
           type: string
+        volumes:
+          items:
+            type: string
+          type:
+            - array
+            - "null"
       type: object
     BackupSpec:
       additionalProperties: false
@@ -2273,6 +2290,12 @@ components:
           type:
             - array
             - "null"
+        volumeOrphans:
+          items:
+            type: string
+          type:
+            - array
+            - "null"
       required:
         - held
       type: object
@@ -2786,6 +2809,12 @@ components:
           pattern: ^([0-9]+h([0-9]+m)?([0-9]+s)?([0-9]+ms)?|[0-9]+m([0-9]+s)?([0-9]+ms)?|[0-9]+s([0-9]+ms)?|[0-9]+ms)$
           patternDescription: "a duration: whole numbers with the units h, m, s and ms, largest unit first (10m, 1h30m, 500ms)"
           type: string
+        volumes:
+          items:
+            $ref: "#/components/schemas/VolumeEntry"
+          type:
+            - array
+            - "null"
       type: object
     FunctionStatus:
       additionalProperties: false
@@ -3491,6 +3520,13 @@ components:
           type: string
         edgeDefaults:
           $ref: "#/components/schemas/EdgeDefaults"
+        volumeBudget:
+          pattern: ^[0-9]{1,15}((Ki|Mi|Gi|Ti)B?)?$
+          type: string
+        volumeBudgetBytes:
+          format: int64
+          minimum: 0
+          type: integer
       type: object
     NamespaceStatus:
       additionalProperties: false
@@ -3844,6 +3880,11 @@ components:
         kind:
           type: string
         name:
+          maxLength: 63
+          minLength: 1
+          pattern: ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$
+          type: string
+        volume:
           maxLength: 63
           minLength: 1
           pattern: ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$
@@ -4876,6 +4917,39 @@ components:
             - "null"
       required:
         - events
+      type: object
+    VolumeEntry:
+      additionalProperties: false
+      properties:
+        deletion:
+          enum:
+            - retain
+            - delete
+          type: string
+        name:
+          maxLength: 63
+          minLength: 1
+          pattern: ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$
+          type: string
+        ref:
+          maxLength: 63
+          minLength: 1
+          pattern: ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$
+          type: string
+        size:
+          pattern: ^[0-9]{1,15}((Ki|Mi|Gi|Ti)B?)?$
+          type: string
+        sizeBytes:
+          format: int64
+          minimum: 1
+          type: integer
+        type:
+          enum:
+            - emptyDir
+            - local
+          type: string
+      required:
+        - type
       type: object
     WorkerNode:
       additionalProperties: false
@@ -10739,6 +10813,45 @@ paths:
           description: Error
       tags:
         - SQLDatabase
+  /apis/funcd.io/v1alpha1/namespaces/{namespace}/volumes/{function}/{name}:
+    delete:
+      operationId: deleteVolume
+      parameters:
+        - in: path
+          name: namespace
+          required: true
+          schema:
+            maxLength: 63
+            minLength: 1
+            pattern: ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$
+            type: string
+        - in: path
+          name: function
+          required: true
+          schema:
+            maxLength: 63
+            minLength: 1
+            pattern: ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$
+            type: string
+        - in: path
+          name: name
+          required: true
+          schema:
+            maxLength: 63
+            minLength: 1
+            pattern: ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$
+            type: string
+      responses:
+        "204":
+          description: No Content
+        default:
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/FaultError"
+          description: Error
+      tags:
+        - Function
   /apis/funcd.io/v1alpha1/namespaces/{namespace}/workflowruns:
     get:
       operationId: listWorkflowRuns

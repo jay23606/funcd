@@ -61,10 +61,11 @@ func TestDevConfigDecodeIsStrict(t *testing.T) {
 		"empty":            {file: ""},
 		"empty dev":        {file: "dev:\n"},
 		"dev only":         {file: "dev:\n  persist: true\n  gport: 3005\n  env:\n    K: v\n"},
-		"nested platform":  {file: "dev:\n  platform:\n    runtime:\n      handOutSettle: 100ms\n    eventing:\n      blobPollInterval: 2s\n    funclog:\n      segmentMaxAge: 3s\n"},
+		"nested platform":  {file: "dev:\n  platform:\n    runtime:\n      handOutSettle: 100ms\n    eventing:\n      blobPollInterval: 2s\n    funclog:\n      segmentMaxAge: 3s\n    volumes:\n      measureInterval: 5s\n"},
+		"bad measure":      {file: "dev:\n  platform:\n    volumes:\n      measureInterval: 0s\n", wantErr: `dev.platform.volumes.measureInterval "0s" is not a positive duration`},
 		"other root key":   {file: "dev: {}\nserver: x\n", wantErr: "funcdctl.config.yaml: unknown key server"},
 		"unknown dev key":  {file: "dev:\n  port: 1\n", wantErr: "funcdctl.config.yaml: unknown key dev.port"},
-		"other platform":   {file: "dev:\n  platform:\n    runtime:\n      bootTimeout: 1s\n", wantErr: "platform takes runtime.handOutSettle, eventing.blobPollInterval and funclog.segmentMaxAge, not runtime.bootTimeout"},
+		"other platform":   {file: "dev:\n  platform:\n    runtime:\n      bootTimeout: 1s\n", wantErr: "platform takes runtime.handOutSettle, eventing.blobPollInterval, funclog.segmentMaxAge and volumes.measureInterval, not runtime.bootTimeout"},
 		"platform section": {file: "dev:\n  platform:\n    auth:\n      mode: open\n", wantErr: "not auth"},
 		"bad duration":     {file: "dev:\n  platform:\n    funclog:\n      segmentMaxAge: soon\n", wantErr: `dev.platform.funclog.segmentMaxAge "soon" is not a positive duration`},
 		"wrong type":       {file: "dev:\n  gport: many\n", wantErr: "funcdctl.config.yaml: dev:"},
@@ -174,7 +175,7 @@ func TestScenarioDevConfigAbsent(t *testing.T) {
 	require.Nil(t, st)
 	require.Equal(t, start, dir)
 	require.Equal(t, 7, cfg.gport, "the flags stand")
-	require.Equal(t, devPace{handOutSettle: 250 * time.Millisecond, blobPollInterval: time.Second, segmentMaxAge: time.Second}, cfg.pace)
+	require.Equal(t, devPace{handOutSettle: 250 * time.Millisecond, blobPollInterval: time.Second, segmentMaxAge: time.Second, volumeMeasure: 30 * time.Second}, cfg.pace)
 
 	requireNode(t)
 	writeProject(t, start, nodeFunction("api", "", "export function handle() { return { ok: true }; }\n"))
