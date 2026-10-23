@@ -1665,6 +1665,11 @@ func (p *Platform) Run(ctx context.Context) error {
 		// reclaims wait for the first start after the release; `funcdctl hold status` lists that data.
 		p.logger.WarnContext(ctx, "platform held: no timer, blob source, Sensor, run, App rollout, retention sweep or "+
 			"reclaim acts until `funcdctl hold release`", "reason", m.Reason, "since", m.Since)
+		// held, it reclaims nothing: it books the stored volumes and keeps the last run's emptyDirs, which go once
+		// the hold lifts (#1204)
+		if err := p.fnReconciler.ReclaimVolumes(ctx); err != nil && ctx.Err() == nil {
+			p.logger.WarnContext(ctx, "booking of Function volumes incomplete", "error", err)
+		}
 	} else {
 		// Issue #708 (ADR-0170 "also across a crash"): reclaim the data of each KVStore deleted before its reconcile
 		// ran, before the controller or the control plane can create a store of the same name.
@@ -2426,7 +2431,7 @@ func (p *Platform) registerWorkloadBackups(ctrl *controller.Controller, secrets 
 		d.Hold = c.hold
 	}
 	if p.volumes != nil { // ADR-0262 Decision 11: a Function's local volume is a workload backup member
-		vl := volumeLoader{p.volumes}
+		vl := volumeLoader{m: p.volumes, lost: p.fnReconciler.VolumeLost, stop: p.fnReconciler.StopWorkers}
 		d.Sources.Volume, d.Volumes = vl.Source, vl
 	}
 	rs, err := backupsvc.New(d)
@@ -2667,6 +2672,33 @@ func (p *Platform) openVolumes() error {
 		}
 		return obj.GetObjectMeta().UID, true, nil
 	}
+	// a stored Function declares the volume, or a stored App's part the App has not written that way yet (#1208)
+	o.Declared = func(ctx context.Context, id volume.ID) (bool, error) {
+		const op = "funcd.volumeDeclared"
+		declares := func(obj v1.Object) bool {
+			f, _ := obj.(*v1.Function)
+			return f != nil && f.Name == id.Function && slices.ContainsFunc(f.Spec.Volumes, func(v v1.VolumeEntry) bool {
+				return v.Type == v1.VolumeLocal && v.VolumeName() == id.Name
+			})
+		}
+		obj, err := c.store.Get(ctx, v1.KindFunction.GVK(), id.Namespace, id.Function)
+		switch {
+		case err == nil && declares(obj):
+			return true, nil
+		case err != nil && fault.KindOf(err) != fault.NotFound:
+			return false, fault.Wrapf(err, fault.KindOf(err), op, "get function %s/%s", id.Namespace, id.Function)
+		}
+		apps, err := c.store.List(ctx, v1.KindApp.GVK(), store.ListOptions{Namespace: id.Namespace})
+		if err != nil {
+			return false, fault.Wrapf(err, fault.KindOf(err), op, "list apps in %q", id.Namespace)
+		}
+		for _, item := range apps.Items {
+			if a, ok := item.(*v1.App); ok && slices.ContainsFunc(a.Parts(), declares) {
+				return true, nil
+			}
+		}
+		return false, nil
+	}
 	m, err := volume.New(o)
 	if err != nil {
 		return err
@@ -2689,8 +2721,17 @@ func (b volumeBooker) Book(ctx context.Context, ns v1.NamespaceName, fn, name v1
 	return b.m.Book(ctx, volume.ID{Namespace: ns, Function: fn, Name: name}, sizeBytes)
 }
 
-// volumeLoader adapts the volume manager to the workload backups (ADR-0262 Decision 11).
-type volumeLoader struct{ m volume.Manager }
+func (b volumeBooker) Fits(ctx context.Context, ns v1.NamespaceName, fn, name v1.ObjectName, sizeBytes int64) error {
+	return b.m.Fits(ctx, volume.ID{Namespace: ns, Function: fn, Name: name}, sizeBytes)
+}
+
+// volumeLoader adapts the volume manager to the workload backups (ADR-0262 Decision 11), and the Function reconciler's
+// DataMissing and worker stop to a Restore's load (#1206).
+type volumeLoader struct {
+	m    volume.Manager
+	lost func(ctx context.Context, ns v1.NamespaceName, fn, name v1.ObjectName) (bool, error)
+	stop func(ctx context.Context, ns v1.NamespaceName, fn v1.ObjectName) (func(), error)
+}
 
 func vid(ns v1.NamespaceName, fn, name v1.ObjectName) volume.ID {
 	return volume.ID{Namespace: ns, Function: fn, Name: name}
@@ -2710,6 +2751,14 @@ func (l volumeLoader) IsEmpty(ctx context.Context, ns v1.NamespaceName, fn, name
 
 func (l volumeLoader) Clear(ctx context.Context, ns v1.NamespaceName, fn, name v1.ObjectName) error {
 	return l.m.Clear(ctx, vid(ns, fn, name))
+}
+
+func (l volumeLoader) Lost(ctx context.Context, ns v1.NamespaceName, fn, name v1.ObjectName) (bool, error) {
+	return l.lost(ctx, ns, fn, name)
+}
+
+func (l volumeLoader) StopWorkers(ctx context.Context, ns v1.NamespaceName, fn v1.ObjectName) (func(), error) {
+	return l.stop(ctx, ns, fn)
 }
 
 // volumeDeleter is the volume route's deleter: nil (no route) while volumes are off.

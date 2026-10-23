@@ -1,6 +1,7 @@
 package function
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -241,4 +242,97 @@ func TestDeleteVolume(t *testing.T) {
 	infos, err := r.volumes.List(t.Context())
 	require.NoError(t, err)
 	require.Empty(t, infos)
+}
+
+// TestIssue1200_AddedVolumeIsNotDataMissing: a local volume a spec update adds starts empty by design. Neither the same
+// process's next pass nor a restarted daemon's first pass over a generation no pass has seen takes it for lost data; a
+// volume of the generation the stored Ready describes, gone at the first pass, still is (#1200).
+func TestIssue1200_AddedVolumeIsNotDataMissing(t *testing.T) {
+	t.Parallel()
+	ready := func(fn *v1.Function, generation, observed int64) *v1.Function {
+		fn.Generation, fn.Status.ObservedGeneration = generation, observed
+		fn.Status.Conditions.Set(v1.Condition{Type: condReady, Status: v1.ConditionTrue})
+		return fn
+	}
+	pass := func(t *testing.T, r *Reconciler, fn *v1.Function) (v1.Condition, bool) {
+		t.Helper()
+		_, err := r.ensureVolumes(t.Context(), fn)
+		require.NoError(t, err)
+		return fn.Status.Conditions.Get(condDataMissing)
+	}
+	t.Run("added in this process", func(t *testing.T) {
+		r := newShimReconciler(t, nil)
+		withVolumes(t, r)
+		fn := ready(volumeFn("cart"), 1, 1)
+		pass(t, r, fn)
+		fn.Spec.Volumes, fn.Generation = []v1.VolumeEntry{stateVolume()}, 2
+		_, missing := pass(t, r, fn)
+		require.False(t, missing, "a volume the spec adds is not lost data")
+	})
+	t.Run("added before a restart", func(t *testing.T) {
+		r := newShimReconciler(t, nil)
+		withVolumes(t, r)
+		_, missing := pass(t, r, ready(volumeFn("cart", stateVolume()), 2, 1)) // the update's pass did not run before the restart
+		require.False(t, missing, "the stored Ready describes a generation without this volume")
+	})
+	t.Run("lost", func(t *testing.T) {
+		r := newShimReconciler(t, nil)
+		withVolumes(t, r)
+		c, _ := pass(t, r, ready(volumeFn("cart", stateVolume()), 2, 2))
+		require.Equal(t, v1.ConditionTrue, c.Status, "a volume of the generation the stored Ready describes is lost")
+	})
+}
+
+// TestIssue1203_DamagedMetaIsNotDataMissing: a volume whose leaf holds its data while its meta was left damaged by a
+// crash is not lost: the manager opens, and the first pass sets no DataMissing (#1203).
+func TestIssue1203_DamagedMetaIsNotDataMissing(t *testing.T) {
+	t.Parallel()
+	r := newShimReconciler(t, nil)
+	root := t.TempDir()
+	before, err := volume.New(volume.Options{Root: root})
+	require.NoError(t, err)
+	fn := volumeFn("cart", stateVolume())
+	_, err = before.Reserve(t.Context(), localID(fn, "state"), fn.UID, 1<<20, v1.DeletionRetain)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(root, "shop", "cart", "state.meta"), nil, 0o600))
+	m, err := volume.New(volume.Options{Root: root, Holder: r.FunctionUID})
+	require.NoError(t, err, "a damaged meta stops the volume manager from opening")
+	r.volumes, r.volumesDurable = m, true
+	fn.Status.Conditions.Set(v1.Condition{Type: condReady, Status: v1.ConditionTrue})
+	require.NoError(t, r.dataMissing(t.Context(), fn))
+	_, missing := fn.Status.Conditions.Get(condDataMissing)
+	require.False(t, missing, "the leaf holds the data")
+}
+
+// stealing books another volume right after each Release, as a Function waiting for capacity can on its next pass.
+type stealing struct {
+	volume.Manager
+	steal func()
+}
+
+func (s *stealing) Release(ctx context.Context, id volume.ID) error {
+	err := s.Manager.Release(ctx, id)
+	if s.steal != nil {
+		s.steal()
+	}
+	return err
+}
+
+// TestIssue1207_ReplacedWorkerKeepsItsEmptyDirSpace: the worker that replaces another of the same replica gets the
+// space its predecessor's emptyDir held; a volume waiting for capacity cannot take it in between (#1207).
+func TestIssue1207_ReplacedWorkerKeepsItsEmptyDirSpace(t *testing.T) {
+	t.Parallel()
+	r := newShimReconciler(t, nil)
+	inner, err := volume.New(volume.Options{Root: t.TempDir(), CapacityBytes: 2 << 20, Holder: r.FunctionUID})
+	require.NoError(t, err)
+	waiting := volume.ID{Namespace: "shop", Function: "big", Name: "state"}
+	s := &stealing{Manager: inner}
+	r.volumes, r.volumesDurable = s, true
+	fn := volumeFn("thumbs", cacheVolume()) // a 1 MiB emptyDir
+	_ = mustWorkerSpec(t, r, fn, "/art/app.mjs", envresolve.Resolved{}, nil)
+	require.ErrorIs(t, inner.Book(t.Context(), waiting, 2<<20), volume.ErrCapacity, "the capacity holds no 2 MiB beside the worker")
+	s.steal = func() { _ = inner.Book(context.Background(), waiting, 2<<20) }
+	_, err = r.workerSpec(t.Context(), fn, "", 0, "/art/app.mjs", envresolve.Resolved{}, nil)
+	require.NoError(t, err, "the replacement worker gets its emptyDir")
+	require.ErrorIs(t, inner.Book(t.Context(), waiting, 2<<20), volume.ErrCapacity, "the waiting volume took no space of the replaced worker")
 }

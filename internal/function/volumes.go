@@ -10,6 +10,7 @@ import (
 	"path"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/pyvvo/funcd/api/fault"
@@ -45,6 +46,7 @@ func localID(fn *v1.Function, name v1.ObjectName) volume.ID {
 // stops fn.
 func (r *Reconciler) ensureVolumes(ctx context.Context, fn *v1.Function) (*gateFailure, error) {
 	if len(fn.Spec.Volumes) == 0 {
+		r.markVolumesSeen(fn) // a volume a later generation adds is new, not lost (#1200)
 		return nil, nil
 	}
 	if r.volumes == nil {
@@ -134,9 +136,9 @@ func (r *Reconciler) dropVolume(ctx context.Context, in volume.Info) error {
 	return r.volumes.Adopt(ctx, in.ID, "")
 }
 
-// workerVolumes reserves a new emptyDir of each emptyDir volume for the worker replica of fn is about to create,
-// releasing the ones the worker it replaces held, and returns every volume's mount and env value (ADR-0262 Decisions 2
-// and 3). A local volume is reserved again, idempotently, for its path.
+// workerVolumes reserves a new emptyDir of each emptyDir volume for the worker replica of fn is about to create, each
+// taking over the space of the one the worker it replaces held (#1207), and returns every volume's mount and env value
+// (ADR-0262 Decisions 2 and 3). A local volume is reserved again, idempotently, for its path.
 func (r *Reconciler) workerVolumes(ctx context.Context, fn *v1.Function, id runtime.InstanceID) ([]runtime.Mount, map[string]string, error) {
 	if len(fn.Spec.Volumes) == 0 {
 		return nil, nil, nil
@@ -144,11 +146,13 @@ func (r *Reconciler) workerVolumes(ctx context.Context, fn *v1.Function, id runt
 	if r.volumes == nil {
 		return nil, nil, fault.Invalidf("function.workerVolumes", "spec.volumes: volumes are off on this daemon")
 	}
-	if err := r.releaseEmptyDirs(ctx, id); err != nil {
-		return nil, nil, err
-	}
+	r.volMu.Lock()
+	old := r.emptyDirs[id]
+	delete(r.emptyDirs, id)
+	r.volMu.Unlock()
 	token, err := workerToken()
 	if err != nil {
+		r.dropEmptyDirs(ctx, old)
 		return nil, nil, err
 	}
 	var mounts []runtime.Mount
@@ -159,7 +163,12 @@ func (r *Reconciler) workerVolumes(ctx context.Context, fn *v1.Function, id runt
 		var host string
 		if v.Type == v1.VolumeEmptyDir {
 			vid.Worker = token
-			host, err = r.volumes.Reserve(ctx, vid, "", v.Bytes(), "")
+			if i := slices.IndexFunc(old, func(o volume.ID) bool { return o.Name == vid.Name }); i >= 0 {
+				host, err = r.volumes.Renew(ctx, old[i], vid, v.Bytes())
+				old = slices.Delete(old, i, i+1)
+			} else {
+				host, err = r.volumes.Reserve(ctx, vid, "", v.Bytes(), "")
+			}
 			if err == nil {
 				empty = append(empty, vid)
 			}
@@ -167,7 +176,7 @@ func (r *Reconciler) workerVolumes(ctx context.Context, fn *v1.Function, id runt
 			host, err = r.volumes.Reserve(ctx, vid, fn.UID, v.Bytes(), cmp.Or(v.Deletion, v1.DeletionRetain))
 		}
 		if err != nil {
-			r.dropEmptyDirs(ctx, empty)
+			r.dropEmptyDirs(ctx, append(empty, old...))
 			return nil, nil, err
 		}
 		if r.endpointMode == EndpointNetnsFixedPort {
@@ -178,6 +187,7 @@ func (r *Reconciler) workerVolumes(ctx context.Context, fn *v1.Function, id runt
 			env[v1.VolumeEnv(v.VolumeName())] = host
 		}
 	}
+	r.dropEmptyDirs(ctx, old) // the emptyDirs of volumes the spec no longer declares
 	if len(empty) > 0 {
 		r.volMu.Lock()
 		r.emptyDirs[id] = empty
@@ -216,11 +226,45 @@ func (r *Reconciler) dropEmptyDirs(ctx context.Context, ids []volume.ID) {
 	}
 }
 
-// sweepEmptyDirs releases the emptyDirs of fn's workers that ended or are gone: an ended worker is replaced, never
-// started again, so its emptyDir is never read again (ADR-0262 Decision 1).
-func (r *Reconciler) sweepEmptyDirs(ctx context.Context, ns v1.NamespaceName, name v1.ObjectName, insts []runtime.Instance) error {
+// keepSlots records the replica slots indexes of revision rev as ones fn's pass creates again or waits to: the pass's
+// sweep leaves their emptyDirs to the workers that replace them (#1207).
+func (r *Reconciler) keepSlots(fn *v1.Function, rev v1.ObjectName, indexes []int) {
+	key := fnKey{fn.Namespace, fn.Name}
+	r.volMu.Lock()
+	defer r.volMu.Unlock()
+	if r.passSlots[key] == nil {
+		r.passSlots[key] = map[runtime.InstanceID]bool{}
+	}
+	for _, i := range indexes {
+		r.passSlots[key][runtime.NewInstanceID(fn.Namespace, fn.Name, rev, i)] = true
+	}
+}
+
+// sweepEmptyDirs releases, at the end of a pass that converged fn's revisions, the emptyDirs of fn's workers that ended
+// or are gone: an ended worker is replaced, never started again, so its emptyDir is never read again (ADR-0262 Decision
+// 1). It sweeps once every revision's step kept its slots, so a step never releases the emptyDir of a slot another
+// revision's step creates again in the same pass; that worker takes the space over (#1207).
+func (r *Reconciler) sweepEmptyDirs(ctx context.Context, fn *v1.Function) error {
 	if r.volumes == nil {
 		return nil
+	}
+	key, prefix := fnKey{fn.Namespace, fn.Name}, string(fn.Namespace)+"/"+string(fn.Name)+"/"
+	r.volMu.Lock()
+	kept, converged := r.passSlots[key]
+	delete(r.passSlots, key)
+	var ended []runtime.InstanceID
+	for id := range r.emptyDirs {
+		if strings.HasPrefix(string(id), prefix) && !kept[id] {
+			ended = append(ended, id)
+		}
+	}
+	r.volMu.Unlock()
+	if !converged || len(ended) == 0 {
+		return nil
+	}
+	insts, err := r.namedInstances(ctx, fn.Namespace, fn.Name)
+	if err != nil {
+		return err
 	}
 	live := make(map[runtime.InstanceID]bool, len(insts))
 	for _, in := range insts {
@@ -228,14 +272,12 @@ func (r *Reconciler) sweepEmptyDirs(ctx context.Context, ns v1.NamespaceName, na
 			live[in.ID] = true
 		}
 	}
-	r.volMu.Lock()
 	var gone []runtime.InstanceID
-	for id := range r.emptyDirs {
-		if strings.HasPrefix(string(id), string(ns)+"/"+string(name)+"/") && !live[id] {
+	for _, id := range ended {
+		if !live[id] {
 			gone = append(gone, id)
 		}
 	}
-	r.volMu.Unlock()
 	for _, id := range gone {
 		if err := r.releaseEmptyDirs(ctx, id); err != nil {
 			return err
@@ -267,6 +309,7 @@ func (r *Reconciler) volumesGone(ctx context.Context, ns v1.NamespaceName, name 
 			delete(r.emptyDirs, id)
 		}
 	}
+	delete(r.passSlots, fnKey{ns, name})
 	r.volMu.Unlock()
 	return nil
 }
@@ -275,7 +318,8 @@ func (r *Reconciler) platformHeld() bool { return r.hold != nil && r.hold.Held()
 
 // ReclaimVolumes runs at boot before the controller (ADR-0262 Decision 8): no worker survives a restart, so every
 // emptyDir left goes, and the local volumes of Functions no longer stored, or stored under another UID, follow their
-// deletion policy. A no-op while the platform is held, whose hold status lists them (VolumeOrphans).
+// deletion policy. While the platform is held it reclaims nothing: hold status lists the local volumes
+// (VolumeOrphans), and the emptyDirs go once the hold lifts (releaseHeldLeftovers, #1204).
 func (r *Reconciler) ReclaimVolumes(ctx context.Context) error {
 	if r.volumes == nil {
 		return nil
@@ -283,12 +327,19 @@ func (r *Reconciler) ReclaimVolumes(ctx context.Context) error {
 	if err := r.bookStoredVolumes(ctx); err != nil {
 		return err
 	}
-	if r.platformHeld() {
-		return nil
-	}
 	infos, err := r.volumes.List(ctx)
 	if err != nil {
 		return err
+	}
+	if r.platformHeld() {
+		r.volMu.Lock()
+		for _, in := range infos {
+			if in.ID.Worker != "" {
+				r.heldLeftovers = append(r.heldLeftovers, in.ID)
+			}
+		}
+		r.volMu.Unlock()
+		return nil
 	}
 	for _, in := range infos {
 		if in.ID.Worker != "" {
@@ -311,6 +362,23 @@ func (r *Reconciler) ReclaimVolumes(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// releaseHeldLeftovers releases, once the hold lifts, the emptyDirs a held boot kept: their workers ended with the last
+// run, and an emptyDir is never restore evidence, so they hold no capacity until the next start (#1204).
+func (r *Reconciler) releaseHeldLeftovers(ctx context.Context) {
+	if r.platformHeld() {
+		return
+	}
+	r.volMu.Lock()
+	ids := r.heldLeftovers
+	r.heldLeftovers = nil
+	r.volMu.Unlock()
+	for _, id := range ids {
+		if err := r.volumes.Release(ctx, id); err != nil {
+			r.logger.WarnContext(ctx, "could not release an emptyDir the held boot kept", "volume", id.String(), "err", err)
+		}
+	}
 }
 
 // holds reports whether the stored Function a local volume's path names holds it.
@@ -357,9 +425,100 @@ func (r *Reconciler) VolumeOrphans(ctx context.Context) ([]v1.ObjectRef, error) 
 	return out, nil
 }
 
+// StopWorkers stops every worker of Function ns/name and keeps its passes from creating or starting one until release
+// is called: a Restore loads the Function's volume while none runs, so no worker writes there during the load or
+// keeps a file the load replaced (ADR-0262 Decisions 11 and 12, #1206). A pass already creating workers ends first,
+// and those are stopped too.
+func (r *Reconciler) StopWorkers(ctx context.Context, ns v1.NamespaceName, name v1.ObjectName) (release func(), err error) {
+	key := fnKey{ns, name}
+	r.volMu.Lock()
+	r.restoring[key]++
+	for r.launching[key] > 0 {
+		r.launched.Wait()
+	}
+	r.volMu.Unlock()
+	release = sync.OnceFunc(func() {
+		r.volMu.Lock()
+		if r.restoring[key]--; r.restoring[key] == 0 {
+			delete(r.restoring, key)
+		}
+		r.volMu.Unlock()
+	})
+	if err := r.retireWorkers(ctx, ns, name); err != nil {
+		release()
+		return nil, err
+	}
+	return release, nil
+}
+
+// beginLaunch reports whether fn's pass may create or start workers, which StopWorkers forbids; a true answer is paired
+// with endLaunch.
+func (r *Reconciler) beginLaunch(fn *v1.Function) bool {
+	key := fnKey{fn.Namespace, fn.Name}
+	r.volMu.Lock()
+	defer r.volMu.Unlock()
+	if r.restoring[key] > 0 {
+		return false
+	}
+	r.launching[key]++
+	return true
+}
+
+func (r *Reconciler) endLaunch(fn *v1.Function) {
+	key := fnKey{fn.Namespace, fn.Name}
+	r.volMu.Lock()
+	if r.launching[key]--; r.launching[key] == 0 {
+		delete(r.launching, key)
+	}
+	r.volMu.Unlock()
+	r.launched.Broadcast()
+}
+
+// retireWorkers retires every worker of Function ns/name that has not ended.
+func (r *Reconciler) retireWorkers(ctx context.Context, ns v1.NamespaceName, name v1.ObjectName) error {
+	insts, err := r.namedInstances(ctx, ns, name)
+	if err != nil {
+		return err
+	}
+	for _, in := range insts {
+		if in.State.Terminal() {
+			continue
+		}
+		if err := r.retire(ctx, in); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// VolumeLost reports whether the stored Function's DataMissing names its local volume name as lost: what the volume
+// holds dates from after the loss, so a Restore into it replaces that (ADR-0262 Decision 12, #1206).
+func (r *Reconciler) VolumeLost(ctx context.Context, ns v1.NamespaceName, fn, name v1.ObjectName) (bool, error) {
+	obj, err := r.store.Get(ctx, v1.KindFunction.GVK(), ns, fn)
+	if fault.KindOf(err) == fault.NotFound {
+		return false, nil
+	}
+	if err != nil {
+		return false, fault.Wrapf(err, fault.KindOf(err), "function.VolumeLost", "get function %s/%s", ns, fn)
+	}
+	f, _ := obj.(*v1.Function)
+	if f == nil {
+		return false, nil
+	}
+	c, ok := f.Status.Conditions.Get(condDataMissing)
+	return ok && c.Status == v1.ConditionTrue && slices.Contains(lostVolumes(c.Message), string(name)), nil
+}
+
+// markVolumesSeen records this process's first pass over fn, the only pass that may find a lost volume.
+func (r *Reconciler) markVolumesSeen(fn *v1.Function) {
+	r.volMu.Lock()
+	r.volumesSeen[fnKey{fn.Namespace, fn.Name}] = true
+	r.volMu.Unlock()
+}
+
 // dataMissing sets DataMissing on fn (ADR-0262 Decision 12, as ADR-0234 Decision 6): on this process's first pass,
-// with durable volumes, a Function whose stored Ready is True and whose local volume has no leaf lost its data; a
-// Succeeded Restore into that volume since then clears it.
+// with durable volumes, a Function whose stored Ready is True for its current generation and whose local volume has no
+// leaf lost its data; a Succeeded Restore into that volume since then clears it.
 func (r *Reconciler) dataMissing(ctx context.Context, fn *v1.Function) error {
 	key := fnKey{fn.Namespace, fn.Name}
 	r.volMu.Lock()
@@ -388,27 +547,28 @@ func (r *Reconciler) dataMissing(ctx context.Context, fn *v1.Function) error {
 	if !first {
 		return nil
 	}
-	r.volMu.Lock()
-	r.volumesSeen[key] = true
-	r.volMu.Unlock()
+	r.markVolumesSeen(fn)
 	ready, ok := fn.Status.Conditions.Get(condReady)
-	if !r.volumesDurable || !ok || ready.Status != v1.ConditionTrue || !fn.Spec.HasLocalVolume() {
+	// The stored Ready vouches only for the volumes its pass reserved: those of the current generation when no pass
+	// was left to run on an update (#1200).
+	if !r.volumesDurable || !ok || ready.Status != v1.ConditionTrue || fn.Status.ObservedGeneration != fn.Generation || !fn.Spec.HasLocalVolume() {
 		return nil
-	}
-	infos, err := r.volumes.List(ctx)
-	if err != nil {
-		return err
 	}
 	var gone []string
 	for _, v := range fn.Spec.Volumes {
 		if v.Type != v1.VolumeLocal {
 			continue
 		}
-		id := localID(fn, v.VolumeName())
-		if !slices.ContainsFunc(infos, func(in volume.Info) bool { return in.ID == id }) {
-			gone = append(gone, string(v.VolumeName()))
-			r.logger.WarnContext(ctx, "function volume lost its data", "namespace", fn.Namespace, "function", fn.Name, "volume", v.VolumeName())
+		// the leaf holds the data, not the meta beside it: a meta a crash damaged is no loss (#1203)
+		_, err := r.volumes.Empty(ctx, localID(fn, v.VolumeName()))
+		if fault.KindOf(err) != fault.NotFound {
+			if err != nil {
+				return err
+			}
+			continue
 		}
+		gone = append(gone, string(v.VolumeName()))
+		r.logger.WarnContext(ctx, "function volume lost its data", "namespace", fn.Namespace, "function", fn.Name, "volume", v.VolumeName())
 	}
 	if len(gone) > 0 {
 		r.volMu.Lock()

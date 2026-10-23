@@ -35,6 +35,7 @@ type target struct {
 	bucket  v1.ObjectName
 	volFn   v1.ObjectName // with volume: the Function whose local volume volume is loaded (ADR-0262)
 	volume  v1.ObjectName
+	lost    bool // with volume: its Function's DataMissing names it, so what it holds dates from after the loss (#1206)
 	written bool
 }
 
@@ -216,9 +217,17 @@ func (r *RestoreReconciler) load(ctx context.Context, rs *v1.Restore, b *v1.Back
 		}
 		held = &m
 	}
+	release, err := r.stopVolumeWorkers(ctx, rs.Namespace, targets)
+	if err != nil {
+		return reasonFailed, err
+	}
+	defer release()
 	for _, t := range targets {
 		t.written = true
 		if reason, err := r.fill(ctx, rs.Namespace, t, src, b.Status.Path, unseal); err != nil {
+			// a load that refused its target as not empty wrote nothing there: what the target holds is not the
+			// Restore's to empty
+			t.written = reason != ReasonNotEmpty
 			return reason, errors.Join(err, r.empty(ctx, rs.Namespace, targets))
 		}
 	}
@@ -230,6 +239,31 @@ func (r *RestoreReconciler) load(ctx context.Context, rs *v1.Restore, b *v1.Back
 		}
 	}
 	return "", nil
+}
+
+// stopVolumeWorkers stops the workers of each Function whose volume the load fills until release, so none runs while
+// its volume is emptied and loaded (ADR-0262 Decisions 11 and 12, #1206).
+func (r *RestoreReconciler) stopVolumeWorkers(ctx context.Context, ns v1.NamespaceName, targets []*target) (release func(), err error) {
+	var releases []func()
+	release = func() {
+		for _, f := range releases {
+			f()
+		}
+	}
+	stopped := map[v1.ObjectName]bool{}
+	for _, t := range targets {
+		if t.volume == "" || r.d.Volumes == nil || stopped[t.volFn] {
+			continue
+		}
+		stopped[t.volFn] = true
+		f, err := r.d.Volumes.StopWorkers(ctx, ns, t.volFn)
+		if err != nil {
+			release()
+			return nil, err
+		}
+		releases = append(releases, f)
+	}
+	return release, nil
 }
 
 // plan resolves each member's file in m and its destination; a missing member or destination is MemberNotFound and a
@@ -273,6 +307,9 @@ func (r *RestoreReconciler) plan(ctx context.Context, rs *v1.Restore, m workload
 					err = fault.NotFoundf(op, "function %s declares no local volume %s", dest, mb.Volume)
 				}
 			}
+			if err == nil && r.d.Volumes != nil {
+				t.lost, err = r.d.Volumes.Lost(ctx, ns, dest, mb.Volume)
+			}
 			t.volFn, t.volume = dest, mb.Volume
 		case mb.AsLocation != nil:
 			_, err = r.d.Store.Get(ctx, v1.KindBucket.GVK(), ns, mb.AsLocation.Bucket)
@@ -311,6 +348,9 @@ func (r *RestoreReconciler) isEmpty(ctx context.Context, ns v1.NamespaceName, t 
 		if r.d.Volumes == nil {
 			return false, fault.Unavailablef("backup.Restore", "volumes are off: no volume loads")
 		}
+		if t.lost {
+			return true, nil
+		}
 		return r.d.Volumes.IsEmpty(ctx, ns, t.volFn, t.volume)
 	}
 	if t.sql != "" {
@@ -345,18 +385,7 @@ func (r *RestoreReconciler) isEmpty(ctx context.Context, ns v1.NamespaceName, t 
 // catalog.db.
 func (r *RestoreReconciler) fill(ctx context.Context, ns v1.NamespaceName, t *target, src blob.Bucket, path string, unseal backup.Unseal) (string, error) {
 	if t.volume != "" {
-		// A volume loads only into an empty one, in place too (ADR-0262 Decision 11): it is never emptied first.
-		if r.d.Volumes == nil {
-			return reasonFailed, fault.Unavailablef("backup.Restore", "volumes are off: no volume loads")
-		}
-		err := r.d.Volumes.Load(ctx, ns, t.volFn, t.volume, &recordReader{next: workload.Records(ctx, src, path, t.file.Files[0], unseal)})
-		if fault.KindOf(err) == fault.Conflict {
-			return ReasonNotEmpty, err
-		}
-		if err != nil {
-			return reasonFailed, err
-		}
-		return "", nil
+		return r.fillVolume(ctx, ns, t, src, path, unseal)
 	}
 	if t.sql != "" {
 		if r.d.SQL == nil {
@@ -403,6 +432,27 @@ func (r *RestoreReconciler) fill(ctx context.Context, ns v1.NamespaceName, t *ta
 				return reasonFailed, err
 			}
 		}
+	}
+	return "", nil
+}
+
+// fillVolume loads a Function's local volume: only into an empty one, in place too (ADR-0262 Decision 11), but for a
+// lost one, which is emptied first, since what it holds dates from after the loss (#1206).
+func (r *RestoreReconciler) fillVolume(ctx context.Context, ns v1.NamespaceName, t *target, src blob.Bucket, path string, unseal backup.Unseal) (string, error) {
+	if r.d.Volumes == nil {
+		return reasonFailed, fault.Unavailablef("backup.Restore", "volumes are off: no volume loads")
+	}
+	if t.lost {
+		if err := r.d.Volumes.Clear(ctx, ns, t.volFn, t.volume); err != nil {
+			return reasonFailed, err
+		}
+	}
+	err := r.d.Volumes.Load(ctx, ns, t.volFn, t.volume, &recordReader{next: workload.Records(ctx, src, path, t.file.Files[0], unseal)})
+	if fault.KindOf(err) == fault.Conflict {
+		return ReasonNotEmpty, err
+	}
+	if err != nil {
+		return reasonFailed, err
 	}
 	return "", nil
 }

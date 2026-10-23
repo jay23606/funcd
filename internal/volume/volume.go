@@ -20,6 +20,7 @@ import (
 
 	"github.com/pyvvo/funcd/api/fault"
 	v1 "github.com/pyvvo/funcd/api/types/v1alpha1"
+	"github.com/pyvvo/funcd/internal/platform/hold"
 )
 
 // ID names one volume: a Function's local volume, or with Worker set one worker's emptyDir.
@@ -52,12 +53,17 @@ type Manager interface {
 	// (fault.Conflict) when it does not fit, Invalid when id is booked or stored with another size. Idempotent for
 	// the same id and size.
 	Book(ctx context.Context, id ID, sizeBytes int64) error
+	// Fits answers what Book would and records nothing: the booking of a dry run (ADR-0220, #1205).
+	Fits(ctx context.Context, id ID, sizeBytes int64) error
 	// Reserve creates or checks id's leaf and sets its quota against its booking (booking it first when it has
 	// none); StoreNotOwned when the meta names another UID. deletion is recorded for the delete path.
 	Reserve(ctx context.Context, id ID, owner v1.UID, sizeBytes int64, deletion v1.DeletionPolicy) (hostPath string, err error)
 	// Adopt stamps owner on a retained local volume; "" retains it; Conflict while another live Function holds it.
 	Adopt(ctx context.Context, id ID, owner v1.UID) error
-	Release(ctx context.Context, id ID) error              // removes the leaf and frees its booking
+	Release(ctx context.Context, id ID) error // removes the leaf and frees its booking
+	// Renew releases emptyDir old and reserves emptyDir id of sizeBytes under one lock: the worker that replaces old's
+	// gets its space, which nothing can book in between (#1207).
+	Renew(ctx context.Context, old, id ID, sizeBytes int64) (hostPath string, err error)
 	Retained(ctx context.Context) ([]ID, error)            // local volumes with no owner
 	List(ctx context.Context) ([]Info, error)              // every volume with a leaf, local and emptyDir
 	Tar(ctx context.Context, id ID) (io.ReadCloser, error) // the backup member stream
@@ -79,6 +85,10 @@ type Limiter interface {
 	Limit(dir string, project uint32, sizeBytes int64) error
 	// Enforced reports whether Limit is a kernel limit.
 	Enforced() bool
+	// Free is the bytes the volumes' filesystem can still allocate, and Used those charged to project; the manager
+	// asks them only of a Limiter that enforces.
+	Free() (int64, error)
+	Used(project uint32) (int64, error)
 }
 
 // measureOnly is the Limiter of funcdctl dev (ADR-0262 Decision 10): no limit, a measurement every interval.
@@ -86,6 +96,8 @@ type measureOnly struct{}
 
 func (measureOnly) Limit(string, uint32, int64) error { return nil }
 func (measureOnly) Enforced() bool                    { return false }
+func (measureOnly) Free() (int64, error)              { return 0, nil }
+func (measureOnly) Used(uint32) (int64, error)        { return 0, nil }
 
 // MeasureOnly returns the Limiter that only measures.
 func MeasureOnly() Limiter { return measureOnly{} }
@@ -103,6 +115,9 @@ type Options struct {
 	UID, GID int
 	// BookingTTL drops a booking no Reserve backed (an apply refused after its admission); default 1 minute.
 	BookingTTL time.Duration
+	// Declared reports whether a stored Function declares id's local volume, whose booking BookingTTL never drops: its
+	// pass reserves it, however long an earlier gate holds that pass (#1208). nil ⇒ none is kept.
+	Declared func(ctx context.Context, id ID) (bool, error)
 	// MeasureInterval paces the measurement of an unenforced Limiter; default 30 s.
 	MeasureInterval time.Duration
 	Logger          *slog.Logger
@@ -110,10 +125,15 @@ type Options struct {
 }
 
 type booking struct {
-	size   int64
-	backed bool // a leaf exists for it
-	at     time.Time
+	size    int64
+	backed  bool   // a leaf exists for it
+	project uint32 // its leaf's project id, when backed
+	at      time.Time
 }
+
+// volumeOverhead is what a volume takes outside its quota: its meta file, the temporary one beside it, and the
+// directories above its leaf.
+const volumeOverhead = 16 << 10
 
 type meta struct {
 	Owner     v1.UID            `json:"owner,omitempty"`
@@ -161,7 +181,7 @@ func New(o Options) (Manager, error) {
 		return nil, err
 	}
 	for _, in := range infos {
-		m.bookings[in.ID] = booking{size: in.meta.SizeBytes, backed: true}
+		m.bookings[in.ID] = booking{size: in.meta.SizeBytes, backed: true, project: in.meta.Project}
 		m.next = max(m.next, in.meta.Project+1)
 	}
 	return m, nil
@@ -257,51 +277,69 @@ func (m *manager) readMeta(id ID) (meta, bool, error) {
 	}
 	var md meta
 	if err := json.Unmarshal(b, &md); err != nil {
-		return meta{}, false, fault.Wrapf(err, fault.Internal, "volume.meta", "decode the meta of %s", id)
+		return meta{}, false, fault.Wrapf(err, fault.Invalid, "volume.meta", "decode the meta of %s, which names its owner and size", id)
 	}
 	return md, true, nil
 }
 
+// writeMeta replaces id's meta durably, so a crash leaves the old meta or the new one, never an empty file (#1203).
 func (m *manager) writeMeta(id ID, md meta) error {
 	b, err := json.Marshal(md)
 	if err != nil {
 		return fault.Wrapf(err, fault.Internal, "volume.meta", "encode the meta of %s", id)
 	}
-	tmp := m.metaPath(id) + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o600); err != nil {
-		return fault.Wrapf(err, fault.Internal, "volume.meta", "write the meta of %s", id)
+	path := m.metaPath(id)
+	return hold.WriteFile("volume.meta", filepath.Dir(path), filepath.Base(path), b)
+}
+
+// dropStale removes bookings no Reserve backed within BookingTTL and no stored Function declares (an apply refused
+// after its admission). One a stored Function declares, or that cannot be checked, is kept for another BookingTTL.
+func (m *manager) dropStale(ctx context.Context) {
+	now := m.o.Clock()
+	for id, b := range m.bookings {
+		if b.backed || now.Sub(b.at) <= m.o.BookingTTL {
+			continue
+		}
+		if m.o.Declared != nil {
+			if declared, err := m.o.Declared(ctx, id); err != nil || declared {
+				b.at = now
+				m.bookings[id] = b
+				continue
+			}
+		}
+		delete(m.bookings, id)
 	}
-	if err := os.Rename(tmp, m.metaPath(id)); err != nil {
-		return fault.Wrapf(err, fault.Internal, "volume.meta", "write the meta of %s", id)
+}
+
+// book checks and records a booking, and renews an unbacked one's time; the caller holds m.mu.
+func (m *manager) book(ctx context.Context, op string, id ID, size int64) error {
+	booked, err := m.check(ctx, op, id, size)
+	if err != nil {
+		return err
 	}
+	b := m.bookings[id]
+	switch {
+	case !booked:
+		b = booking{size: size, at: m.o.Clock()}
+	case !b.backed:
+		b.at = m.o.Clock()
+	}
+	m.bookings[id] = b
 	return nil
 }
 
-// dropStale removes bookings no Reserve backed within BookingTTL (an apply refused after its admission).
-func (m *manager) dropStale() {
-	now := m.o.Clock()
-	for id, b := range m.bookings {
-		if !b.backed && now.Sub(b.at) > m.o.BookingTTL {
-			delete(m.bookings, id)
-		}
-	}
-}
-
-// book checks and records a booking; the caller holds m.mu.
-func (m *manager) book(ctx context.Context, op string, id ID, size int64) error {
+// check reports whether id is booked already, or refuses what does not fit; it records nothing. The caller holds
+// m.mu.
+func (m *manager) check(ctx context.Context, op string, id ID, size int64) (booked bool, err error) {
 	if size <= 0 {
-		return fault.Invalidf(op, "volume %s: size %d must be above 0", id, size)
+		return false, fault.Invalidf(op, "volume %s: size %d must be above 0", id, size)
 	}
-	m.dropStale()
+	m.dropStale(ctx)
 	if b, ok := m.bookings[id]; ok {
 		if b.size != size {
-			return fault.Invalidf(op, "volume %s: sizeBytes %d differs from its %d; a volume is not resized", id, size, b.size)
+			return true, fault.Invalidf(op, "volume %s: sizeBytes %d differs from its %d; a volume is not resized", id, size, b.size)
 		}
-		if !b.backed {
-			b.at = m.o.Clock()
-			m.bookings[id] = b
-		}
-		return nil
+		return true, nil
 	}
 	var total, inNS int64
 	for bid, b := range m.bookings {
@@ -311,18 +349,45 @@ func (m *manager) book(ctx context.Context, op string, id ID, size int64) error 
 		}
 	}
 	if c := m.o.CapacityBytes; c > 0 && total+size > c {
-		return fault.Wrapf(ErrCapacity, fault.Conflict, op, "volume %s: %d bytes do not fit, %d of volumes.capacityBytes %d are reserved", id, size, total, c)
+		return false, fault.Wrapf(ErrCapacity, fault.Conflict, op, "volume %s: %d bytes do not fit, %d of volumes.capacityBytes %d are reserved", id, size, total, c)
 	}
 	if m.o.Budget != nil {
 		budget, err := m.o.Budget(ctx, id.Namespace)
 		if err != nil {
-			return err
+			return false, err
 		}
 		if budget > 0 && inNS+size > budget {
-			return fault.Wrapf(ErrBudget, fault.Conflict, op, "volume %s: %d bytes do not fit, %d of namespace %s's volumeBudgetBytes %d are reserved", id, size, inNS, id.Namespace, budget)
+			return false, fault.Wrapf(ErrBudget, fault.Conflict, op, "volume %s: %d bytes do not fit, %d of namespace %s's volumeBudgetBytes %d are reserved", id, size, inNS, id.Namespace, budget)
 		}
 	}
-	m.bookings[id] = booking{size: size, at: m.o.Clock()}
+	return false, m.fitsFree(op, id, size)
+}
+
+// fitsFree refuses a booking the filesystem cannot hold beside what the booked volumes may still write: its metadata
+// takes part of the image, so capacityBytes alone overcommits it (#1201). Each booking's use is read before the free
+// space, so a write between the two reads makes the check stricter, never looser. The caller holds m.mu.
+func (m *manager) fitsFree(op string, id ID, size int64) error {
+	if !m.o.Limiter.Enforced() {
+		return nil
+	}
+	promised := int64(volumeOverhead)
+	for _, b := range m.bookings {
+		var used int64
+		if b.backed {
+			var err error
+			if used, err = m.o.Limiter.Used(b.project); err != nil {
+				return err
+			}
+		}
+		promised += max(b.size-used, 0) + volumeOverhead
+	}
+	free, err := m.o.Limiter.Free()
+	if err != nil {
+		return err
+	}
+	if promised+size > free {
+		return fault.Wrapf(ErrCapacity, fault.Conflict, op, "volume %s: %d bytes do not fit, the volumes' filesystem has %d bytes free and its volumes may still take %d", id, size, free, promised)
+	}
 	return nil
 }
 
@@ -336,6 +401,17 @@ func (m *manager) Book(ctx context.Context, id ID, size int64) error {
 	return m.book(ctx, op, id, size)
 }
 
+func (m *manager) Fits(ctx context.Context, id ID, size int64) error {
+	const op = "volume.Fits"
+	if err := m.validID(op, id); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	_, err := m.check(ctx, op, id, size)
+	return err
+}
+
 func (m *manager) Reserve(ctx context.Context, id ID, owner v1.UID, size int64, deletion v1.DeletionPolicy) (string, error) {
 	const op = "volume.Reserve"
 	if err := m.validID(op, id); err != nil {
@@ -343,6 +419,24 @@ func (m *manager) Reserve(ctx context.Context, id ID, owner v1.UID, size int64, 
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	return m.reserve(ctx, op, id, owner, size, deletion)
+}
+
+func (m *manager) Renew(ctx context.Context, old, id ID, size int64) (string, error) {
+	const op = "volume.Renew"
+	if err := errors.Join(m.validID(op, old), m.validID(op, id)); err != nil {
+		return "", err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if err := m.release(op, old); err != nil {
+		return "", err
+	}
+	return m.reserve(ctx, op, id, "", size, "")
+}
+
+// reserve is Reserve; the caller holds m.mu.
+func (m *manager) reserve(ctx context.Context, op string, id ID, owner v1.UID, size int64, deletion v1.DeletionPolicy) (string, error) {
 	md, found, err := m.readMeta(id)
 	if err != nil {
 		return "", err
@@ -362,22 +456,46 @@ func (m *manager) Reserve(ctx context.Context, id ID, owner v1.UID, size int64, 
 	if err := m.ensureLeaf(op, id, dir); err != nil {
 		return "", err
 	}
+	changed := !found
 	if !found {
-		md = meta{Owner: owner, SizeBytes: size, Deletion: deletion, Project: m.next}
-		m.next++
+		project, err := m.freeProject()
+		if err != nil {
+			return "", err
+		}
+		md = meta{Owner: owner, SizeBytes: size, Deletion: deletion, Project: project}
 	} else if md.Deletion != deletion {
-		md.Deletion = deletion
+		md.Deletion, changed = deletion, true
 	}
 	if err := m.o.Limiter.Limit(dir, md.Project, size); err != nil {
 		return "", err
 	}
-	if err := m.writeMeta(id, md); err != nil {
-		return "", err
+	// a durable write costs two fsyncs, and most passes reserve a volume whose meta stands (#1203)
+	if changed {
+		if err := m.writeMeta(id, md); err != nil {
+			return "", err
+		}
 	}
 	b := m.bookings[id]
-	b.backed = true
+	b.backed, b.project = true, md.Project
 	m.bookings[id] = b
 	return dir, nil
+}
+
+// freeProject takes the next project id no file is charged to: the leaf of a volume whose meta cannot be read keeps its
+// id, which the scan could not count (#1203). The caller holds m.mu.
+func (m *manager) freeProject() (uint32, error) {
+	for m.o.Limiter.Enforced() {
+		used, err := m.o.Limiter.Used(m.next)
+		if err != nil {
+			return 0, err
+		}
+		if used == 0 {
+			break
+		}
+		m.next++
+	}
+	m.next++
+	return m.next - 1, nil
 }
 
 // ensureLeaf creates the leaf and its parents 0700, refuses a symlink or a non-directory, and sets the owner of the
@@ -455,6 +573,11 @@ func (m *manager) Release(_ context.Context, id ID) error {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	return m.release(op, id)
+}
+
+// release is Release; the caller holds m.mu.
+func (m *manager) release(op string, id ID) error {
 	if err := os.RemoveAll(m.leaf(id)); err != nil {
 		return fault.Wrapf(err, fault.Internal, op, "remove volume %s", id)
 	}
@@ -554,7 +677,9 @@ func (m *manager) scan() ([]scanned, error) {
 			for _, id := range ids {
 				md, found, err := m.readMeta(id)
 				if err != nil {
-					return nil, err
+					// one damaged meta leaves its own volume unused, not the others or the daemon's start (#1203)
+					m.o.Logger.Warn("a volume's meta cannot be read: the volume stays unused until it is repaired or removed", "volume", id.String(), "err", err)
+					continue
 				}
 				if found {
 					out = append(out, scanned{ID: id, meta: md})
