@@ -2,6 +2,8 @@
 
 - **Status**: Implemented (2026-10-23), review passed; Reviewing 2026-10-23, the volumes lane green; Accepted 2026-10-23, under the decider's "go ahead until completion" of 2026-10-23; Proposed
   2026-10-23 for a private finding, judged twice: round 1 one Blocker (a second ioctl) and three Majors, round 2 accept
+- **Superseded in part by**: [ADR-0267](0267-a-worker-runs-under-the-default-seccomp-profile.md) (Decision 1's default
+  action allow: the filter's base is containerd's default profile)
 - **Date**: 2026-10-23
 - **Deciders**: green-0-rabbit
 - **Tags**: runtime, containerd, seccomp, volume, quota

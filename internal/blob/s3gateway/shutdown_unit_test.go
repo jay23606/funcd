@@ -36,7 +36,7 @@ func TestIssue583_RunReturnsWhenCloseLandsBeforeServe(t *testing.T) {
 	require.NoError(t, err)
 	// The OnListen hook runs on the serving goroutine just before Serve, so a Close inside it lands in the window.
 	srv.api, err = s3api.New(backend.BackendUnsupported{}, middlewares.RootUserConfig{Access: "root", Secret: "root"},
-		region, &iam{master: master}, nil, nil, nil, nil,
+		region, &iam{derive: Deriver{Master: master}}, nil, nil, nil, nil,
 		s3api.WithOnListen(func() {
 			_ = srv.Close()
 			srv.signalReady()

@@ -105,27 +105,42 @@ func DecodeIdentityAccess(access string) (ns, name string, ok bool) {
 	return parts[0], parts[1], true
 }
 
-// decodeAccess maps an in-platform access key back to its (kind, ns, name) (ADR-0175). ok=false for a
-// non-funcd (external) access key, a malformed one, or a pre-ADR-0175 two-part key.
+// decodeAccess maps an in-platform access key back to its (kind, ns, name) (ADR-0175): a fixed three-part key or a
+// rotating four-part one (ADR-0270). ok=false for a non-funcd (external) access key, a malformed one, or a
+// pre-ADR-0175 two-part key. It checks no window: GetUserAccount, through Deriver.Secret, does.
 func decodeAccess(access string) (kind v1.Kind, ns, name string, ok bool) {
+	kind, ns, name, _, ok = decodeParts(access)
+	return kind, ns, name, ok
+}
+
+// decodeParts splits an in-platform access key into (kind, ns, name) and its window, "" for a three-part key.
+func decodeParts(access string) (kind v1.Kind, ns, name, window string, ok bool) {
 	if !strings.HasPrefix(access, accessKeyPrefix) {
-		return "", "", "", false
+		return "", "", "", "", false
 	}
 	raw, err := accessEncoding.DecodeString(strings.TrimPrefix(access, accessKeyPrefix))
 	if err != nil {
-		return "", "", "", false
+		return "", "", "", "", false
 	}
-	parts := strings.SplitN(string(raw), refSeparator, 3)
-	if len(parts) != 3 || parts[1] == "" || parts[2] == "" {
-		return "", "", "", false
+	parts := strings.Split(string(raw), refSeparator)
+	if len(parts) == 4 {
+		if parts[3] == "" {
+			return "", "", "", "", false
+		}
+		window = parts[3]
+	} else if len(parts) != 3 {
+		return "", "", "", "", false
+	}
+	if parts[1] == "" || parts[2] == "" {
+		return "", "", "", "", false
 	}
 	switch parts[0] {
 	case kindCodeFunction:
-		return v1.KindFunction, parts[1], parts[2], true
+		return v1.KindFunction, parts[1], parts[2], window, true
 	case kindCodeLake:
-		return v1.KindLake, parts[1], parts[2], true
+		return v1.KindLake, parts[1], parts[2], window, true
 	default:
-		return "", "", "", false
+		return "", "", "", "", false
 	}
 }
 
@@ -142,7 +157,7 @@ type ExternalKeys interface {
 // from the ExternalKeys store. SigV4 verification in versitygw passes only for the
 // holder of the matching secret — signs-as-self / cannot-forge-peer.
 type iam struct {
-	master   []byte
+	derive   Deriver
 	external ExternalKeys // may be nil ⇒ no external clients
 }
 
@@ -156,9 +171,8 @@ var _ auth.IAMService = (*iam)(nil)
 // in the backend is the real gate); a decodable access for a missing function still
 // yields a derivable secret the attacker cannot produce.
 func (s *iam) GetUserAccount(access string) (auth.Account, error) {
-	if kind, ns, name, ok := decodeAccess(access); ok {
-		kp := DeriveKeypair(s.master, kind, ns, name)
-		return auth.Account{Access: access, Secret: kp.SecretKey, Role: auth.RoleUser}, nil
+	if _, _, _, secret, ok := s.derive.Secret(access); ok {
+		return auth.Account{Access: access, Secret: secret, Role: auth.RoleUser}, nil
 	}
 	if s.external != nil {
 		if secret, _, ok := s.external.Lookup(access); ok {

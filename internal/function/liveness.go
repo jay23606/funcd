@@ -102,12 +102,13 @@ func (r *Reconciler) forgetLive(ns v1.NamespaceName, name v1.ObjectName) {
 	}
 }
 
-// forgetWorker drops worker id's liveness and read record.
+// forgetWorker drops worker id's liveness and read record, and its key renewal's marks (ADR-0270).
 func (r *Reconciler) forgetWorker(id runtime.InstanceID) {
 	r.liveMu.Lock()
 	delete(r.live, id)
 	r.liveMu.Unlock()
 	r.forgetRead(id)
+	r.endRenewal(id)
 }
 
 // restartHung retires each running, listening replica of revision rev below `below` that is hung on its liveness,

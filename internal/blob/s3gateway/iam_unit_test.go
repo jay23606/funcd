@@ -63,7 +63,7 @@ func TestIAMGetUserAccount(t *testing.T) {
 	t.Parallel()
 	master := []byte("node-master")
 	ext := mapExternal{"EXT": {secret: "s3cr3t", ns: "tenantA"}}
-	im := &iam{master: master, external: ext}
+	im := &iam{derive: Deriver{Master: master}, external: ext}
 
 	kp := DeriveKeypair(master, v1.KindFunction, "default", "fn1")
 	acct, err := im.GetUserAccount(kp.AccessKey)
@@ -85,7 +85,7 @@ func TestIAMGetUserAccount(t *testing.T) {
 func TestIAMResolveAccounts(t *testing.T) {
 	t.Parallel()
 	master := []byte("node-master")
-	im := &iam{master: master, external: mapExternal{"EXT": {secret: "s3cr3t", ns: "tenantA"}}}
+	im := &iam{derive: Deriver{Master: master}, external: mapExternal{"EXT": {secret: "s3cr3t", ns: "tenantA"}}}
 	kp := DeriveKeypair(master, v1.KindFunction, "default", "fn1")
 	missing, err := im.ResolveAccounts([]string{kp.AccessKey, "EXT", "NOPE"})
 	require.NoError(t, err)
@@ -96,7 +96,7 @@ func TestIAMResolveAccounts(t *testing.T) {
 // have no mutable state); ListUserAccounts + Shutdown are inert.
 func TestIAMMutatorsNotSupported(t *testing.T) {
 	t.Parallel()
-	im := &iam{master: []byte("m")}
+	im := &iam{derive: Deriver{Master: []byte("m")}}
 	require.Error(t, im.CreateAccount(auth.Account{Access: "x", Secret: "y"}))
 	require.Error(t, im.UpdateUserAccount("x", auth.MutableProps{}))
 	require.Error(t, im.DeleteUserAccount("x"))

@@ -350,6 +350,13 @@ func (r *Reconciler) engineSpec(db *v1.SQLDatabase) provider.ProviderSpec {
 	if r.d.ChangeFeedURL != nil {
 		env["FUNCD_SQL_CDC_ENDPOINT"] = r.d.ChangeFeedURL(db.Namespace, db.Name)
 	}
+	// The engine reaches only its change feed (ADR-0269). The feed's URL is funcd's own address, so EgressTo fails
+	// only on a bug, and then the fence stays empty.
+	fence, ok := provider.EgressTo(env["FUNCD_SQL_CDC_ENDPOINT"])
+	if !ok {
+		r.log.Warn("the change feed's endpoint is not an address and port: the engine is fenced from it",
+			"database", string(db.Name), "namespace", string(db.Namespace))
+	}
 	return provider.ProviderSpec{
 		Ref:       provider.ProviderRef{Namespace: db.Namespace, Name: db.Name},
 		Image:     r.d.ImageFor(Runtime),
@@ -359,6 +366,8 @@ func (r *Reconciler) engineSpec(db *v1.SQLDatabase) provider.ProviderSpec {
 		Replicas:  1,
 		Resources: res,
 		Storage:   &provider.StorageSpec{Path: dataPath, UID: engineUID, GID: engineUID},
+
+		EgressOnly: fence,
 	}
 }
 

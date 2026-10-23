@@ -44,6 +44,10 @@ func TestConfigDurationBoundsPerKey(t *testing.T) {
 			_, err := processStopGrace(cfg)
 			return err
 		}
+		if key == "s3gateway.keyRotationPeriod" {
+			_, err := s3KeyRotationPeriod(cfg)
+			return err
+		}
 		_, err := pacing(cfg)
 		return err
 	}
@@ -57,6 +61,8 @@ func TestConfigDurationBoundsPerKey(t *testing.T) {
 		require.Equal(t, fault.Invalid, fault.KindOf(err), "%s=%s: %v", key, value, err)
 		require.ErrorContains(t, err, `"`+key+`"`)
 	}
+	ok("s3gateway.keyRotationPeriod", "1h")
+	refused("s3gateway.keyRotationPeriod", "59m")
 	ok("controller.retryBackoffMax", "5ms")
 	refused("controller.retryBackoffMax", "4ms")
 	ok("workflow.defaultRetryBackoff", "0s")
@@ -81,4 +87,26 @@ func TestConfigDurationBoundsPerKey(t *testing.T) {
 	d, err = parseDuration("workflow.retention", "", time.Hour, 0, v1.MaxDuration)
 	require.NoError(t, err)
 	require.Equal(t, time.Hour, d, "empty keeps the default")
+}
+
+// A key renewal must land inside its pair's validity (ADR-0270): with the gateway on, s3gateway.keyRotationPeriod 1h and
+// runtime.drainGrace 5m stop startup, naming the period and the sum it must exceed; the defaults fit 1h, and with the
+// gateway off nothing is checked.
+func TestRenewalFitsTheKeyPeriod(t *testing.T) {
+	root := slog.New(slog.NewTextHandler(io.Discard, nil))
+	build := func(body string) error {
+		cfg := loadPacing(t, "storage:\n  mode: memory\n  dataDir: \""+shortDataDir(t)+"\"\n"+body)
+		_, closeExec, _, _, err := buildOptions(context.Background(), cfg, root, nil)
+		if err == nil {
+			_ = closeExec()
+		}
+		return err
+	}
+	gateway := "s3gateway:\n  enabled: true\n  listenAddr: \"127.0.0.1:0\"\n  keyRotationPeriod: \"1h\"\n"
+	err := build(gateway + "runtime:\n  drainGrace: \"5m\"\n")
+	require.Equal(t, fault.Invalid, fault.KindOf(err), "%v", err)
+	require.ErrorContains(t, err, `config key "s3gateway.keyRotationPeriod"`)
+	require.ErrorContains(t, err, "1h47m20s") // 20 × (10s + 5m + 2 × 1s + 10s)
+	require.NoError(t, build(gateway))
+	require.NoError(t, build("runtime:\n  drainGrace: \"5m\"\n"))
 }

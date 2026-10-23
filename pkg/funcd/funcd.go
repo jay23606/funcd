@@ -8,6 +8,7 @@ package funcd
 import (
 	"cmp"
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"github.com/pyvvo/funcd/internal/ownedstore"
@@ -260,10 +261,11 @@ type config struct {
 	s3gwListenAddr     string
 	s3gwEndpoint       string // sandbox-facing S3 URL (ADR-0085); empty ⇒ http://<listenAddr>
 	s3gwMaxUploadBytes int64
-	s3gwMasterFile     string     // optional; empty ⇒ generate+persist under the data dir
-	s3gwDataDir        string     // where the master.key is persisted when no master file is set; empty ⇒ in memory
-	masterSecret       []byte     // set by WithMasterSecret: the loaded master, used instead of loading one
-	hold               *hold.Hold // set by WithHold (ADR-0206); nil ⇒ never held
+	s3gwMasterFile     string        // optional; empty ⇒ generate+persist under the data dir
+	s3gwDataDir        string        // where the master.key is persisted when no master file is set; empty ⇒ in memory
+	s3gwKeyPeriod      time.Duration // set by WithS3KeyRotation (ADR-0270); 0 ⇒ fixed pairs
+	masterSecret       []byte        // set by WithMasterSecret: the loaded master, used instead of loading one
+	hold               *hold.Hold    // set by WithHold (ADR-0206); nil ⇒ never held
 	// blobStoreURL is the blob store's URL (WithBlobStoreURL): a BackupSchedule's target is compared with it
 	// (ADR-0222 Decision 6); "" compares with nothing.
 	blobStoreURL string
@@ -510,6 +512,7 @@ type Platform struct {
 	logRoutes            logRoutes                 // the live capture Routes feeding logSink/traceSink, drained by Shutdown
 	compactor            *compact.Compactor        // funclog compacted compaction pipeline (ADR-0083); nil if unwired
 	s3gw                 *s3gateway.Server         // S3-protocol frontend (ADR-0080/0085); nil unless s3gwEnabled
+	s3Keys               s3gateway.Deriver         // the gateway's key-pair deriver (ADR-0270); zero unless s3gwEnabled
 	lakeProxy            *lakegw.Manager           // per-Lake node-private lake PEP proxies (ADR-0137); Shutdown-closed
 	egressGateway        egress.Gateway            // transparent egress PEP (ADR-0117, F81); nil unless egress enabled
 	egressForwarder      egress.Forwarder          // DNS forwarder / domain trust anchor (ADR-0117); nil unless enabled
@@ -828,30 +831,45 @@ func (p *Platform) buildControlPlane() error {
 	var s3Injection function.S3GatewayInjection
 	if c.s3gwEnabled {
 		bucketFor := s3BucketFor(c.blob, c.store)
-		srv, gerr := s3gateway.New(s3gateway.Deps{
+		// ADR-0270: a fresh salt per start, kept in memory, so a restart ends every earlier pair.
+		var salt []byte
+		if c.s3gwKeyPeriod > 0 {
+			salt = make([]byte, 32)
+			if _, rerr := rand.Read(salt); rerr != nil {
+				return fault.Wrapf(rerr, fault.Internal, op, "draw the S3 key salt")
+			}
+		}
+		gwDeps := s3gateway.Deps{
 			BucketFor:      bucketFor,
 			Buckets:        s3Buckets(c.store),
 			PDP:            cedarPDP,
 			Master:         master,
+			KeyPeriod:      c.s3gwKeyPeriod,
+			KeySalt:        salt,
 			Listen:         c.s3gwListenAddr,
 			MaxUploadBytes: c.s3gwMaxUploadBytes,
 			// ADR-0135: resolve external Identity-issued keys to their stored secret (populates the
 			// previously-nil ExternalKeys seam), so a managed Identity authenticates over SigV4.
 			External: identitysvc.NewExternalKeys(c.store),
 			Logger:   p.logger,
-		})
+		}
+		srv, gerr := s3gateway.New(gwDeps)
 		if gerr != nil {
 			return fault.Wrapf(gerr, fault.KindOf(gerr), op, "build s3gateway")
 		}
 		p.s3gw = srv
+		keys := gwDeps.Deriver()
+		p.s3Keys = keys
 		s3Injection = function.S3GatewayInjection{
 			Enabled:    true,
 			ListenAddr: c.s3gwListenAddr,
 			Endpoint:   c.s3gwEndpoint,
 			Derive: func(kind v1.Kind, ns, name string) (string, string) {
-				kp := s3gateway.DeriveKeypair(master, kind, ns, name)
+				kp := keys.Keypair(kind, ns, name)
 				return kp.AccessKey, kp.SecretKey
 			},
+			Period:     keys.Period,
+			RenewalAge: keys.RenewalAge,
 		}
 	}
 
@@ -1145,6 +1163,7 @@ func (p *Platform) buildControlPlane() error {
 	// deriver the Function reconciler uses — present only when the S3 gateway is enabled.
 	if s3Injection.Enabled {
 		lakeDeps.Derive = s3Injection.Derive
+		lakeDeps.RenewalAge = s3Injection.RenewalAge
 		if lakeDeps.S3Endpoint == "" {
 			lakeDeps.S3Endpoint = "http://" + s3Injection.ListenAddr
 		}
@@ -2261,6 +2280,9 @@ func (s egressAuditSink) Egress(ctx context.Context, rec egress.AuditRecord) {
 // provisioning (ADR-0117 §5): on worker-up it records the funcd0 IP → the worker's principal
 // Ref (its owner kind) so the gateway can authenticate the caller by source IP. nil ⇒ egress is not enabled.
 func (p *Platform) EgressWorkerIndex() *egress.MemoryWorkerIndex { return p.egressWorkers }
+
+// S3Keys is the deriver of the platform's in-platform S3 key pairs (ADR-0270); its zero value when the gateway is off.
+func (p *Platform) S3Keys() s3gateway.Deriver { return p.s3Keys }
 
 // syncEgressWorkers keeps the ADR-0117 §5 WorkerIndex (src funcd0 IP → principal Ref) reconciled with the
 // runtime's running worker set, so the egress gateway can authenticate a redirected connection by source

@@ -465,10 +465,15 @@ func buildOptions(ctx context.Context, cfg config.Config, root *slog.Logger, hel
 
 	opts = append(opts, funcd.WithMasterSecret(master))
 	// S3 gateway (ADR-0080/0085): opt-in S3-protocol frontend over the blob substrate.
+	// s3gateway.keyRotationPeriod is checked gateway on or off, so a bad value never waits for the gateway (ADR-0270).
+	period, perr := s3KeyRotationPeriod(cfg)
+	if perr != nil {
+		return nil, noopClose, nil, "", perr
+	}
 	if cfg.S3Gateway.Enabled {
 		opts = append(opts, funcd.WithS3Gateway(
 			cfg.S3Gateway.ListenAddr, s3Endpoint(cfg), cfg.S3Gateway.MaxUploadBytes,
-			cfg.S3Gateway.MasterSecretFile, cfg.Storage.DataDir))
+			cfg.S3Gateway.MasterSecretFile, cfg.Storage.DataDir), funcd.WithS3KeyRotation(period))
 	}
 
 	// The lake proxies and the SQL change feed bind and publish the bridge address, where a worker or an engine in
@@ -507,6 +512,11 @@ func buildOptions(ctx context.Context, cfg config.Config, root *slog.Logger, hel
 	pace, err := pacing(cfg)
 	if err != nil {
 		return nil, noopClose, nil, "", err
+	}
+	if cfg.S3Gateway.Enabled {
+		if err := renewalFits(period, pace); err != nil {
+			return nil, noopClose, nil, "", err
+		}
 	}
 	opts = append(opts, funcd.WithPacing(pace), funcd.WithAppRevisionHistory(cfg.App.RevisionHistory))
 	sqlCallTimeout, err := parseDuration("sql.callTimeout", cfg.SQL.CallTimeout, 30*time.Second, minPositive, v1.MaxDuration)
@@ -926,7 +936,27 @@ const (
 	minPositive        = v1.Duration(time.Millisecond)
 	maxStopGrace       = v1.Duration(10 * time.Second)
 	minRetryBackoffMax = v1.Duration(5 * time.Millisecond)
+	// minKeyRotationPeriod keeps a tenth of the period, the renewal margin, at 6 minutes or more (ADR-0270).
+	minKeyRotationPeriod = v1.Duration(time.Hour)
 )
+
+// s3KeyRotationPeriod parses s3gateway.keyRotationPeriod (ADR-0270): at least 1h, default 24h.
+func s3KeyRotationPeriod(cfg config.Config) (time.Duration, error) {
+	return parseDuration("s3gateway.keyRotationPeriod", cfg.S3Gateway.KeyRotationPeriod, 24*time.Hour, minKeyRotationPeriod, v1.MaxDuration)
+}
+
+// renewalFits checks that a key renewal lands inside its pair's validity (ADR-0270): a renewal may start as late as a
+// twentieth of s3gateway.keyRotationPeriod before the pair's shortest end, after a supervision period to be seen, and
+// then takes runtime.drainGrace and two drain polls to drain and the longest stop to end.
+func renewalFits(period time.Duration, p funcd.Pacing) error {
+	need := p.SupervisionPeriod + p.DrainGrace + 2*p.DrainPollInterval + time.Duration(maxStopGrace)
+	if 20*need < period {
+		return nil
+	}
+	return fault.Invalidf("buildOptions", "config key %q has invalid value %q (want more than 20 × (runtime.supervisionPeriod + "+
+		"runtime.drainGrace + 2 × runtime.drainPollInterval + %s), %s)", "s3gateway.keyRotationPeriod", period.String(),
+		time.Duration(maxStopGrace).String(), (20 * need).String())
+}
 
 // processStopGrace parses runtime.process.stopGrace (ADR-0167): 1ms to 10s, default 3s.
 func processStopGrace(cfg config.Config) (time.Duration, error) {

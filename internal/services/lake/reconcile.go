@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -103,6 +105,14 @@ func (r *Reconciler) Reconcile(ctx context.Context, req controller.Request) (con
 		return r.holdNotReady(ctx, cs, "BindingResolveFailed", berr.Error(), requeue)
 	}
 
+	// The engine reaches only its S3 gateway (ADR-0269): a fence holds addresses, so a gateway named by a hostname
+	// leaves the Lake not Ready rather than unfenced.
+	fence, ok := provider.EgressTo(r.s3Endpoint)
+	if !ok {
+		return r.holdNotReady(ctx, cs, "GatewayEndpointNotAnAddress",
+			fmt.Sprintf("the S3 gateway endpoint %q is not an IP address and port, so the engine cannot be fenced", r.s3Endpoint), 0)
+	}
+
 	spec := provider.ProviderSpec{
 		Ref:       provider.ProviderRef{Namespace: cs.Namespace, Name: cs.Name},
 		Image:     r.imageFor(DuckDBRuntime),
@@ -117,7 +127,21 @@ func (r *Reconciler) Reconcile(ctx context.Context, req controller.Request) (con
 		// spec.ingress opts in (ADR-0138) — programs an external edge entry to that PROXY through the
 		// edge-router aggregator (syncIngressRoute, below), never to the engine. The reconciler owns
 		// that entry because the proxy URL is known only after Ensure (post-Converge).
-		Route: nil,
+		Route:      nil,
+		EgressOnly: fence,
+	}
+	// The engine signs as Lake::"<ns>/<cs.Name>" (ADR-0175): its reads are its own spec.bindings.blob bindings, and it
+	// writes a prefix only where the S3 PEP resolves it as that prefix's writer. Its pair is issued with the engine
+	// (ADR-0270 Decision 5), and a fresh pair needs a fresh engine: Converge replaces one older than its renewal age.
+	if r.derive != nil && len(cs.Spec.Bindings.Blob) > 0 {
+		ns, name := string(cs.Namespace), string(cs.Name)
+		spec.IssueEnv = func() map[string]string {
+			access, secret := r.derive(v1.KindLake, ns, name)
+			return map[string]string{"AWS_ACCESS_KEY_ID": access, "AWS_SECRET_ACCESS_KEY": secret}
+		}
+		if r.renewalAge != nil {
+			spec.MaxAge = r.renewalAge(v1.KindLake, ns, name)
+		}
 	}
 
 	st, cerr := r.prov.Converge(ctx, spec)
@@ -359,35 +383,31 @@ func (r *Reconciler) syncIngressRoute(ctx context.Context, cs *v1.Lake, proxyURL
 	return nil
 }
 
-// engineEnv assembles the engine's environment (ADR-0087): the ADR-0085 S3 keypair (derived
-// over the Lake identity, ADR-0175), AWS_REGION/AWS_ENDPOINT_URL, FUNCD_DUCKLAKE_CATALOG (the
+// engineEnv assembles the engine's environment (ADR-0087), but for its S3 key pair, issued with the engine
+// (ProviderSpec.IssueEnv, ADR-0270): AWS_REGION/AWS_ENDPOINT_URL, FUNCD_DUCKLAKE_CATALOG (the
 // lake's s3:// key), FUNCD_QUACK_PORT, and the resolved spec.bindings.secret (the Quack token) +
-// spec.bindings.config (DUCKDB_*) Data keys — merged with reserved-FUNCD_-key precedence. A secret/config
-// resolution failure is returned (the caller fails the service closed).
+// spec.bindings.config (DUCKDB_*) Data keys. funcd's own keys win over bound data, so a bound ConfigMap or Secret
+// cannot point the engine's S3 traffic or key pair elsewhere. A secret/config resolution failure is returned (the
+// caller fails the service closed).
 func (r *Reconciler) engineEnv(ctx context.Context, cs *v1.Lake) (map[string]string, error) {
 	const op = "services.lake.engineEnv"
-	env := map[string]string{
+	own := map[string]string{
 		"AWS_REGION":             "us-east-1",
 		"FUNCD_QUACK_PORT":       strconv.Itoa(enginePort),
 		"FUNCD_DUCKLAKE_CATALOG": lakeURI(cs.Spec.Location),
 	}
-	// The engine signs as Lake::"<ns>/<cs.Name>" (ADR-0175): its reads are its own spec.bindings.blob
-	// bindings, and it writes a prefix only where the S3 PEP resolves it as that prefix's writer.
-	if r.derive != nil && len(cs.Spec.Bindings.Blob) > 0 {
-		access, secret := r.derive(v1.KindLake, string(cs.Namespace), string(cs.Name))
-		env["AWS_ACCESS_KEY_ID"] = access
-		env["AWS_SECRET_ACCESS_KEY"] = secret
-	}
 	if r.s3Endpoint != "" {
-		env["AWS_ENDPOINT_URL_S3"] = r.s3Endpoint
-		env["AWS_ENDPOINT_URL"] = r.s3Endpoint
+		own["AWS_ENDPOINT_URL_S3"] = r.s3Endpoint
+		own["AWS_ENDPOINT_URL"] = r.s3Endpoint
 	}
 
 	// spec.bindings.config (ConfigMaps, non-sensitive) + spec.bindings.secret (Secrets, sensitive) → guarded engine
 	// env, resolved through the shared provider helper (ADR-0092): config first, then secrets, each
-	// dropping any reserved FUNCD_ key. The provider-specific env above (S3 keypair, endpoints,
-	// FUNCD_*) is composed BEFORE and preserved — the helper's result is merged in with the same
-	// reserved-key guard.
+	// dropping any reserved FUNCD_ key. Only the keys the engine reads pass (ADR-0087: QUACK_TOKEN, DUCKDB_*), so a
+	// bound key cannot change how the engine's process starts or where it connects (HTTP_PROXY, PYTHONPATH, AWS_*);
+	// DUCKDB_EXTENSION_DIRECTORY is the image's, so a binding cannot point the engine's LOAD elsewhere.
+	// The engine's own keys above are laid over the result; its key pair is issued with the engine
+	// (ProviderSpec.IssueEnv, ADR-0270).
 	resolved, rerr := provider.ResolveEnv(ctx, provider.EnvDeps{
 		Secrets:  r.secrets,
 		Store:    r.store,
@@ -397,7 +417,16 @@ func (r *Reconciler) engineEnv(ctx context.Context, cs *v1.Lake) (map[string]str
 	if rerr != nil {
 		return nil, fault.Wrapf(rerr, fault.KindOf(rerr), op, "resolve provider env")
 	}
+	maps.DeleteFunc(resolved, func(k, _ string) bool {
+		if k == "QUACK_TOKEN" || strings.HasPrefix(k, "DUCKDB_") && k != "DUCKDB_EXTENSION_DIRECTORY" {
+			return false
+		}
+		r.logger.Warn("dropping a bound key the Lake engine does not read", "lake", cs.Name, "key", k)
+		return true
+	})
+	env := make(map[string]string, len(own)+len(resolved))
 	secrets.MergeEnvGuarded(env, resolved, r.logger)
+	maps.Copy(env, own)
 	return env, nil
 }
 

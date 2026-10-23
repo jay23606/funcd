@@ -113,9 +113,9 @@ ENGINE_ENV = {
 }
 
 
-def _run_main(env: dict, con: "_Recording", log: list, local_tmp: str) -> None:
+def _run_main(env: dict, con: "_Recording", log: list, local_tmp: str, pause: object = None) -> None:
     """Runs main on exactly env (no other variable), with con as the engine, until it would block on signal.pause()
-    or it exits."""
+    (pause, if given, runs there) or it exits."""
     with contextlib.ExitStack() as stack:
         for patch in (
             mock.patch.dict(os.environ, env, clear=True),
@@ -125,7 +125,7 @@ def _run_main(env: dict, con: "_Recording", log: list, local_tmp: str) -> None:
             mock.patch.object(shim, "_recover_catalog", lambda *_: log.append("recover")),
             mock.patch.object(shim, "_CommitWatcher"),
             mock.patch.object(shim.signal, "signal"),
-            mock.patch.object(shim.signal, "pause", side_effect=_Stop),
+            mock.patch.object(shim.signal, "pause", side_effect=pause or _Stop),
         ):
             stack.enter_context(patch)
         shim.main()
@@ -142,22 +142,28 @@ class TestScenarioOnlyAllowedPaths(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         local_tmp = os.path.join(tmp.name, "tmp")
         env = dict(ENGINE_ENV, DUCKDB_THREADS="2", DUCKDB_MEMORY_LIMIT="3GB", DUCKDB_MAX_TEMP_DIRECTORY_SIZE="2GB")
+        left: list = []
+
+        def pause() -> None:
+            left.extend(k for k in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY") if k in os.environ)
+            raise _Stop
+
         with self.assertRaises(_Stop):
-            _run_main(env, _Recording(log), log, local_tmp)
+            _run_main(env, _Recording(log), log, local_tmp, pause)
+        self.assertEqual(left, [], "DuckDB would read the pair from the environment")
         want = [
             "SET max_temp_directory_size = ?",
             "SET memory_limit = ?",
             "SET threads = ?",
             "SET s3_endpoint=",
             "SET s3_region=",
-            "SET s3_access_key_id=",
-            "SET s3_secret_access_key=",
             "SET s3_url_style=",
             "SET s3_use_ssl=",
             "SET s3_enable_deprecated_url_parameters=false",
             "SET disabled_filesystems='HTTPFileSystem'",
             f"SET temp_directory='{local_tmp}'",
             "SET allow_persistent_secrets=false",
+            "CREATE TEMPORARY SECRET funcd_lake_s3 (TYPE s3, KEY_ID ?, SECRET ?,",
             "recover",
             "ATTACH 'ducklake:sqlite:/var/funcd/ducklake/catalog.db' AS lakehouse "
             "(DATA_PATH ?, OVERRIDE_DATA_PATH TRUE, DUCKLAKE_VERSION '1.1')",
@@ -252,6 +258,37 @@ class TestScenarioBadValueRefused(unittest.TestCase):
         self.assertEqual(log, [], "a sandbox SET ran before the refusal")
 
 
+class _Calls:
+    """An engine connection that records each statement with its bound values."""
+
+    def __init__(self) -> None:
+        self.calls: list = []
+
+    def execute(self, sql: str, params: object = None) -> "_Calls":
+        self.calls.append((sql, params))
+        return self
+
+
+class TestKeyPairOnlyInATemporarySecret(unittest.TestCase):
+    """The engine's S3 key pair reaches DuckDB only as bound values of a temporary secret, never as a setting."""
+
+    def test_the_key_pair_is_bound_into_one_temporary_secret(self) -> None:
+        con = _Calls()
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        with mock.patch.object(shim, "LOCAL_TMP", os.path.join(tmp.name, "tmp")):
+            shim._configure(con, "http://10.0.0.1:9000", "us-east-1", "ACCESS-ID", "secret-value")
+        for sql, _ in con.calls:
+            self.assertNotIn("ACCESS-ID", sql)
+            self.assertNotIn("secret-value", sql)
+            self.assertFalse(sql.startswith(("SET s3_access_key_id", "SET s3_secret_access_key")), sql)
+        secrets = [(sql, params) for sql, params in con.calls if sql.startswith("CREATE TEMPORARY SECRET")]
+        self.assertEqual(len(secrets), 1, con.calls)
+        self.assertEqual(secrets[0][1][:2], ["ACCESS-ID", "secret-value"])
+        names = [sql for sql, _ in con.calls]
+        self.assertLess(names.index("SET allow_persistent_secrets=false"), names.index(secrets[0][0]))
+
+
 class TestScenarioNoDeprecatedExtensionSetting(unittest.TestCase):
     """scenario: no-deprecated-extension-setting (ADR-0263 Decision 5): the engine finds its extensions through
     extension_directories, a list, not the deprecated extension_directory."""
@@ -267,6 +304,18 @@ class TestScenarioNoDeprecatedExtensionSetting(unittest.TestCase):
             with mock.patch.object(shim.duckdb, "connect", connect, create=True):
                 shim._connect()
         self.assertEqual(configs, [{"extension_directories": ["/opt/duckdb-ext"]}])
+
+
+class TestS3ClientIgnoresEnvironmentProxies(unittest.TestCase):
+    def test_no_proxy_from_the_environment(self):
+        calls = {}
+        fake = types.SimpleNamespace(
+            client=lambda *_, **kw: calls.update(kw),
+            session=types.SimpleNamespace(Config=lambda **kw: kw),
+        )
+        with mock.patch.object(shim, "boto3", fake):
+            shim._s3_client("http://10.63.0.1:9000", "us-east-1", "access", "secret")
+        self.assertEqual(calls["config"]["proxies"], {})
 
 
 if __name__ == "__main__":

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
 	"strconv"
 	"strings"
@@ -53,6 +54,8 @@ type Deps struct {
 	// StorageRoot is the root of the engines' durable directories (ADR-0231); "" ⇒ no durable storage, so a spec with
 	// Storage fails Invalid.
 	StorageRoot string
+	// Now is the clock ProviderSpec.MaxAge is measured with (ADR-0270); nil ⇒ time.Now.
+	Now func() time.Time
 }
 
 const defaultProbeTimeout = 2 * time.Second
@@ -70,6 +73,7 @@ type engineRuntime struct {
 	// spec while the old engine runs (#1195). After a restart a running engine is adopted, as it was before.
 	specsMu sync.Mutex
 	specs   map[ProviderRef]string
+	now     func() time.Time
 }
 
 // NewRuntime builds the add-on-provider runtime. Deps.Runtime is required; Gateway is optional
@@ -94,6 +98,10 @@ func NewRuntime(d Deps) (Runtime, error) {
 		}
 		client = httpx.NodeClient(timeout)
 	}
+	now := d.Now
+	if now == nil {
+		now = time.Now
+	}
 	return &engineRuntime{
 		rt:          d.Runtime,
 		ownerKind:   d.OwnerKind,
@@ -102,6 +110,7 @@ func NewRuntime(d Deps) (Runtime, error) {
 		httpClient:  client,
 		storageRoot: d.StorageRoot,
 		specs:       map[ProviderRef]string{},
+		now:         now,
 	}, nil
 }
 
@@ -132,7 +141,19 @@ func (r *engineRuntime) Converge(ctx context.Context, spec ProviderSpec) (Provid
 	if err != nil {
 		return ProviderStatus{}, err
 	}
-	want := specFingerprint(r.workerSpec(spec, 0))
+	fp := r.workerSpec(spec, 0)
+	if spec.IssueEnv != nil {
+		// which keys are issued counts, their values do not: a new key window replaces no engine, while gaining or
+		// losing a pair does (ADR-0270 Decision 5)
+		fp.Env = maps.Clone(fp.Env)
+		if fp.Env == nil {
+			fp.Env = map[string]string{}
+		}
+		for k := range spec.IssueEnv() {
+			fp.Env[k] = ""
+		}
+	}
+	want := specFingerprint(fp)
 	r.specsMu.Lock()
 	had, known := r.specs[spec.Ref]
 	r.specsMu.Unlock()
@@ -157,15 +178,29 @@ func (r *engineRuntime) Converge(ctx context.Context, spec ProviderSpec) (Provid
 	haveReady := false
 	for i := 0; i < spec.Replicas; i++ {
 		inst, ok := byReplica[i]
+		// An engine older than MaxAge carries a key pair about to expire (ADR-0270): replace it.
+		aged := ok && spec.MaxAge > 0 && !inst.State.Terminal() && r.now().Sub(inst.CreatedAt) >= spec.MaxAge
 		switch {
-		// Recreate a missing / terminal (failed/stopped) instance (supervision = re-convergence).
-		case !ok || inst.State.Terminal():
+		// Recreate a missing / terminal (failed/stopped) or aged instance (supervision = re-convergence).
+		case !ok || inst.State.Terminal() || aged:
+			if aged {
+				r.logger.Info("replacing an engine for a fresh key pair", "namespace", spec.Ref.Namespace, "name", spec.Ref.Name,
+					"instance", inst.ID, "age", r.now().Sub(inst.CreatedAt))
+			}
 			if ok {
 				if rerr := r.retire(ctx, inst.ID); rerr != nil {
 					return ProviderStatus{}, fault.Wrapf(rerr, fault.KindOf(rerr), op, "retire terminal engine replica %d", i)
 				}
 			}
-			created, cerr := r.rt.Create(ctx, r.workerSpec(spec, i))
+			ws := r.workerSpec(spec, i)
+			if spec.IssueEnv != nil {
+				ws.Env = maps.Clone(ws.Env)
+				if ws.Env == nil {
+					ws.Env = map[string]string{}
+				}
+				maps.Copy(ws.Env, spec.IssueEnv())
+			}
+			created, cerr := r.rt.Create(ctx, ws)
 			if cerr != nil {
 				return ProviderStatus{}, fault.Wrapf(cerr, fault.KindOf(cerr), op, "create engine replica %d", i)
 			}
@@ -271,6 +306,8 @@ func (r *engineRuntime) workerSpec(spec ProviderSpec, replica int) containerrt.W
 		Env:       spec.Env,
 		Limits:    limitsFrom(spec.Resources),
 		Mounts:    r.storageMounts(spec),
+
+		EgressOnly: spec.EgressOnly,
 	}
 }
 

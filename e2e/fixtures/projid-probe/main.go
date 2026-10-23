@@ -2,7 +2,8 @@
 
 // projid-probe runs inside a volumes-lane worker (ADR-0268): in the volume directory it is given, it asks the kernel to
 // set a file's project id, the same with the command's upper bits set, the directory's flags, and makes an ioctl the
-// filter allows, then prints one line per call: its name and the errno, or ok.
+// filter allows, then a system call the default profile refuses (ADR-0267), and prints one line per call: its name and
+// the errno, or ok.
 package main
 
 import (
@@ -67,4 +68,5 @@ func main() {
 	result("getflags", ioctl(d.Fd(), fsIOCGetFlags, unsafe.Pointer(&flags)))
 	cleared := flags &^ 0x20000000 // FS_PROJINHERIT_FL
 	result("setflags", ioctl(d.Fd(), fsIOCSetFlags, unsafe.Pointer(&cleared)))
+	result("unshare", unix.Unshare(unix.CLONE_NEWUSER))
 }

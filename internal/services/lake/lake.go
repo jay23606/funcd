@@ -64,6 +64,8 @@ type ReconcilerDeps struct {
 	// over the Lake identity (KindLake, ns, cs.Name). nil ⇒ no S3 keypair injected.
 	// Same shape the Function reconciler's S3GatewayInjection.Derive carries.
 	Derive func(kind v1.Kind, ns, name string) (access, secret string)
+	// RenewalAge is the engine age at which its worker is replaced for a fresh key pair (ADR-0270); nil or 0 ⇒ never.
+	RenewalAge func(kind v1.Kind, ns, name string) time.Duration
 	// Secrets resolves spec.bindings.secret → env (the Quack token, ADR-0057). nil ⇒ a service declaring
 	// spec.bindings.secret fails closed.
 	Secrets SecretResolver
@@ -114,6 +116,7 @@ type Reconciler struct {
 	prov         provider.Runtime
 	logger       *slog.Logger
 	derive       func(kind v1.Kind, ns, name string) (access, secret string)
+	renewalAge   func(kind v1.Kind, ns, name string) time.Duration
 	secrets      SecretResolver
 	developerFor func(ns v1.NamespaceName) auth.Identity
 	s3Endpoint   string
@@ -155,6 +158,7 @@ func NewReconciler(d ReconcilerDeps) (*Reconciler, error) {
 		prov:         d.Provider,
 		logger:       logger.With("component", "services.lake.reconciler"),
 		derive:       d.Derive,
+		renewalAge:   d.RenewalAge,
 		secrets:      d.Secrets,
 		developerFor: developerFor,
 		s3Endpoint:   d.S3Endpoint,

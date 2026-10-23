@@ -239,6 +239,10 @@ type S3GatewayInjection struct {
 	// Derive returns the deterministic per-(kind, ns, name) SigV4 keypair (s3gateway.DeriveKeypair,
 	// bound to the node master secret; ADR-0175). Required when Enabled.
 	Derive func(kind v1.Kind, ns, name string) (access, secret string)
+	// Period is the key pairs' rotation period and RenewalAge the age at which an identity's worker is replaced
+	// (ADR-0270); a zero Period means fixed pairs and no renewal.
+	Period     time.Duration
+	RenewalAge func(kind v1.Kind, ns, name string) time.Duration
 }
 
 // EndpointMode selects how a worker is ADDRESSED (ADR-0032); it is orthogonal to the
@@ -330,6 +334,11 @@ type Reconciler struct {
 	// stopping counts the Stops under way per worker, guarded by stopMu: a worker being stopped gets no calls.
 	stopMu   sync.Mutex
 	stopping map[runtime.InstanceID]int
+	// renewing holds, under stopMu, each worker draining for a key renewal, by its renewMark (ADR-0270): it gets no call.
+	renewing map[runtime.InstanceID]renewMark
+	// renewBoot holds, under stopMu, when each worker id was last renewed (ADR-0270): its next worker boots for a key
+	// renewal until it listens.
+	renewBoot map[runtime.InstanceID]time.Time
 	// poolManifestDir holds the pool manifests; ownManifestDir is set when NewReconciler created it, for Close.
 	poolManifestDir string
 	ownManifestDir  bool
@@ -510,6 +519,8 @@ func NewReconciler(d Deps) (*Reconciler, error) {
 		live:              map[runtime.InstanceID]liveness{},
 		reads:             map[runtime.InstanceID]readRecord{},
 		stopping:          map[runtime.InstanceID]int{},
+		renewing:          map[runtime.InstanceID]renewMark{},
+		renewBoot:         map[runtime.InstanceID]time.Time{},
 		poolManifestDir:   manifestDir,
 		ownManifestDir:    ownManifestDir,
 		supervisionPeriod: period,
@@ -1093,6 +1104,8 @@ type verdict struct {
 	settled       int
 	currentReport *local.DependencyReport
 	hungRestarted bool
+	// renewing is set while a replica boots after a key renewal (ADR-0270): no replica exited.
+	renewing bool
 	// readUntil is the earliest end of a kept readiness read's window, silent the window when every judged worker runs
 	// and is late past it (ADR-0259 Decisions 3 and 4).
 	readUntil time.Time
@@ -1164,6 +1177,8 @@ func (r *Reconciler) finish(ctx context.Context, fn *v1.Function, v verdict, dra
 			reason, msg = reasonDependencyNotReady, reportMessage(v.report)
 		case v.silent > 0:
 			reason, msg = reasonNotAnswering, notAnswering(v.pooled, v.silent)
+		case v.renewing:
+			reason, msg = reasonRenewing, renewingMessage
 		}
 		fn.Status.Conditions.Set(v1.Condition{Type: condReady, Status: v1.ConditionFalse, Reason: reason, Message: msg})
 	case v.startErr != nil && v.running == 0:
@@ -1332,7 +1347,7 @@ func servingPhase(p v1.Phase) bool { return p == v1.PhaseReady || p == v1.PhaseD
 // none hung on its liveness, none answering its readiness with a dependency report (ADR-0215 Decisions 1 and 5) and
 // none unanswered past its readiness window (ADR-0259 Decision 4). It calls runtime.Status once per replica
 // (ADR-0142), sends each replica its liveness and readiness probes and, for a lake consumer, one store Get per
-// binding; it writes nothing. until is the earliest end of a kept read's window, zero if none.
+// binding; it writes nothing. A replica whose key pair is due for renewal is not steady (ADR-0270). until is the earliest end of a kept read's window, zero if none.
 func (r *Reconciler) steadyState(ctx context.Context, fn *v1.Function) (steady bool, until time.Time) {
 	if fn.Status.Phase != v1.PhaseReady || fn.Status.ObservedGeneration != fn.Generation {
 		return false, time.Time{}
@@ -1362,6 +1377,10 @@ func (r *Reconciler) steadyState(ctx context.Context, fn *v1.Function) (steady b
 		if err != nil || !r.listening(in) {
 			return false, time.Time{}
 		}
+		if r.keysRotate() && len(fn.Spec.Bindings.Blob) > 0 &&
+			r.renewDue(in, v1.KindFunction, string(fn.Namespace), string(fn.Name), r.idle(fn, in)) {
+			return false, time.Time{}
+		}
 		if r.materializer == nil {
 			continue
 		}
@@ -1385,6 +1404,10 @@ func (r *Reconciler) listening(in runtime.Instance) bool {
 	}
 	return r.materializer == nil || (in.Listened && in.IP != "" && in.Port > 0)
 }
+
+// handsOut reports whether worker in may be handed a call: it listens and does not drain for a key renewal (ADR-0270).
+// A draining worker still listens, so no boot or liveness judgement takes it for a crash.
+func (r *Reconciler) handsOut(in runtime.Instance) bool { return r.listening(in) && !r.isRenewing(in) }
 
 // stopWorker stops worker id. Until the Stop returns, the worker reads as not listening, so the Endpoints hand it out
 // to no call: a driver reports the task running through the Stop's grace, and the containerd driver takes the worker's
@@ -1565,13 +1588,22 @@ func (r *Reconciler) convergeSolo(ctx context.Context, fn *v1.Function, pinned s
 	}
 	serving := servingPhase(fn.Status.Phase)
 	var hung bool
+	var renewAt time.Time
+	var rerr error
 	if serving {
 		var herr error
 		if hung, herr = r.restartHung(ctx, fn, c, desired); herr != nil {
 			return verdict{}, herr
 		}
+		if renewAt, rerr = r.renewKeys(ctx, fn, c, desired); rerr != nil {
+			return verdict{}, rerr
+		}
 	}
 	pass, err := r.convergeRevision(ctx, fn, c, pinned, replicaRange(desired), convergeOpts{serving: serving, untried: untried, scaleDown: true}, bindEnv, lakeEnv)
+	if err != nil {
+		return verdict{}, err
+	}
+	renewing, err := r.revisionRenewing(ctx, fn, c)
 	if err != nil {
 		return verdict{}, err
 	}
@@ -1609,9 +1641,26 @@ func (r *Reconciler) convergeSolo(ctx context.Context, fn *v1.Function, pinned s
 	return verdict{
 		running: running, ready: ready, shapeFailed: failed != "", loadErr: r.loadError(ctx, failed),
 		serving: serving, retryAt: earlier(earlier(pass.retryAt, rd.retryAt), ul.retryAt), booting: running > ready+rd.settled, startErr: pass.startErr,
-		repairErr: repairErr, crashLoop: crashLoop, desired: desired, pollAt: ul.pollAt,
+		repairErr: repairErr, crashLoop: crashLoop, desired: desired, pollAt: earlier(ul.pollAt, renewAt),
 		report: rd.report, settled: rd.settled, hungRestarted: hung, readUntil: rd.readUntil, silent: rd.silent,
+		renewing: renewing,
 	}, nil
+}
+
+// revisionRenewing reports whether a worker of fn's revision rev boots after a key renewal (ADR-0270). It lists the
+// workers only while a renewal boot is recorded.
+func (r *Reconciler) revisionRenewing(ctx context.Context, fn *v1.Function, rev v1.ObjectName) (bool, error) {
+	r.stopMu.Lock()
+	none := len(r.renewBoot) == 0
+	r.stopMu.Unlock()
+	if none {
+		return false, nil
+	}
+	insts, err := r.namedInstances(ctx, fn.Namespace, fn.Name)
+	if err != nil {
+		return false, err
+	}
+	return r.renewalBooting(slices.DeleteFunc(insts, func(in runtime.Instance) bool { return in.Revision != rev })), nil
 }
 
 // stopNeverReady stops failed, the replica readiness judged failed, if it still runs — it ran for bootTimeout without
@@ -2287,6 +2336,13 @@ func (r *Reconciler) convergeHeldRevision(ctx context.Context, fn *v1.Function, 
 		return r.heldBootFailed(ctx, rev, err)
 	}
 	serving := phase != v1.PhaseDeploying
+	var renewAt time.Time
+	if serving {
+		// its one worker renews its key pair as the serving revision's do (ADR-0270)
+		if renewAt, err = r.renewKeys(ctx, tmpl, rev.Name, 1); err != nil {
+			return 0, err
+		}
+	}
 	pass, err := r.convergeRevision(ctx, tmpl, rev.Name, digest, replicaRange(1), convergeOpts{serving: serving, scaleDown: true}, env.secret, env.lake)
 	if err != nil {
 		return r.heldBootFailed(ctx, rev, err)
@@ -2296,8 +2352,15 @@ func (r *Reconciler) convergeHeldRevision(ctx context.Context, fn *v1.Function, 
 		return 0, err
 	}
 	degraded := v1.Condition{Type: condReady, Status: v1.ConditionFalse, Reason: "Restarting", Message: "a replica exited and is being replaced"}
-	if rd.silent > 0 {
+	renewing, err := r.revisionRenewing(ctx, fn, rev.Name)
+	if err != nil {
+		return 0, err
+	}
+	switch {
+	case rd.silent > 0:
 		degraded.Reason, degraded.Message = reasonNotAnswering, notAnswering(false, rd.silent)
+	case renewing:
+		degraded.Reason, degraded.Message = reasonRenewing, renewingMessage
 	}
 	ready, failed, readyRetry, crashLoop := rd.ready, rd.failed, rd.retryAt, rd.crashLoop
 	ul, err := r.stopUnlistened(ctx, fn, rev.Name, 1)
@@ -2317,7 +2380,7 @@ func (r *Reconciler) convergeHeldRevision(ctx context.Context, fn *v1.Function, 
 	case failed != "" && !serving:
 		return r.writeHeld(ctx, rev, v1.PhaseFailed, v1.Condition{Type: condReady, Status: v1.ConditionFalse, Reason: "ShapeInvalid", Message: r.loadError(ctx, failed)}, 0)
 	case ready >= 1:
-		return r.writeHeld(ctx, rev, v1.PhaseReady, v1.Condition{Type: condReady, Status: v1.ConditionTrue}, r.pollBy(rd.readUntil, r.supervisionPeriod))
+		return r.writeHeld(ctx, rev, v1.PhaseReady, v1.Condition{Type: condReady, Status: v1.ConditionTrue}, r.pollBy(earlier(rd.readUntil, renewAt), r.supervisionPeriod))
 	case pass.startErr != nil && running == 0:
 		return r.writeHeld(ctx, rev, phase, v1.Condition{Type: condReady, Status: v1.ConditionFalse, Reason: "StartFailed", Message: pass.startErr.Error()}, poll)
 	case crashLoop != "":
@@ -2724,7 +2787,7 @@ func (r *Reconciler) pinnedPoolUpstream(ctx context.Context, fn *v1.Function, re
 		return "", err
 	}
 	cur, _ := splitPool(insts, hold.sig)
-	if w, ok := newestPool(cur, r.listening); ok {
+	if w, ok := newestPool(cur, r.handsOut); ok {
 		return instanceURL(fn.Namespace, w.Name, w), nil
 	}
 	return "", nil
@@ -2754,7 +2817,7 @@ func (r *Reconciler) upstreamOf(ctx context.Context, ns v1.NamespaceName, name, 
 	}
 	best := -1
 	for i, in := range insts {
-		if in.Revision == rev && r.listening(in) && (best < 0 || in.Replica < insts[best].Replica) {
+		if in.Revision == rev && r.handsOut(in) && (best < 0 || in.Replica < insts[best].Replica) {
 			best = i
 		}
 	}

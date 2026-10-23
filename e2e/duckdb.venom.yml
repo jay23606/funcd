@@ -24,6 +24,7 @@
 # engine's temp directory; a non-gating probe records whether lake-reader can ATTACH its Lake through the PEP proxy;
 # and, last (ADR-0264), Lake lake re-created at 1Gi records its idle engine's RSS: the engine sees its own cgroup, so
 # DuckDB sizes itself to its limit and spills a query larger than its memory, and lake-reader, with no limit, reads max.
+# The ADR-0269 case: a query that points an S3 secret at the VM's own address opens no connection there.
 name: lake-quack add-on provider — deploy + Ready + live SQL round-trip on real containerd (ADR-0086/0087/0088/0091)
 
 vars:
@@ -314,6 +315,19 @@ testcases:
         assertions:
           - result.statuscode ShouldEqual 500
           - result.body ShouldContainSubstring "disabled"
+      - type: http
+        method: POST
+        url: "http://127.0.0.1:8081/function/lake-reader"
+        headers:
+          content-type: application/json
+        body: '{"data":{"sql":"SELECT (SELECT secret_string FROM duckdb_secrets() WHERE name = ''funcd_lake_s3''), (SELECT count(*) FROM duckdb_settings() WHERE name LIKE ''s3_%'' AND value LIKE ''FUNCD%'')"}}'
+        retry: 10
+        delay: 2
+        info: "the engine's S3 secret and key settings → status {{.result.statuscode}} body {{.result.body}}"
+        assertions:
+          - result.statuscode ShouldEqual 200
+          - result.body ShouldContainSubstring "secret=redacted"
+          - result.body ShouldContainSubstring ",0]]"
 
   # Non-gating (ADR-0263 Open questions): only quack_query's handshake is verified through the PEP proxy.
   - name: quack-attach-probe — records, never failing, whether lake-reader's DuckDB 2.0 can ATTACH its Lake through the PEP proxy
@@ -745,3 +759,14 @@ testcases:
         assertions:
           - result.code ShouldEqual 0
           - result.systemout ShouldContainSubstring "CGROUP=0::/ MEMORY_MAX=max CPU_MAX=max/100000 WRITE=refused"
+
+  # Last: the probe leaves a query hanging on the dropped connection, so no later step shares the engine with it.
+  - name: engine-fenced — a query that points an S3 secret at the VM's own address opens no connection there (ADR-0269)
+    steps:
+      - type: exec
+        script: limactl shell --workdir / {{.vm}} sudo sh /opt/lane/fence-probe.sh
+        info: "the fence probe → {{.result.systemout}}"
+        assertions:
+          - result.code ShouldEqual 0
+          - result.systemout ShouldContainSubstring "HITS=0"
+          - result.systemout ShouldNotContainSubstring "Parser Error"

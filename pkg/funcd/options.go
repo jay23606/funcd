@@ -184,6 +184,18 @@ func WithS3Gateway(listenAddr, endpoint string, maxUploadBytes int64, masterSecr
 	}
 }
 
+// WithS3KeyRotation makes derived S3 key pairs rotate every period and at every start (ADR-0270). Without it the
+// pairs stay fixed, as funcdctl dev needs; cmd/funcd always sets it from s3gateway.keyRotationPeriod.
+func WithS3KeyRotation(period time.Duration) Option {
+	return func(c *config) error {
+		if period <= 0 {
+			return fault.Invalidf("funcd.WithS3KeyRotation", "period must be positive; got %s", period)
+		}
+		c.s3gwKeyPeriod = period
+		return nil
+	}
+}
+
 // WithMasterLocation sets where the node master secret lives, gateway on or off (ADR-0204 Decision 7):
 // masterSecretFile when set, else <dataDir>/s3gateway/master.key. With neither, the master is generated in
 // memory and never written (the InMemory preset, tests). cmd/funcd sets it from s3gateway.masterSecretFile and

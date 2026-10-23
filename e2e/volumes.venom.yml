@@ -148,6 +148,7 @@ testcases:
           - result.systemout ShouldContainSubstring "setxattr-high EPERM"
           - result.systemout ShouldContainSubstring "getflags ok"
           - result.systemout ShouldContainSubstring "setflags EPERM"
+          - result.systemout ShouldContainSubstring "unshare EPERM"
 
   - name: V4 a write past the size fails with a quota error
     steps:

@@ -24,6 +24,11 @@
 package provider
 
 import (
+	"net/netip"
+	"net/url"
+	"strconv"
+	"time"
+
 	v1 "github.com/pyvvo/funcd/api/types/v1alpha1"
 )
 
@@ -84,6 +89,15 @@ type ProviderSpec struct {
 	Route *RouteSpec
 	// Storage is OPTIONAL durable storage (ADR-0231); nil ⇒ the engine keeps nothing across re-creations.
 	Storage *StorageSpec
+	// EgressOnly is copied to the engine's WorkerSpec: nil means no fence (ADR-0269).
+	EgressOnly []netip.AddrPort
+	// MaxAge, when positive, makes Converge replace a running engine older than it, so a new one carries a fresh key
+	// pair (ADR-0270). 0 ⇒ never replaced for age.
+	MaxAge time.Duration
+	// IssueEnv, when set, returns env issued with each engine as Converge creates it, laid over Env: a key pair valid
+	// for that engine's life (ADR-0270 Decision 5). Only its keys are part of the spec an engine is compared by (#1195),
+	// so a new key window replaces no engine, while gaining or losing a pair does.
+	IssueEnv func() map[string]string
 }
 
 // ProviderStatus is what Converge observes back to the caller (which writes it to its CRD status).
@@ -93,4 +107,30 @@ type ProviderStatus struct {
 	Address  string // the engine's in-platform netns endpoint "host:port" — set when running (in-platform clients dial this)
 	Endpoint string // the ingress path clients reach when a Route is programmed; "" if internal-only
 	Reason   string // when not Ready, why (e.g. "EngineNotReady")
+}
+
+// EgressTo is the fence of an engine that dials only rawURL (ADR-0269): its address and port, with the scheme's port
+// when it names none. An empty rawURL is an empty fence. ok is false when the host is not an IP literal, which a
+// fence cannot hold.
+func EgressTo(rawURL string) (fence []netip.AddrPort, ok bool) {
+	if rawURL == "" {
+		return []netip.AddrPort{}, true
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return []netip.AddrPort{}, false
+	}
+	addr, err := netip.ParseAddr(u.Hostname())
+	if err != nil {
+		return []netip.AddrPort{}, false
+	}
+	port := u.Port()
+	if port == "" {
+		port = map[string]string{"http": "80", "https": "443"}[u.Scheme]
+	}
+	n, err := strconv.ParseUint(port, 10, 16)
+	if err != nil {
+		return []netip.AddrPort{}, false
+	}
+	return []netip.AddrPort{netip.AddrPortFrom(addr.Unmap(), uint16(n))}, true
 }

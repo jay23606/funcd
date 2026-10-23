@@ -3,8 +3,10 @@ package lake_test
 import (
 	"context"
 	"errors"
+	"maps"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -163,8 +165,11 @@ func TestReconcile_lake_uses_provider_runtime(t *testing.T) {
 	require.Nil(t, spec.Route, "internal-only in V1 — no ingress route programmed")
 
 	// env: the ADR-0085 keypair (derived over the provider identity) + lake key + quack port.
-	require.Equal(t, "AKIA-Lake-lake", spec.Env["AWS_ACCESS_KEY_ID"], "the engine key is derived over its Lake identity")
-	require.Equal(t, "secret-lake", spec.Env["AWS_SECRET_ACCESS_KEY"])
+	require.NotContains(t, spec.Env, "AWS_ACCESS_KEY_ID", "the key pair is issued with the engine, not in its spec (ADR-0270)")
+	require.NotNil(t, spec.IssueEnv)
+	issued := spec.IssueEnv()
+	require.Equal(t, "AKIA-Lake-lake", issued["AWS_ACCESS_KEY_ID"], "the engine key is derived over its Lake identity")
+	require.Equal(t, "secret-lake", issued["AWS_SECRET_ACCESS_KEY"])
 	require.Equal(t, "us-east-1", spec.Env["AWS_REGION"])
 	require.Equal(t, "http://10.63.0.1:9000", spec.Env["AWS_ENDPOINT_URL_S3"])
 	require.Equal(t, "s3://lakehouse/gold/_ducklake/catalog.db", spec.Env["FUNCD_DUCKLAKE_CATALOG"])
@@ -213,6 +218,61 @@ func TestScenario_lake_service_bindings(t *testing.T) {
 	require.Equal(t, "change-me", env["QUACK_TOKEN"], "the resolved Secret Data (the Quack token) is in the engine env")
 	require.Equal(t, "3GB", env["DUCKDB_MEMORY_LIMIT"], "the resolved ConfigMap Data (engine tuning) is in the engine env")
 	require.Equal(t, "2", env["DUCKDB_THREADS"])
+}
+
+// TestEngineEnvOwnKeysWinOverBoundData: a bound ConfigMap or Secret cannot replace the engine's own S3 endpoint,
+// region or key pair, and only the keys the engine reads (QUACK_TOKEN, DUCKDB_*) come through.
+func TestEngineEnvOwnKeysWinOverBoundData(t *testing.T) {
+	ctx := context.Background()
+	st := store.New(storemem.New())
+	seedLakeBucket(t, st)
+	prov := &fakeProvider{}
+
+	cm := &v1.ConfigMap{}
+	cm.TypeMeta = v1.TypeMeta{APIVersion: v1.KindConfigMap.GVK().APIVersion(), Kind: v1.KindConfigMap}
+	cm.Name, cm.Namespace, cm.ResourceGroup = "lake-engine-config", "default", "rg1"
+	cm.Spec.Data = map[string]string{
+		"AWS_ENDPOINT_URL":           "http://elsewhere.invalid:9000",
+		"AWS_ENDPOINT_URL_S3":        "http://elsewhere.invalid:9000",
+		"AWS_REGION":                 "elsewhere-1",
+		"DUCKDB_THREADS":             "2",
+		"HTTP_PROXY":                 "http://elsewhere.invalid:3128",
+		"PYTHONPATH":                 "/tmp/elsewhere",
+		"DUCKDB_EXTENSION_DIRECTORY": "/tmp/elsewhere",
+	}
+	_, err := st.Create(ctx, cm)
+	require.NoError(t, err)
+
+	r := newReconciler(t, st, prov, func(d *lakesvc.ReconcilerDeps) {
+		d.Derive = func(v1.Kind, string, string) (string, string) { return "OWN-ACCESS", "own-secret" }
+		d.S3Endpoint = "http://10.63.0.1:9000"
+		d.Secrets = fakeSecrets{env: map[string]string{
+			"AWS_ACCESS_KEY_ID": "BOUND-ACCESS", "AWS_SECRET_ACCESS_KEY": "bound-secret", "QUACK_TOKEN": "tok-1", "HTTPS_PROXY": "http://elsewhere.invalid:3128",
+		}}
+	})
+	cs := mkLake("lake", v1.FunctionBlob{Alias: "gold", Bucket: "lakehouse", Prefix: "gold"})
+	cs.Spec.Bindings.Secret = []v1.ObjectName{"lake-quack-token"}
+	cs.Spec.Bindings.Config = []v1.ObjectName{"lake-engine-config"}
+	_, err = st.Create(ctx, cs)
+	require.NoError(t, err)
+
+	reconcileOnce(t, r, "lake")
+
+	spec := prov.lastSpec(t)
+	require.NotContains(t, spec.Env, "AWS_ACCESS_KEY_ID", "the bound pair is dropped; the engine's own is issued with it (ADR-0270)")
+	require.NotNil(t, spec.IssueEnv)
+	env := maps.Clone(spec.Env) // the engine's env at create: its spec's env with the issued pair laid over it
+	maps.Copy(env, spec.IssueEnv())
+	require.Equal(t, "http://10.63.0.1:9000", env["AWS_ENDPOINT_URL"])
+	require.Equal(t, "http://10.63.0.1:9000", env["AWS_ENDPOINT_URL_S3"])
+	require.Equal(t, "us-east-1", env["AWS_REGION"])
+	require.Equal(t, "OWN-ACCESS", env["AWS_ACCESS_KEY_ID"])
+	require.Equal(t, "own-secret", env["AWS_SECRET_ACCESS_KEY"])
+	require.Equal(t, "2", env["DUCKDB_THREADS"], "a DUCKDB_ key comes through")
+	require.Equal(t, "tok-1", env["QUACK_TOKEN"], "the Quack token comes through")
+	for _, k := range []string{"HTTP_PROXY", "HTTPS_PROXY", "PYTHONPATH", "DUCKDB_EXTENSION_DIRECTORY"} {
+		require.NotContains(t, env, k, "a bound key the engine does not read is dropped")
+	}
 }
 
 // scenario: provider-pinned-single-writer — the assembled ProviderSpec is pinned at exactly one
@@ -1100,4 +1160,67 @@ func TestScenario_exposure_lake_default_path(t *testing.T) {
 	require.Equal(t, v1.ConditionFalse, ing.Status)
 	require.Equal(t, "Disabled", ing.Reason)
 	require.Equal(t, v1.ConditionTrue, h.condition(t, v1.KindLake.GVK(), "default", "lake", "Ready").Status)
+}
+
+// scenario: switch-does-not-matter — the reconciler fences every engine to its S3 gateway, reading no egress switch,
+// and refuses a gateway named by a hostname rather than start the engine unfenced (ADR-0269).
+func TestScenarioLakeSetsEgressOnly(t *testing.T) {
+	for _, tc := range []struct {
+		endpoint string
+		want     []netip.AddrPort
+	}{
+		{"http://10.63.0.1:9000", []netip.AddrPort{netip.MustParseAddrPort("10.63.0.1:9000")}},
+		{"", []netip.AddrPort{}},
+	} {
+		st := store.New(storemem.New())
+		seedLakeBucket(t, st)
+		prov := &fakeProvider{}
+		r := newReconciler(t, st, prov, func(d *lakesvc.ReconcilerDeps) { d.S3Endpoint = tc.endpoint })
+		_, err := st.Create(context.Background(), mkLake("lake"))
+		require.NoError(t, err)
+		reconcileOnce(t, r, "lake")
+		require.NotNil(t, prov.lastSpec(t).EgressOnly, tc.endpoint)
+		require.Equal(t, tc.want, prov.lastSpec(t).EgressOnly, tc.endpoint)
+	}
+
+	st := store.New(storemem.New())
+	seedLakeBucket(t, st)
+	prov := &fakeProvider{}
+	r := newReconciler(t, st, prov, func(d *lakesvc.ReconcilerDeps) { d.S3Endpoint = "https://s3.example.com" })
+	_, err := st.Create(context.Background(), mkLake("lake"))
+	require.NoError(t, err)
+	reconcileOnce(t, r, "lake")
+	obj, err := st.Get(context.Background(), v1.KindLake.GVK(), "default", "lake")
+	require.NoError(t, err)
+	cond, ok := obj.(*v1.Lake).Status.Conditions.Get("Ready")
+	require.True(t, ok)
+	require.Equal(t, "GatewayEndpointNotAnAddress", cond.Reason)
+}
+
+// scenario: workers-renewed (ADR-0270) — a Lake whose engine carries a key pair asks Converge to replace the engine at
+// its renewal age; with the S3 gateway off its engine carries no pair and no age.
+func TestScenarioLakeEngineRenewalAge(t *testing.T) {
+	for _, gateway := range []bool{true, false} {
+		st := store.New(storemem.New())
+		seedLakeBucket(t, st)
+		prov := &fakeProvider{}
+		r := newReconciler(t, st, prov, func(d *lakesvc.ReconcilerDeps) {
+			if gateway {
+				d.Derive = func(v1.Kind, string, string) (string, string) { return "AK", "SK" }
+			}
+			d.RenewalAge = func(kind v1.Kind, ns, name string) time.Duration {
+				require.Equal(t, v1.KindLake, kind)
+				require.Equal(t, "default/lake", ns+"/"+name)
+				return 20 * time.Hour
+			}
+		})
+		_, err := st.Create(context.Background(), mkLake("lake"))
+		require.NoError(t, err)
+		reconcileOnce(t, r, "lake")
+		want := time.Duration(0)
+		if gateway {
+			want = 20 * time.Hour
+		}
+		require.Equal(t, want, prov.lastSpec(t).MaxAge, "gateway %v", gateway)
+	}
 }

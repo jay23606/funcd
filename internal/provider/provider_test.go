@@ -1,6 +1,7 @@
 package provider_test
 
 import (
+	"net/netip"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -92,4 +93,24 @@ func TestDescriptorValidateAndKind(t *testing.T) {
 	require.NoError(t, provider.Descriptor{Name: "x", Kind: provider.Builtin}.Validate())
 	require.Error(t, provider.Descriptor{Name: "", Kind: provider.Builtin}.Validate())
 	require.Error(t, provider.Descriptor{Name: "x", Kind: provider.Kind("weird")}.Validate())
+}
+
+// EgressTo turns an engine's one destination URL into its fence, and refuses a hostname (ADR-0269).
+func TestEgressTo(t *testing.T) {
+	for _, tc := range []struct {
+		url  string
+		want []netip.AddrPort
+		ok   bool
+	}{
+		{"", []netip.AddrPort{}, true},
+		{"http://10.63.0.1:9000", []netip.AddrPort{netip.MustParseAddrPort("10.63.0.1:9000")}, true},
+		{"http://10.63.0.1", []netip.AddrPort{netip.MustParseAddrPort("10.63.0.1:80")}, true},
+		{"https://10.63.0.1/x", []netip.AddrPort{netip.MustParseAddrPort("10.63.0.1:443")}, true},
+		{"http://s3.example.com:9000", []netip.AddrPort{}, false},
+		{"http://10.63.0.1:99999", []netip.AddrPort{}, false},
+	} {
+		got, ok := provider.EgressTo(tc.url)
+		require.Equal(t, tc.ok, ok, tc.url)
+		require.Equal(t, tc.want, got, tc.url)
+	}
 }

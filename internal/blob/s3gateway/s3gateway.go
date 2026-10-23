@@ -50,6 +50,11 @@ type Deps struct {
 	PDP authz.Authorizer
 	// Master is the node master secret keypairs are derived from (ADR-0085). Required.
 	Master []byte
+	// KeyPeriod and KeySalt make derived pairs rotate (ADR-0270); a zero KeyPeriod keeps the fixed pair. KeyNow is
+	// the clock (nil: time.Now).
+	KeyPeriod time.Duration
+	KeySalt   []byte
+	KeyNow    func() time.Time
 	// External is the optional external-keypair store (the untrusted SigV4 edge); nil ⇒
 	// in-platform only.
 	External ExternalKeys
@@ -61,6 +66,11 @@ type Deps struct {
 	MaxUploadBytes int64
 	// Logger is the server logger; nil ⇒ slog.Default(). The master secret is NEVER logged.
 	Logger *slog.Logger
+}
+
+// Deriver is the key-pair deriver the gateway checks with; the injection of worker pairs uses the same (ADR-0270).
+func (d Deps) Deriver() Deriver {
+	return Deriver{Master: d.Master, Salt: d.KeySalt, Period: d.KeyPeriod, Now: d.KeyNow}
 }
 
 // Server is the funcd S3 gateway: a versitygw s3api.New server over the funcd backend
@@ -123,7 +133,7 @@ func New(d Deps) (*Server, error) {
 		mp:        newMultipartStore(maxUpload),
 		life:      life,
 	}
-	iamImpl := &iam{master: d.Master, external: d.External}
+	iamImpl := &iam{derive: d.Deriver(), external: d.External}
 
 	rootAccess, rootSecret, err := randomRoot()
 	if err != nil {

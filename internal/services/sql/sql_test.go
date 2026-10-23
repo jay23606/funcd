@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"slices"
 	"strings"
 	"sync"
@@ -56,12 +57,14 @@ type fakeRuntime struct {
 	teardowns int
 	dirs      map[provider.ProviderRef]bool
 	reclaims  int
+	last      provider.ProviderSpec
 }
 
 func (f *fakeRuntime) Converge(_ context.Context, spec provider.ProviderSpec) (provider.ProviderStatus, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.dirs[spec.Ref] = true
+	f.last = spec
 	return provider.ProviderStatus{Ready: f.ready, Address: f.addr, Reason: "Starting"}, nil
 }
 func (f *fakeRuntime) Teardown(context.Context, provider.ProviderRef) error {
@@ -426,4 +429,25 @@ func TestRestoreOfTheTransitionMillisecondClearsDataMissing(t *testing.T) {
 			require.Equal(t, tc.cleared, c.Status == v1.ConditionFalse, "DataMissing cleared")
 		})
 	}
+}
+
+// The engine reaches only its change feed (ADR-0269): with no feed, nothing.
+func TestEngineFencedToChangeFeed(t *testing.T) {
+	rt := newRuntime()
+	st := store.New(memory.New())
+	r, err := sqlsvc.NewReconciler(sqlsvc.ReconcilerDeps{
+		Store: st, Provider: rt, Engines: sqlsvc.NewEngines(), Master: []byte(masterKey), Hold: gate{false},
+		ChangeFeedURL: func(v1.NamespaceName, v1.ObjectName) string { return "http://10.63.0.1:41234/v1/changes/tok" },
+	})
+	require.NoError(t, err)
+	create(t, st, "")
+	reconcile(t, r)
+	require.Equal(t, []netip.AddrPort{netip.MustParseAddrPort("10.63.0.1:41234")}, rt.last.EgressOnly)
+
+	rt2 := newRuntime()
+	r2, st2 := setup(t, rt2, false)
+	create(t, st2, "")
+	reconcile(t, r2)
+	require.NotNil(t, rt2.last.EgressOnly, "an engine without a feed is still fenced")
+	require.Empty(t, rt2.last.EgressOnly)
 }

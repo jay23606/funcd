@@ -306,6 +306,9 @@ type Config struct {
 		Endpoint         string `json:"endpoint,omitempty" env:"FUNCD_S3GATEWAY_ENDPOINT"`
 		MaxUploadBytes   int64  `json:"maxUploadBytes,omitempty" env:"FUNCD_S3GATEWAY_MAX_UPLOAD_BYTES" validate:"min=0"`
 		MasterSecretFile string `json:"masterSecretFile,omitempty" env:"FUNCD_S3GATEWAY_MASTER_SECRET_FILE"`
+		// KeyRotationPeriod is how long a derived S3 key pair's window lasts (ADR-0270): a pair is valid for one to
+		// two periods and never past a restart. At least 1h.
+		KeyRotationPeriod string `json:"keyRotationPeriod,omitempty" env:"FUNCD_S3GATEWAY_KEY_ROTATION_PERIOD"`
 	} `json:"s3gateway,omitempty"`
 
 	// Lake tunes the per-Lake lake::query PEP proxies (ADR-0137); they bind the bridge address
@@ -495,6 +498,7 @@ func defaults() Config {
 	c.S3Gateway.Enabled = false
 	c.S3Gateway.ListenAddr = "127.0.0.1:9000"
 	c.S3Gateway.MaxUploadBytes = 1 << 30
+	c.S3Gateway.KeyRotationPeriod = "24h"
 	// Workflow engine (ADR-0094): one attempt by default (no retry), 300s per-step timeout,
 	// 30-day terminal-run retention, 256 KiB run-payload cap.
 	c.Workflow.DefaultRetry = 1

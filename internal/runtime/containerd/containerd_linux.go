@@ -18,7 +18,6 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	goruntime "runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -29,6 +28,7 @@ import (
 	"github.com/containerd/cgroups/v3"
 	runcoptions "github.com/containerd/containerd/api/types/runc/options"
 	containerd "github.com/containerd/containerd/v2/client"
+	"github.com/containerd/containerd/v2/contrib/seccomp"
 	"github.com/containerd/containerd/v2/core/containers"
 	"github.com/containerd/containerd/v2/core/images"
 	"github.com/containerd/containerd/v2/pkg/cio"
@@ -40,6 +40,7 @@ import (
 
 	"github.com/pyvvo/funcd/api/fault"
 	"github.com/pyvvo/funcd/api/types/v1alpha1"
+	"github.com/pyvvo/funcd/internal/network"
 	"github.com/pyvvo/funcd/internal/runtime"
 	"github.com/pyvvo/funcd/internal/runtime/embedimg"
 	"github.com/pyvvo/funcd/internal/runtime/workerpipe"
@@ -515,7 +516,10 @@ func (d *driver) Create(ctx context.Context, spec runtime.WorkerSpec) (runtime.I
 	netnsPath, err := d.netns.pin(cniID, task.Pid())
 	var result *gocni.Result
 	if err == nil {
-		if result, err = d.cni.Setup(nctx, cniID, netnsPath); err != nil {
+		if result, err = d.cni.Setup(nctx, cniID, netnsPath); err == nil && spec.EgressOnly != nil {
+			err = network.FenceNetns(netnsPath, spec.EgressOnly) // before the task starts (ADR-0269)
+		}
+		if err != nil {
 			// Setup does not undo the plugins that succeeded and the CNI spec leaves that DEL to the runtime, so without
 			// it the host-local lease and the masquerade rules outlive the failed Create.
 			if rerr := d.cni.Remove(nctx, cniID, netnsPath); rerr != nil {
@@ -1189,7 +1193,6 @@ func ociOpts(spec runtime.WorkerSpec, image containerd.Image, bootDir string) []
 		oci.WithEnv(envSlice(spec.Env)),
 		oci.WithNoNewPrivileges,
 		withAbsoluteCwd, // crun rejects a non-absolute cwd; WithImageConfig leaves it "" for a WORKDIR-less image
-		withProjectIDFilter,
 	}
 	if cgroups.Mode() == cgroups.Unified {
 		// as containerd's CRI does, the view is given on cgroup v2 only (ADR-0264)
@@ -1211,7 +1214,8 @@ func ociOpts(spec runtime.WorkerSpec, image containerd.Image, bootDir string) []
 		const period = 100000
 		opts = append(opts, oci.WithCPUCFS(int64(spec.Limits.CPUs*period), period))
 	}
-	return opts
+	// last, so the profile sees the spec's final capabilities (ADR-0267)
+	return append(opts, withSeccompProfile)
 }
 
 // The ioctls that set a file's project id or flags (ADR-0268): FS_IOC_FSSETXATTR, _IOW('X', 32, struct fsxattr), and
@@ -1222,14 +1226,51 @@ const (
 	fsIOCSetFlags32 = 0x40046602
 )
 
-// withProjectIDFilter is the seccomp filter of ADR-0268: allow by default, the native and compat architectures, and
-// projectIDRules, so only the platform sets a volume's project id.
-func withProjectIDFilter(_ context.Context, _ oci.Client, _ *containers.Container, s *specs.Spec) error {
+// withSeccompProfile sets containerd's default seccomp profile with its unconditional ioctl allow replaced by
+// ioctlAllowRules, then projectIDRules (ADR-0267, ADR-0268). libseccomp lets an allow rule that overlaps an EPERM rule
+// win, so no allow rule may match a command projectIDRules refuse.
+func withSeccompProfile(_ context.Context, _ oci.Client, _ *containers.Container, s *specs.Spec) error {
 	if s.Linux == nil {
 		s.Linux = &specs.Linux{}
 	}
-	s.Linux.Seccomp = &specs.LinuxSeccomp{DefaultAction: specs.ActAllow, Architectures: seccompArches(), Syscalls: projectIDRules()}
+	p := seccomp.DefaultProfile(s)
+	for i, r := range p.Syscalls {
+		if r.Action == specs.ActAllow && len(r.Args) == 0 {
+			p.Syscalls[i].Names = slices.DeleteFunc(slices.Clone(r.Names), func(n string) bool { return n == "ioctl" })
+		}
+	}
+	p.Syscalls = append(p.Syscalls, ioctlAllowRules()...)
+	p.Syscalls = append(p.Syscalls, projectIDRules()...)
+	s.Linux.Seccomp = p
 	return nil
+}
+
+// projectIDIoctls are the ioctl commands that set a file's project id or flags (ADR-0268).
+func projectIDIoctls() []uint64 { return []uint64{fsIOCSetXattr, fsIOCSetFlags, fsIOCSetFlags32} }
+
+// ioctlAllowRules allow every ioctl command but projectIDIoctls, as disjoint masked prefixes of the command's low 32
+// bits: for each refused command and bit k, the commands that share its bits above k and differ at k, unless a refused
+// command has that prefix too.
+func ioctlAllowRules() []specs.LinuxSyscall {
+	var rules []specs.LinuxSyscall
+	refused := projectIDIoctls()
+	seen := map[[2]uint64]bool{}
+	for _, cmd := range refused {
+		for k := 31; k >= 0; k-- {
+			mask := uint64(0xFFFFFFFF) >> k << k
+			prefix := cmd&mask ^ 1<<k
+			if seen[[2]uint64{mask, prefix}] || slices.ContainsFunc(refused, func(c uint64) bool { return c&mask == prefix }) {
+				continue
+			}
+			seen[[2]uint64{mask, prefix}] = true
+			rules = append(rules, specs.LinuxSyscall{
+				Names:  []string{"ioctl"},
+				Action: specs.ActAllow,
+				Args:   []specs.LinuxSeccompArg{{Index: 1, Value: mask, ValueTwo: prefix, Op: specs.OpMaskedEqual}},
+			})
+		}
+	}
+	return rules
 }
 
 // projectIDRules answer EPERM to the ioctls that set a file's project id or flags and to file_setattr; another
@@ -1238,7 +1279,7 @@ func withProjectIDFilter(_ context.Context, _ oci.Client, _ *containers.Containe
 func projectIDRules() []specs.LinuxSyscall {
 	eperm := uint(syscall.EPERM)
 	rules := make([]specs.LinuxSyscall, 0, 4)
-	for _, cmd := range []uint64{fsIOCSetXattr, fsIOCSetFlags, fsIOCSetFlags32} {
+	for _, cmd := range projectIDIoctls() {
 		rules = append(rules, specs.LinuxSyscall{
 			Names:    []string{"ioctl"},
 			Action:   specs.ActErrno,
@@ -1247,17 +1288,6 @@ func projectIDRules() []specs.LinuxSyscall {
 		})
 	}
 	return append(rules, specs.LinuxSyscall{Names: []string{"file_setattr"}, Action: specs.ActErrno, ErrnoRet: &eperm})
-}
-
-// seccompArches is the host's native architecture and its compat ones.
-func seccompArches() []specs.Arch {
-	switch goruntime.GOARCH {
-	case "amd64":
-		return []specs.Arch{specs.ArchX86_64, specs.ArchX86, specs.ArchX32}
-	case "arm64":
-		return []specs.Arch{specs.ArchAARCH64, specs.ArchARM}
-	}
-	return nil
 }
 
 // withCgroupView gives a worker a cgroup namespace and its own cgroup, read-only, at /sys/fs/cgroup, so a runtime in it

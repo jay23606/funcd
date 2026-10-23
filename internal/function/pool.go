@@ -45,6 +45,9 @@ type poolManifestEntry struct {
 	Env map[string]string `json:"env,omitempty"`
 	// code is the code the row runs the member at; unexported, so it is neither in the manifest nor its signature.
 	code memberCode
+	// s3 marks a member that gets an S3 key pair; createPool adds the pair when it writes the manifest, so a new key
+	// window never changes the signature (ADR-0270 Decision 5).
+	s3 bool
 }
 
 // memberCode is the code a pool row runs a member at, as a Revision snapshots it (ADR-0020).
@@ -214,7 +217,8 @@ func (r *Reconciler) convergePooled(ctx context.Context, fn *v1.Function, a pool
 	if r.asleep(fn) {
 		return verdict{pooled: true}, pass.drainAfter, nil
 	}
-	v := verdict{running: pass.running, serving: servingPhase(fn.Status.Phase), retryAt: pass.retryAt, pollAt: pass.pollAt, startErr: pass.startErr, pooled: true}
+	v := verdict{running: pass.running, serving: servingPhase(fn.Status.Phase), retryAt: pass.retryAt, pollAt: pass.pollAt, startErr: pass.startErr, pooled: true,
+		renewing: pass.renewing}
 	if r.materializer == nil {
 		v.ready = pass.running // legacy mode: no shim to ask (ADR-0020)
 	} else {
@@ -285,10 +289,10 @@ func (r *Reconciler) servingPool(key pooling.PoolKey, member v1.ObjectName, inst
 	waits := ok && d.switched.IsZero() && slices.Contains(d.carried, member)
 	r.poolMu.Unlock()
 	if !waits {
-		return newestPool(insts, r.listening)
+		return newestPool(insts, r.handsOut)
 	}
 	for _, id := range []runtime.InstanceID{d.from, d.next} {
-		if in, ok := newestPool(insts, func(in runtime.Instance) bool { return in.ID == id && r.listening(in) }); ok {
+		if in, ok := newestPool(insts, func(in runtime.Instance) bool { return in.ID == id && r.handsOut(in) }); ok {
 			return in, true
 		}
 	}
@@ -389,6 +393,7 @@ type poolPass struct {
 	drainAfter   time.Duration
 	crashLoop    string
 	pollAt       time.Time
+	renewing     bool // the current worker boots after a key renewal (ADR-0270)
 }
 
 // ensurePool drives key's pool workers to their desired state (ADR-0046 Decisions 4 & 6, ADR-0190 Decision 8): it builds
@@ -482,7 +487,21 @@ func (r *Reconciler) ensurePool(ctx context.Context, key pooling.PoolKey, self *
 		}
 		started = true
 	default:
-		// up, manifest unchanged → no-op (the idempotent path; no restart).
+		// up, manifest unchanged → no-op (the idempotent path; no restart), unless its key pairs are due (ADR-0270): a
+		// draining worker gets no call until it is restarted with fresh ones, same manifest
+		switch w := r.poolRenewal(cur, key.Namespace, poolName, manifest); {
+		case w == renewDrain:
+			pass.retryAt = now.Add(r.drainPoll)
+		case w.now():
+			r.logger.Info("renewing a pool worker for fresh S3 key pairs", "namespace", key.Namespace, "pool", poolName,
+				"instance", cur[0].ID, "age", now.Sub(cur[0].CreatedAt), "how", w.how())
+			r.endRenewal(cur[0].ID)
+			r.markRenewBoot(cur[0].ID)
+			if pass.startErr, err = r.restartPool(ctx, key, cur, sig, manifest, shared, keep); err != nil {
+				return poolPass{}, err
+			}
+			started = true
+		}
 	}
 
 	insts, err = r.namedInstances(ctx, key.Namespace, poolName)
@@ -491,6 +510,7 @@ func (r *Reconciler) ensurePool(ctx context.Context, key pooling.PoolKey, self *
 	}
 	cur, old = splitPool(insts, sig)
 	pass.running = runningCount(cur)
+	pass.renewing = r.renewalBooting(cur)
 	if started && len(cur) > 0 {
 		pass.retryAt = earlier(pass.retryAt, r.boot.startResult(cur[0].ID, now, pass.startErr))
 	}
@@ -755,21 +775,19 @@ func (r *Reconciler) poolManifest(ctx context.Context, members []*v1.Function, s
 		manifest = append(manifest, poolManifestEntry{
 			Name: string(m.Name), Artifact: path, Handler: m.Spec.Handler, Contract: contractPath, Env: env,
 			code: memberCode{image: m.Spec.Image, digest: m.Spec.ImageDigest, handler: m.Spec.Handler},
+			s3:   r.s3Gateway.Enabled && r.s3Gateway.Derive != nil && len(m.Spec.Bindings.Blob) > 0,
 		})
 	}
 	return manifest, desired, nil
 }
 
-// memberEnv is the env only member m gets, set in its manifest row: its S3 keypair when it binds spec.bindings.blob, its
-// lake token per alias, and its bundle dir. Both credentials derive from the name, so a row is stable across
-// passes. A key the shared env sets is omitted, so the shared env wins as a solo worker's later env does.
+// memberEnv is the env only member m gets, set in its manifest row: its lake token per alias and its bundle dir. It
+// derives from the name, so a row is stable across passes; the S3 key pair is added by createPool (withPairs). A key
+// the shared env sets is omitted, so the shared env wins as a solo worker's later env does.
 func (r *Reconciler) memberEnv(m *v1.Function, artifact string, shared map[string]string) (map[string]string, error) {
 	env := map[string]string{}
 	if artifact != "" {
 		env["FUNCD_BUNDLE_DIR"] = filepath.Dir(artifact)
-	}
-	if r.s3Gateway.Enabled && r.s3Gateway.Derive != nil && len(m.Spec.Bindings.Blob) > 0 {
-		env["AWS_ACCESS_KEY_ID"], env["AWS_SECRET_ACCESS_KEY"] = r.s3Gateway.Derive(v1.KindFunction, string(m.Namespace), string(m.Name))
 	}
 	if len(m.Spec.Bindings.Lake) > 0 {
 		token, err := lakegw.DeriveLakeToken(r.lakeMaster, m.Namespace, m.Name)
@@ -821,7 +839,7 @@ func (r *Reconciler) poolSharedEnv(self *v1.Function, bindEnv envresolve.Resolve
 // apart (startPoolInstance).
 func (r *Reconciler) createPool(ctx context.Context, key pooling.PoolKey, sig string, manifest []poolManifestEntry, shared map[string]string, keep []v1.ObjectName) (startErr, err error) {
 	const op = "function.createPool"
-	manifestPath, err := writePoolManifest(r.poolManifestDir, key, manifest)
+	manifestPath, err := writePoolManifest(r.poolManifestDir, key, r.withPairs(key.Namespace, manifest))
 	if err != nil {
 		return nil, fault.Wrapf(err, fault.Internal, op, "write pool manifest")
 	}
@@ -863,6 +881,24 @@ func (r *Reconciler) createPool(ctx context.Context, key pooling.PoolKey, sig st
 	}
 	r.forgetRead(inst.ID)
 	return r.startPoolInstance(ctx, []runtime.Instance{inst}), nil
+}
+
+// withPairs is manifest with each marked member's S3 key pair in its row's env, derived now, as the pool worker is
+// created (ADR-0270 Decision 5).
+func (r *Reconciler) withPairs(ns v1.NamespaceName, manifest []poolManifestEntry) []poolManifestEntry {
+	out := slices.Clone(manifest)
+	for i, m := range out {
+		if !m.s3 {
+			continue
+		}
+		env := maps.Clone(m.Env)
+		if env == nil {
+			env = map[string]string{}
+		}
+		env["AWS_ACCESS_KEY_ID"], env["AWS_SECRET_ACCESS_KEY"] = r.s3Gateway.Derive(v1.KindFunction, string(ns), m.Name)
+		out[i].Env = env
+	}
+	return out
 }
 
 // restartPool stops the pool worker insts of the current manifest and creates it again under the same instance id from

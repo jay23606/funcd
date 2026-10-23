@@ -3,6 +3,7 @@
 - **Status**: Implemented
 - **Superseded in part by**: [ADR-0158](0158-pool-member-identity.md) (2026-10-05) — Constraints, cannot-forge-peer premise, Alternatives, Consequences: pool mates can read each other's keypairs.
 - **Superseded in part by**: [ADR-0175](0175-engine-is-its-own-principal.md) (2026-10-05) — fixed in-platform key format and decoding a key to (ns, fn): the key carries the owner kind.
+- **Superseded in part by**: [ADR-0270](0270-derived-s3-key-pairs-rotate.md) (2026-10-23) — deterministic-across-restart: a derived pair now holds a time window and a per-start salt, and rotates.
 - **Superseded in part by**: [ADR-0238](0238-container-bridge-address.md) (2026-10-12) — the default of `AWS_ENDPOINT_URL_S3`: an empty `s3gateway.endpoint` under containerd now derives from the bridge address when the gateway listens on it.
 - **Date**: 2026-06-29 (Accepted 2026-06-29 after one judge pass — **no Blockers; the security model was verified
   end-to-end against real versitygw v1.6.0** [SigV4 → `CheckValidSignature(…, account.Secret, …)` against

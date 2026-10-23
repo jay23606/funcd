@@ -179,6 +179,9 @@ duckdb:
       to: quack-attach-probe.py
     - from: e2e/fixtures/cgroup-view.py
       to: cgroup-view.py
+    # ADR-0269: a query that points an S3 secret at the VM's own address reaches nothing
+    - from: e2e/fixtures/fence-probe.sh
+      to: fence-probe.sh
   tokens:
     admin: duckdb-lane-admin
     developer: duckdb-lane-developer

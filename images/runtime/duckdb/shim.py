@@ -101,16 +101,16 @@ def _data_path(catalog_url: str) -> str:
     return catalog_url[: i + 1]
 
 
-def _s3_client(endpoint: str, region: str):
+def _s3_client(endpoint: str, region: str, access: str, secret: str):
     """A boto3 S3 client pinned to the injected funcd gateway endpoint + the per-fn keypair."""
     return boto3.client(
         "s3",
         endpoint_url=endpoint,
         region_name=region,
-        aws_access_key_id=os.environ["AWS_ACCESS_KEY_ID"],
-        aws_secret_access_key=os.environ["AWS_SECRET_ACCESS_KEY"],
-        # path-style addressing (the F47 surface is path-style, ADR-0080).
-        config=boto3.session.Config(s3={"addressing_style": "path"}),
+        aws_access_key_id=access,
+        aws_secret_access_key=secret,
+        # path-style addressing (the F47 surface is path-style, ADR-0080); no proxy from the environment.
+        config=boto3.session.Config(s3={"addressing_style": "path"}, proxies={}),
     )
 
 
@@ -150,19 +150,18 @@ def _tune(con: "duckdb.DuckDBPyConnection", environ: Mapping[str, str]) -> None:
             raise SystemExit(2) from exc
 
 
-def _configure(con: "duckdb.DuckDBPyConnection", endpoint: str, region: str) -> None:
+def _configure(con: "duckdb.DuckDBPyConnection", endpoint: str, region: str, access: str, secret: str) -> None:
     """Pin the S3 client to the injected endpoint and keep spills and secrets inside the engine, before the ATTACH.
 
     Disabling ``HTTPFileSystem`` blocks arbitrary ``http(s)://`` reads while leaving the S3FileSystem
     (the funcd data path) enabled. ``allow_persistent_secrets`` must be set before anything uses the
-    secret manager.
+    secret manager. The key pair goes only into a temporary secret, whose value a query sees redacted; a
+    plain setting would hand it to any query.
     """
     host = endpoint.split("://", 1)[-1]  # DuckDB's s3_endpoint is host[:port], no scheme.
     use_ssl = endpoint.lower().startswith("https://")
     con.execute("SET s3_endpoint=?", [host])
     con.execute("SET s3_region=?", [region])
-    con.execute("SET s3_access_key_id=?", [os.environ["AWS_ACCESS_KEY_ID"]])
-    con.execute("SET s3_secret_access_key=?", [os.environ["AWS_SECRET_ACCESS_KEY"]])
     con.execute("SET s3_url_style='path'")
     con.execute(f"SET s3_use_ssl={'true' if use_ssl else 'false'}")
     con.execute("SET s3_enable_deprecated_url_parameters=false")
@@ -170,6 +169,11 @@ def _configure(con: "duckdb.DuckDBPyConnection", endpoint: str, region: str) -> 
     os.makedirs(LOCAL_TMP, exist_ok=True)
     con.execute(f"SET temp_directory='{LOCAL_TMP}'")
     con.execute("SET allow_persistent_secrets=false")
+    con.execute(
+        "CREATE TEMPORARY SECRET funcd_lake_s3 (TYPE s3, KEY_ID ?, SECRET ?, ENDPOINT ?, REGION ?, "
+        "URL_STYLE 'path', USE_SSL ?, SCOPE 's3://')",
+        [access, secret, host, region, use_ssl],
+    )
 
 
 def _confine(con: "duckdb.DuckDBPyConnection") -> None:
@@ -283,13 +287,16 @@ def main() -> int:
     region = os.environ.get("AWS_REGION", "us-east-1")
     _require("AWS_ACCESS_KEY_ID")
     _require("AWS_SECRET_ACCESS_KEY")
+    # DuckDB fills its S3 settings from these variables, and a query can read settings: take them out of the
+    # environment before DuckDB starts, and pass them on only explicitly.
+    access, secret = os.environ.pop("AWS_ACCESS_KEY_ID"), os.environ.pop("AWS_SECRET_ACCESS_KEY")
     bucket, key = _split_s3_url(catalog_url)
     data_path = _data_path(catalog_url)
 
-    s3 = _s3_client(endpoint, region)
+    s3 = _s3_client(endpoint, region, access, secret)
     con = _connect()
     _tune(con, os.environ)
-    _configure(con, endpoint, region)
+    _configure(con, endpoint, region, access, secret)
 
     # Recover: GetObject the catalog from blob → local file → ATTACH (fresh on first deploy). The
     # Parquet DATA_PATH is the owned prefix on S3 (the F47 surface); the catalog is the local SQLite.

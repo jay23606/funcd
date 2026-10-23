@@ -1,6 +1,7 @@
 # ADR-0175: A catalog engine is its own principal
 
 - **Status**: Implemented (2026-10-05)
+- **Superseded in part by**: [ADR-0270](0270-derived-s3-key-pairs-rotate.md) (2026-10-23) — the in-platform key format gains a window part.
 - **Date**: 2026-10-05 (judged twice by three lenses; held from publication)
 - **Deciders**: green-0-rabbit
 - **Tags**: authorization, cedar, s3, egress, catalog, identity

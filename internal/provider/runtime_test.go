@@ -1,8 +1,10 @@
 package provider_test
 
 import (
+	"bytes"
 	"context"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +12,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -626,4 +629,75 @@ func TestScenarioProviderNeverTouchesFunctionWorker(t *testing.T) {
 
 	_, err = provider.NewRuntime(provider.Deps{Runtime: rt})
 	require.Equal(t, fault.Invalid, fault.KindOf(err), "a provider runtime names the kind it runs")
+}
+
+// scenario: workers-renewed (ADR-0270) — an engine younger than MaxAge is adopted; one at MaxAge is retired and
+// re-created, so it carries a fresh key pair.
+func TestScenarioEngineReplacedAtMaxAge(t *testing.T) {
+	host, port, closeFn := engineServer(t, 200)
+	defer closeFn()
+	rt := newFakeRuntime(host, port)
+	now := time.Unix(1_000_000, 0)
+	var logs bytes.Buffer
+	pr, _ := provider.NewRuntime(provider.Deps{Runtime: rt, OwnerKind: v1.KindLake, Now: func() time.Time { return now },
+		Logger: slog.New(slog.NewTextHandler(&logs, nil))})
+	ctx := context.Background()
+	spec := specFor(host, port, nil)
+	spec.MaxAge = time.Hour
+
+	_, err := pr.Converge(ctx, spec)
+	require.NoError(t, err)
+	rt.mu.Lock()
+	for id, in := range rt.instances {
+		in.CreatedAt = now
+		rt.instances[id] = in
+	}
+	rt.mu.Unlock()
+
+	now = now.Add(time.Hour - time.Second)
+	_, err = pr.Converge(ctx, spec)
+	require.NoError(t, err)
+	require.Len(t, rt.created, 1, "an engine younger than MaxAge is adopted")
+
+	now = now.Add(time.Second)
+	_, err = pr.Converge(ctx, spec)
+	require.NoError(t, err)
+	require.Len(t, rt.created, 2, "an engine at MaxAge is re-created")
+	require.Len(t, rt.stopped, 1, "the aged engine is retired")
+	require.Contains(t, logs.String(), `msg="replacing an engine for a fresh key pair"`)
+}
+
+// scenario: workers-renewed (ADR-0270 Decision 5) — IssueEnv's pair reaches the engine Converge creates, and a pair of
+// a later key window replaces no running engine, since it is not part of the spec an engine is compared by (#1195).
+func TestScenarioIssuedEnvReplacesNoEngine(t *testing.T) {
+	host, port, closeFn := engineServer(t, 200)
+	defer closeFn()
+	rt := newFakeRuntime(host, port)
+	pr, _ := provider.NewRuntime(provider.Deps{Runtime: rt, OwnerKind: v1.KindLake})
+	ctx := context.Background()
+	spec := specFor(host, port, nil)
+	window := "1"
+	spec.IssueEnv = func() map[string]string { return map[string]string{"AWS_ACCESS_KEY_ID": "AK-" + window} }
+
+	_, err := pr.Converge(ctx, spec)
+	require.NoError(t, err)
+	require.Len(t, rt.created, 1)
+	require.Equal(t, "AK-1", rt.created[0].Env["AWS_ACCESS_KEY_ID"])
+
+	window = "2"
+	_, err = pr.Converge(ctx, spec)
+	require.NoError(t, err)
+	require.Len(t, rt.created, 1, "a new key window replaces no engine")
+
+	issue := spec.IssueEnv
+	spec.IssueEnv = nil
+	_, err = pr.Converge(ctx, spec)
+	require.NoError(t, err)
+	require.Len(t, rt.created, 2, "losing the pair replaces the engine")
+
+	spec.IssueEnv = issue
+	_, err = pr.Converge(ctx, spec)
+	require.NoError(t, err)
+	require.Len(t, rt.created, 3, "gaining a pair replaces the engine")
+	require.Equal(t, "AK-2", rt.created[2].Env["AWS_ACCESS_KEY_ID"])
 }

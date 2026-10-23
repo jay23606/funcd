@@ -369,3 +369,58 @@ func TestIssue1155_FreeLoopbackAddrAvoidsTheEphemeralRange(t *testing.T) {
 		t.Fatalf("freeLoopbackAddr reserved ephemeral port %d", p)
 	}
 }
+
+// scenario: restart-rotates (ADR-0270) — with rotation on, a pair from one run of the platform is refused by the next
+// run on the same master, and the next run's own pair writes.
+func TestScenarioRestartRotatesPairs(t *testing.T) {
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	start := func() (*Platform, string) {
+		p, addr := startS3Gateway(t, freeLoopbackAddr, func(addr string) (*Platform, error) {
+			return New(InMemory(), WithS3Gateway(addr, "", 0, "", dataDir), WithS3KeyRotation(time.Hour))
+		}, s3GatewayRun)
+		bucket := &v1.Bucket{TypeMeta: v1.TypeMeta{APIVersion: v1.KindBucket.GVK().APIVersion(), Kind: v1.KindBucket}}
+		bucket.Name, bucket.Namespace, bucket.ResourceGroup = "lake", "default", "rg1"
+		bucket.Spec = v1.BucketSpec{Prefixes: []v1.BucketPrefix{{Name: "raw", Owner: "writer"}}}
+		writer := &v1.Function{TypeMeta: v1.TypeMeta{APIVersion: v1.KindFunction.GVK().APIVersion(), Kind: v1.KindFunction}}
+		writer.Name, writer.Namespace, writer.ResourceGroup = "writer", "default", "rg1"
+		writer.Spec = v1.FunctionSpec{Runtime: "nodejs22"}
+		for _, obj := range []v1.Object{bucket, writer} {
+			if _, err := p.cfg.store.Create(ctx, obj); err != nil {
+				t.Fatalf("seed %s: %v", obj.GroupVersionKind().Kind, err)
+			}
+		}
+		return p, addr
+	}
+	put := func(addr string, kp s3gateway.Keypair) error {
+		cfg, err := awsconfig.LoadDefaultConfig(ctx, awsconfig.WithRegion("us-east-1"),
+			awsconfig.WithCredentialsProvider(awscreds.NewStaticCredentialsProvider(kp.AccessKey, kp.SecretKey, "")))
+		if err != nil {
+			t.Fatalf("aws config: %v", err)
+		}
+		endpoint := "http://" + addr
+		client := awss3.NewFromConfig(cfg, func(o *awss3.Options) {
+			o.BaseEndpoint = &endpoint
+			o.UsePathStyle = true
+			o.RetryMaxAttempts = 1
+			o.RequestChecksumCalculation = aws.RequestChecksumCalculationWhenRequired
+			o.ResponseChecksumValidation = aws.ResponseChecksumValidationWhenRequired
+		})
+		_, err = client.PutObject(ctx, &awss3.PutObjectInput{Bucket: aws.String("lake"), Key: aws.String("raw/x"), Body: bytes.NewReader([]byte("x"))})
+		return err
+	}
+
+	first, firstAddr := start()
+	old := first.S3Keys().Keypair(v1.KindFunction, "default", "writer")
+	if err := put(firstAddr, old); err != nil {
+		t.Fatalf("the first run's pair must write: %v", err)
+	}
+	second, secondAddr := start()
+	var re interface{ HTTPStatusCode() int }
+	if err := put(secondAddr, old); !errors.As(err, &re) || re.HTTPStatusCode() != http.StatusForbidden {
+		t.Fatalf("the first run's pair must be refused after a restart, got %v", err)
+	}
+	if err := put(secondAddr, second.S3Keys().Keypair(v1.KindFunction, "default", "writer")); err != nil {
+		t.Fatalf("the second run's pair must write: %v", err)
+	}
+}

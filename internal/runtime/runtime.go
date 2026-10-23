@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/netip"
 	"time"
 
 	"github.com/pyvvo/funcd/api/types/v1alpha1"
@@ -94,6 +95,9 @@ type WorkerSpec struct {
 	Env       map[string]string // typed-flat; no any
 	Mounts    []Mount           // host→container bind mounts (container drivers; ADR-0032)
 	Limits    Limits
+	// EgressOnly, when non-nil (empty included), limits the worker's new outbound connections to TCP to these
+	// endpoints (containerd; ADR-0269). nil means no fence.
+	EgressOnly []netip.AddrPort
 }
 
 // Instance is the observed state of one worker.
