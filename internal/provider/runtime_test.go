@@ -30,6 +30,7 @@ type fakeRuntime struct {
 	port      int
 	state     containerrt.State // the state newly-created instances report
 	startErr  error             // returned by the next Start, once
+	stopErr   error             // returned by the next Stop, once
 	created   []containerrt.WorkerSpec
 	started   []containerrt.InstanceID
 	stopped   []containerrt.InstanceID
@@ -78,6 +79,10 @@ func (f *fakeRuntime) Start(_ context.Context, id containerrt.InstanceID) error 
 func (f *fakeRuntime) Stop(_ context.Context, id containerrt.InstanceID) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if err := f.stopErr; err != nil {
+		f.stopErr = nil
+		return err
+	}
 	f.stopped = append(f.stopped, id)
 	delete(f.instances, id)
 	return nil
@@ -318,6 +323,65 @@ func TestConverge_supervision_recreates_and_adopts(t *testing.T) {
 	_, err = pr.Converge(ctx, spec)
 	require.NoError(t, err)
 	require.Len(t, rt.created, 2, "a crashed engine is recreated on the next Converge")
+}
+
+// Issue #1195: a Lake deleted and applied again before its reconciler runs, or changed in place, reaches Converge with
+// a new spec while the old engine still runs. Converge adopted any running engine, so the Lake ran the old engine's
+// memory, env and bindings. It now replaces an engine created from another spec, and still adopts one of the same spec.
+func TestIssue1195_ConvergeReplacesAnEngineOfAnotherSpec(t *testing.T) {
+	host, port, closeFn := engineServer(t, 200)
+	defer closeFn()
+	rt := newFakeRuntime(host, port)
+	pr, err := provider.NewRuntime(provider.Deps{Runtime: rt, OwnerKind: v1.KindLake})
+	require.NoError(t, err)
+	ctx := context.Background()
+	old := specFor(host, port, nil)
+	_, err = pr.Converge(ctx, old)
+	require.NoError(t, err)
+	require.Len(t, rt.created, 1)
+	first := rt.created[0]
+
+	next := specFor(host, port, nil)
+	next.Env["DUCKDB_MEMORY_LIMIT"] = "512MB"
+	next.Resources = provider.ResourceSpec{Memory: "1Gi"}
+	_, err = pr.Converge(ctx, next)
+	require.NoError(t, err)
+	require.Len(t, rt.created, 2, "an engine of another spec is replaced")
+	require.Equal(t, "512MB", rt.created[1].Env["DUCKDB_MEMORY_LIMIT"], "the new engine runs the new spec")
+	require.Contains(t, rt.stopped, containerrt.NewInstanceID(first.Namespace, first.Name, first.Revision, first.Replica),
+		"the old engine is stopped")
+	live, err := rt.List(ctx, "default")
+	require.NoError(t, err)
+	require.Len(t, live, 1, "one engine runs")
+
+	_, err = pr.Converge(ctx, next)
+	require.NoError(t, err)
+	require.Len(t, rt.created, 2, "an engine of the same spec is adopted")
+}
+
+// Issue #1195: a retire that fails leaves the old engine's spec known, so the next Converge retries the replacement
+// rather than adopting the old engine.
+func TestIssue1195_AFailedRetireIsTriedAgain(t *testing.T) {
+	host, port, closeFn := engineServer(t, 200)
+	defer closeFn()
+	rt := newFakeRuntime(host, port)
+	pr, err := provider.NewRuntime(provider.Deps{Runtime: rt, OwnerKind: v1.KindLake})
+	require.NoError(t, err)
+	ctx := context.Background()
+	_, err = pr.Converge(ctx, specFor(host, port, nil))
+	require.NoError(t, err)
+
+	next := specFor(host, port, nil)
+	next.Env["DUCKDB_MEMORY_LIMIT"] = "512MB"
+	rt.stopErr = fault.Unavailablef("fakeRuntime.Stop", "containerd is restarting")
+	_, err = pr.Converge(ctx, next)
+	require.Error(t, err, "the failed retire fails the pass")
+	require.Len(t, rt.created, 1, "no engine is created beside the old one")
+
+	_, err = pr.Converge(ctx, next)
+	require.NoError(t, err)
+	require.Len(t, rt.created, 2, "the next pass replaces the old engine")
+	require.Equal(t, "512MB", rt.created[1].Env["DUCKDB_MEMORY_LIMIT"])
 }
 
 // scenario: provider-torn-down — Teardown Stops the engine and removes its programmed route.
