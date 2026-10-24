@@ -103,17 +103,18 @@ type planFlags struct {
 	write                                     bool
 }
 
-// backupPlanCmd turns recovery objectives into settings, offline (ADR-0223): it builds no SDK client.
+// backupPlanCmd turns recovery objectives into settings, offline (ADR-0223, ADR-0274): it builds no SDK client.
 func (a *cli) backupPlanCmd() *cobra.Command {
 	var f planFlags
 	cmd := &cobra.Command{
-		Use:   "plan <platform|kv|blob|schedule>",
+		Use:   "plan <platform|kv|blob|lake|schedule>",
 		Short: "Turn recovery objectives into backup settings the daemon accepts (offline)",
 		Long: "Turn recovery objectives into backup settings: --rpo (the most data a loss may take) and --keep (how far " +
-			"back a restore point must reach) set the platform, kv or blob keys of funcdconfig.yaml, or the schedule and " +
-			"ttl of a BackupSchedule (-f). The result passes the daemon's own loader, then is printed, or written in " +
-			"place with --write. --rto with --size and --speed checks the download time, a lower bound: only a " +
-			"restore drill proves an RTO. Exit 1: refused, nothing written; 3: the RTO is below the download time.",
+			"back a restore point must reach) set the platform, kv, blob or lake keys of funcdconfig.yaml, or the " +
+			"schedule and ttl of a BackupSchedule (-f). The result passes the daemon's own loader, then is printed, " +
+			"or written in place with --write. --rto with --size and --speed checks the download time, a lower " +
+			"bound: only a restore drill proves an RTO. Exit 1: refused, nothing written; 3: the RTO is below the " +
+			"download time.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c := plan.Component(args[0])
@@ -133,7 +134,7 @@ func (a *cli) backupPlanCmd() *cobra.Command {
 	fl.StringVar(&f.rto, "rto", "", "the target recovery time, a duration; needs --size and --speed")
 	fl.StringVar(&f.size, "size", "", "the bytes a restore downloads: an integer with an optional Ki, Mi, Gi or Ti suffix")
 	fl.StringVar(&f.speed, "speed", "", "the link's bytes per second, in the grammar of --size")
-	fl.StringVar(&f.config, "config", "", "platform, kv, blob: path to funcdconfig.yaml (else $FUNCD_CONFIG, "+
+	fl.StringVar(&f.config, "config", "", "platform, kv, blob, lake: path to funcdconfig.yaml (else $FUNCD_CONFIG, "+
 		"./funcdconfig.yaml, /etc/funcd/funcdconfig.yaml)")
 	fl.StringVarP(&f.file, "file", "f", "", "schedule: a manifest holding one BackupSchedule; - for stdin")
 	fl.BoolVar(&f.write, "write", false, "edit the file in place instead of printing")
@@ -144,21 +145,30 @@ func (a *cli) backupPlanCmd() *cobra.Command {
 func (f planFlags) objectives(c plan.Component, changed func(string) bool) (plan.Objectives, error) {
 	var o plan.Objectives
 	switch c {
-	case plan.Platform, plan.KV, plan.Blob:
+	case plan.Platform, plan.KV, plan.Blob, plan.Lake:
 		if changed("file") {
 			return o, fault.Invalidf(planOp, "-f applies to schedule; %s reads --config", c)
 		}
 	case plan.Schedule:
 		switch {
 		case changed("config"):
-			return o, fault.Invalidf(planOp, "--config applies to platform, kv and blob; schedule reads -f")
+			return o, fault.Invalidf(planOp, "--config applies to platform, kv, blob and lake; schedule reads -f")
 		case f.file == "":
 			return o, fault.Invalidf(planOp, "schedule needs -f <manifest>")
 		case f.write && f.file == "-":
 			return o, fault.Invalidf(planOp, "--write needs a file: -f - reads stdin")
 		}
 	default:
-		return o, fault.Invalidf(planOp, "component %q: want platform, kv, blob or schedule", c)
+		return o, fault.Invalidf(planOp, "component %q: want platform, kv, blob, lake or schedule", c)
+	}
+	if c == plan.Lake {
+		if changed("keep") {
+			return o, fault.Invalidf(planOp, "--keep does not apply to lake: a Lake keeps no backups of its own; an App's "+
+				"are a BackupSchedule's (scope.lakes)")
+		}
+		if !changed("rpo") {
+			return o, fault.Invalidf(planOp, "lake needs --rpo")
+		}
 	}
 	if !changed("rpo") && !changed("keep") {
 		return o, fault.Invalidf(planOp, "give --rpo, --keep or both")

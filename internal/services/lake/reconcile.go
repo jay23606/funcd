@@ -385,7 +385,8 @@ func (r *Reconciler) syncIngressRoute(ctx context.Context, cs *v1.Lake, proxyURL
 
 // engineEnv assembles the engine's environment (ADR-0087), but for its S3 key pair, issued with the engine
 // (ProviderSpec.IssueEnv, ADR-0270): AWS_REGION/AWS_ENDPOINT_URL, FUNCD_DUCKLAKE_CATALOG (the
-// lake's s3:// key), FUNCD_QUACK_PORT, and the resolved spec.bindings.secret (the Quack token) +
+// lake's s3:// key), FUNCD_QUACK_PORT, FUNCD_LAKE_SAVE_INTERVAL (lake.saveInterval, ADR-0274), and the resolved
+// spec.bindings.secret (the Quack token) +
 // spec.bindings.config (DUCKDB_*) Data keys. funcd's own keys win over bound data, so a bound ConfigMap or Secret
 // cannot point the engine's S3 traffic or key pair elsewhere. A secret/config resolution failure is returned (the
 // caller fails the service closed).
@@ -399,6 +400,9 @@ func (r *Reconciler) engineEnv(ctx context.Context, cs *v1.Lake) (map[string]str
 	if r.s3Endpoint != "" {
 		own["AWS_ENDPOINT_URL_S3"] = r.s3Endpoint
 		own["AWS_ENDPOINT_URL"] = r.s3Endpoint
+	}
+	if r.saveInterval > 0 {
+		own["FUNCD_LAKE_SAVE_INTERVAL"] = v1.Duration(r.saveInterval).String()
 	}
 
 	// spec.bindings.config (ConfigMaps, non-sensitive) + spec.bindings.secret (Secrets, sensitive) → guarded engine

@@ -224,6 +224,51 @@ func TestScenarioScheduleFromObjectives(t *testing.T) {
 	require.Empty(t, stdout)
 }
 
+// scenario: plan-lake-rpo (ADR-0274) — lake.saveInterval at min(R ÷ 2, 1h) in ADR-0194's form, printed with no config
+// file; with --write it is inserted into a commented file, every other byte kept, and a second plan replaces it.
+func TestScenarioPlanLakeRPO(t *testing.T) {
+	dir := planEnv(t)
+	for _, tc := range []struct{ rpo, want string }{{"10s", "5s"}, {"3s", "1s500ms"}, {"1s", "500ms"}, {"24h", "1h"}} {
+		stdout, stderr, err := runPlan("lake", "--rpo", tc.rpo)
+		require.NoError(t, err, tc.rpo)
+		require.Equal(t, "lake:\n  saveInterval: "+tc.want+"\n", stdout, tc.rpo)
+		require.Empty(t, stderr, tc.rpo)
+	}
+
+	file := filepath.Join(dir, "funcdconfig.yaml")
+	writePlanFile(t, file, commentedConfig, 0o640)
+	stdout, stderr, err := runPlan("lake", "--rpo", "10s", "--write")
+	require.NoError(t, err)
+	require.Equal(t, "lake.saveInterval: (absent) → 5s\n", stdout)
+	require.Equal(t, recipientsWarn+"restart funcd to apply\n", stderr)
+	requireFile(t, file, commentedConfig+"lake:\n  saveInterval: 5s\n")
+
+	stdout, _, err = runPlan("lake", "--rpo", "3s", "--write")
+	require.NoError(t, err)
+	require.Equal(t, "lake.saveInterval: 5s → 1s500ms\n", stdout)
+	requireFile(t, file, commentedConfig+"lake:\n  saveInterval: 1s500ms\n")
+	cfg, err := config.Load(file, config.Flags{})
+	require.NoError(t, err)
+	d, err := cfg.LakeSaveInterval()
+	require.NoError(t, err)
+	require.Equal(t, 1500*time.Millisecond, d)
+}
+
+// scenario: plan-lake-rpo-too-small (ADR-0274) — --rpo 800ms: half of it is under the 500ms floor, so exit 1 naming
+// --rpo, nothing printed or written.
+func TestScenarioPlanLakeRPOTooSmall(t *testing.T) {
+	dir := planEnv(t)
+	file := filepath.Join(dir, "funcdconfig.yaml")
+	writePlanFile(t, file, commentedConfig, 0o600)
+	stdout, stderr, err := runPlan("lake", "--rpo", "800ms", "--write")
+	require.Equal(t, fault.Invalid, fault.KindOf(err))
+	require.Contains(t, errorLine(err), "--rpo 800ms: a Lake saves its catalog at most every 500ms, so want at least 1s")
+	require.Equal(t, 1, exitCode(err))
+	require.Empty(t, stdout)
+	require.Empty(t, stderr)
+	requireFile(t, file, commentedConfig)
+}
+
 // scenario: write-keeps-the-rest (ADR-0223) — --write edits interval and inserts objectives.rpo in a commented file;
 // every other byte, the comments and blank lines, and the file's mode stay; stdout lists both changes.
 func TestScenarioWriteKeepsTheRest(t *testing.T) {
@@ -352,8 +397,11 @@ func TestFlagRules(t *testing.T) {
 		{[]string{"platform", "--rpo", "1h", "--rto", "1h", "--size", "16777216Ti", "--speed", "1"}, fault.Invalid, `--size "16777216Ti"`},
 		{[]string{"schedule", "-f", "-", "--rpo", "1h", "--write"}, fault.Invalid, "--write needs a file: -f - reads stdin"},
 		{[]string{"schedule", "--rpo", "1h"}, fault.Invalid, "schedule needs -f"},
-		{[]string{"schedule", "-f", manifest, "--config", manifest, "--rpo", "1h"}, fault.Invalid, "--config applies to platform, kv and blob"},
+		{[]string{"schedule", "-f", manifest, "--config", manifest, "--rpo", "1h"}, fault.Invalid, "--config applies to platform, kv, blob and lake"},
 		{[]string{"platform", "-f", manifest, "--rpo", "1h"}, fault.Invalid, "-f applies to schedule"},
+		{[]string{"lake"}, fault.Invalid, "lake needs --rpo"},
+		{[]string{"lake", "--rpo", "10s", "--keep", "720h"}, fault.Invalid, "--keep does not apply to lake"},
+		{[]string{"lake", "-f", manifest, "--rpo", "10s"}, fault.Invalid, "-f applies to schedule; lake reads --config"},
 		{[]string{"rqlite", "--rpo", "1h"}, fault.Invalid, `component "rqlite"`},
 		{[]string{"platform", "--rpo", "1h", "--write"}, fault.NotFound, "--write: no config file found: give --config"},
 		{[]string{"platform", "--config", "missing.yaml", "--rpo", "1h"}, fault.NotFound, `"missing.yaml" does not exist`},
