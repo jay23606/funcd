@@ -15,6 +15,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/pyvvo/funcd/api/fault"
 	v1 "github.com/pyvvo/funcd/api/types/v1alpha1"
 	"github.com/pyvvo/funcd/internal/auth"
 	"github.com/pyvvo/funcd/internal/auth/rbac"
@@ -256,6 +257,62 @@ func TestScenarioSaveIntervalFromConfig(t *testing.T) {
 	}
 }
 
+// scenario: interval-is-the-opt-in (ADR-0279) — with lake.saveInterval set, an engine gets its interval and no save
+// port, and Reconcile hands the proxy no save URL, so answers go out at once; without it, the engine gets the save port
+// and the proxy the engine's save endpoint; an engine with a local catalog (funcdctl dev) gets neither.
+func TestScenarioIntervalIsTheOptIn(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name                string
+		interval            time.Duration
+		local               bool
+		wantPort, wantSaves string
+	}{
+		{"interval", 3 * time.Second, false, "", ""},
+		{"save before answering", 0, false, "8081", "http://10.88.0.5:8081/save"},
+		{"local catalog", 0, true, "", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st := store.New(storemem.New())
+			seedLakeBucket(t, st)
+			mgr := lakegw.NewManager("", lakegw.NewLakeKeys(nil, st), nil, nil)
+			t.Cleanup(mgr.Shutdown)
+			prov := &fakeProvider{status: provider.ProviderStatus{Running: 1, Ready: true, Address: "10.88.0.5:8080"}}
+			r := newReconciler(t, st, prov, func(d *lakesvc.ReconcilerDeps) {
+				d.Secrets = fakeSecrets{env: map[string]string{"QUACK_TOKEN": "change-me"}}
+				d.SaveInterval = tc.interval
+				d.LocalCatalog = tc.local
+				d.Proxy = mgr
+			})
+			cs := mkLake("lake", v1.FunctionBlob{Alias: "gold", Bucket: "lakehouse", Prefix: "gold"})
+			cs.Spec.Bindings.Secret = []v1.ObjectName{"lake-quack-token"}
+			_, err := st.Create(ctx, cs)
+			require.NoError(t, err)
+
+			reconcileOnce(t, r, "lake")
+
+			env := prov.lastSpec(t).Env
+			require.Equal(t, tc.wantPort, env["FUNCD_LAKE_SAVE_PORT"])
+			saves, ok := mgr.SaveURL("default", "lake")
+			require.True(t, ok, "the Lake has a proxy")
+			require.Equal(t, tc.wantSaves, saves, "the save URL Reconcile handed the proxy")
+			if tc.interval > 0 {
+				require.NotEmpty(t, env["FUNCD_LAKE_SAVE_INTERVAL"])
+			} else {
+				require.NotContains(t, env, "FUNCD_LAKE_SAVE_INTERVAL")
+			}
+		})
+	}
+}
+
+// ADR-0279 review: an engine address the reconciler cannot read fails the pass rather than leave an engine with no
+// watcher answering without a barrier.
+func TestSaveURLFailsClosed(t *testing.T) {
+	r := newReconciler(t, store.New(storemem.New()), &fakeProvider{}, nil)
+	_, err := lakesvc.SaveURL(r, "no-port")
+	require.Equal(t, fault.Internal, fault.KindOf(err))
+}
+
 // TestEngineEnvOwnKeysWinOverBoundData: a bound ConfigMap or Secret cannot replace the engine's own S3 endpoint,
 // region or key pair, and only the keys the engine reads (QUACK_TOKEN, DUCKDB_*) come through.
 func TestEngineEnvOwnKeysWinOverBoundData(t *testing.T) {
@@ -465,6 +522,7 @@ func TestScenarioCrashedLakeEngineRestarts(t *testing.T) {
 	t.Cleanup(mgr.Shutdown)
 	r := newReconciler(t, st, prov, func(d *lakesvc.ReconcilerDeps) {
 		d.Proxy = mgr
+		d.SaveInterval = time.Second // the fake engine serves no save endpoint (ADR-0279)
 		d.SupervisionPeriod = period
 	})
 	_, err := st.Create(ctx, mkLake("lake"))
@@ -509,6 +567,7 @@ func TestIssue104_ConvergeErrorMarksLakeNotReady(t *testing.T) {
 	routes := newRecordingRoutes()
 	r := newReconciler(t, st, prov, func(d *lakesvc.ReconcilerDeps) {
 		d.Proxy = mgr
+		d.SaveInterval = time.Second // the fake engine serves no save endpoint (ADR-0279)
 		d.Routes = routes
 	})
 	cs := mkLake("lake")
@@ -589,6 +648,7 @@ func TestIssue372_NotReadyGateStopsServing(t *testing.T) {
 			r := newReconciler(t, st, prov, func(d *lakesvc.ReconcilerDeps) {
 				d.Secrets = secrets
 				d.Proxy = mgr
+				d.SaveInterval = time.Second // the fake engine serves no save endpoint (ADR-0279)
 			})
 			cs := mkLake("lake")
 			cs.Spec.Bindings.Secret = []v1.ObjectName{"quack"}
@@ -781,6 +841,7 @@ func newEdgeHarness(t *testing.T, modes router.ModeFunc) *edgeHarness {
 	h.prov = &fakeProvider{status: provider.ProviderStatus{Running: 1, Ready: true, Address: "10.63.0.7:8080"}}
 	h.lakes = newReconciler(t, h.st, h.prov, func(d *lakesvc.ReconcilerDeps) {
 		d.Proxy = mgr
+		d.SaveInterval = time.Second // the fake engine serves no save endpoint (ADR-0279)
 		d.Routes = agg
 	})
 	seedLakeBucket(t, h.st)
@@ -1111,6 +1172,7 @@ func TestIssue716_NotReadyEngineStopsServing(t *testing.T) {
 			r := newReconciler(t, st, prov, func(d *lakesvc.ReconcilerDeps) {
 				d.Secrets = &fakeSecrets{env: map[string]string{"QUACK_TOKEN": "shared-engine-token"}}
 				d.Proxy = mgr
+				d.SaveInterval = time.Second // the fake engine serves no save endpoint (ADR-0279)
 			})
 			cs := mkLake("lake")
 			cs.Spec.Bindings.Secret = []v1.ObjectName{"quack"}

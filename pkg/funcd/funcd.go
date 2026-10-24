@@ -325,7 +325,8 @@ type config struct {
 	// lakeExtensionDir is injected as DUCKDB_EXTENSION_DIRECTORY into lake-consumer functions
 	// (dev analogue of the prod bundle's duckdb-ext, ADR-0089). Set by `funcdctl dev`; empty in prod.
 	lakeExtensionDir string
-	// lakeSaveInterval is every Lake engine's catalog save interval (lake.saveInterval, ADR-0274); 0 ⇒ none set.
+	// lakeSaveInterval is every Lake engine's catalog save interval (lake.saveInterval, ADR-0274); 0 ⇒ none set: every
+	// Lake saves before it answers (ADR-0279).
 	lakeSaveInterval time.Duration
 
 	// logObserver, when set, streams every captured function log line live (in addition to the normal
@@ -1164,6 +1165,8 @@ func (p *Platform) buildControlPlane() error {
 		ReferentPollInterval: c.pacing.ReferentPollInterval,
 		EnginePollInterval:   c.pacing.EnginePollInterval,
 		SaveInterval:         c.lakeSaveInterval,
+		// Only funcdctl dev overrides the Lake runtime: its process engine keeps a local catalog (ADR-0125, ADR-0279).
+		LocalCatalog: c.lakeProvider != nil,
 	}
 	// The engine's S3 keypair is derived over its Lake identity (ADR-0085, ADR-0175) by the same
 	// deriver the Function reconciler uses — present only when the S3 gateway is enabled.

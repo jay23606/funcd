@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"net"
 	"slices"
 	"strconv"
 	"strings"
@@ -167,9 +168,13 @@ func (r *Reconciler) Reconcile(ctx context.Context, req controller.Request) (con
 		}
 		var proxyURL string
 		if r.proxy != nil && st.Address != "" {
+			saveURL, serr := r.saveURL(st.Address)
+			if serr != nil {
+				return controller.Result{}, serr
+			}
 			purl, perr := r.proxy.Ensure(
 				auth.EntityRef{Type: v1.KindLake, Namespace: cs.Namespace, Name: cs.Name},
-				"http://"+st.Address, env[quackTokenEnvKey])
+				"http://"+st.Address, env[quackTokenEnvKey], saveURL)
 			if perr != nil {
 				return controller.Result{}, fault.Wrapf(perr, fault.KindOf(perr), op, "ensure lake proxy %s/%s", cs.Namespace, cs.Name)
 			}
@@ -384,9 +389,27 @@ func (r *Reconciler) syncIngressRoute(ctx context.Context, cs *v1.Lake, proxyURL
 	return nil
 }
 
+// saves reports whether the engines serve the save endpoint the PEP proxy calls before it answers (ADR-0279): not
+// with lake.saveInterval set, and not for engines with a local catalog.
+func (r *Reconciler) saves() bool { return r.saveInterval == 0 && !r.localCatalog }
+
+// saveURL is the save endpoint of the engine at address, a netns "host:port" (ADR-0279); "" when the engines serve
+// none. An address it cannot read is fault.Internal: an engine without a watcher must not answer without a barrier.
+func (r *Reconciler) saveURL(address string) (string, error) {
+	if !r.saves() {
+		return "", nil
+	}
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		return "", fault.Wrapf(err, fault.Internal, "services.lake.saveURL", "the engine address %q", address)
+	}
+	return "http://" + net.JoinHostPort(host, strconv.Itoa(savePort)) + "/save", nil
+}
+
 // engineEnv assembles the engine's environment (ADR-0087), but for its S3 key pair, issued with the engine
 // (ProviderSpec.IssueEnv, ADR-0270): AWS_REGION/AWS_ENDPOINT_URL, FUNCD_DUCKLAKE_CATALOG (the
-// lake's s3:// key), FUNCD_QUACK_PORT, FUNCD_LAKE_SAVE_INTERVAL (lake.saveInterval, ADR-0274), and the resolved
+// lake's s3:// key), FUNCD_QUACK_PORT, FUNCD_LAKE_SAVE_INTERVAL (lake.saveInterval, ADR-0274) or, without it,
+// FUNCD_LAKE_SAVE_PORT (ADR-0279), and the resolved
 // spec.bindings.secret (the Quack token) +
 // spec.bindings.config (DUCKDB_*) Data keys. funcd's own keys win over bound data, so a bound ConfigMap or Secret
 // cannot point the engine's S3 traffic or key pair elsewhere. A secret/config resolution failure is returned (the
@@ -404,6 +427,9 @@ func (r *Reconciler) engineEnv(ctx context.Context, cs *v1.Lake) (map[string]str
 	}
 	if r.saveInterval > 0 {
 		own["FUNCD_LAKE_SAVE_INTERVAL"] = v1.Duration(r.saveInterval).String()
+	}
+	if r.saves() {
+		own["FUNCD_LAKE_SAVE_PORT"] = strconv.Itoa(savePort)
 	}
 
 	// spec.bindings.config (ConfigMaps, non-sensitive) + spec.bindings.secret (Secrets, sensitive) → guarded engine

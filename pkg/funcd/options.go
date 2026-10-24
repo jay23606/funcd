@@ -544,7 +544,8 @@ func WithEphemeralProviderStorage() Option {
 // WithLakeProviderRuntime overrides the Lake add-on-provider runtime (ADR-0087). The
 // production runtime supervises the curated duckdb CONTAINER image; `funcdctl dev` (ADR-0125) injects
 // a process-mode driver that runs the embedded DuckDB+Quack engine as a host subprocess, since
-// process-dev runs no containers.
+// process-dev runs no containers. Such an engine keeps a local catalog and serves no save endpoint, so the
+// Lakes answer without the save barrier (ADR-0279 Scope).
 func WithLakeProviderRuntime(r provider.Runtime) Option {
 	return func(c *config) error { c.lakeProvider = r; return nil }
 }
@@ -560,7 +561,7 @@ func WithLakeExtensionDir(dir string) Option {
 
 // WithLakeSaveInterval sets how often every Lake engine saves its catalog after a commit, the Lake's recovery point
 // (ADR-0274, config lake.saveInterval), as the engine's FUNCD_LAKE_SAVE_INTERVAL: a whole number of milliseconds within
-// lake.saveInterval's bounds, 500ms to 1h. 0 ⇒ none set: the engine saves every second.
+// lake.saveInterval's bounds, 500ms to 1h. 0 ⇒ none set: every Lake saves its catalog before it answers (ADR-0279).
 func WithLakeSaveInterval(d time.Duration) Option {
 	return func(c *config) error {
 		if d != 0 && (d < platformconfig.MinLakeSaveInterval || d > platformconfig.MaxLakeSaveInterval || d%time.Millisecond != 0) {
