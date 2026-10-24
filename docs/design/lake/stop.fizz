@@ -1,0 +1,172 @@
+---
+# The Lake engine's stop (ADR-0271 Decision 3 as amended by ADR-0273). At SIGTERM the commit watcher keeps saving the
+# catalog every interval while the running queries drain, for at most STOP_WAIT_SECONDS; then the stop joins the
+# watcher, saves once more, and detaches the catalog, so no new transaction can use it; it cancels the queries that
+# still hold its file and uploads a copy of the closed file. A kill at any point loses at most the commits of one save
+# interval, as a crash does (#998), except the commits that complete after the last save: those of queries still
+# running when the drain ended.
+deadlock_detection: false
+options:
+  # Two commits (one of them #1217's long query) and the watcher's checkpoint race through yield points; every stop
+  # action is atomic.
+  max_concurrent_actions: 3
+  # The smallest at which every mutant fails; a wider run is in ADR-0273.
+  max_actions: 9
+  crash_on_yield: false
+---
+# diagram: phase
+# mutant upload-pre-copy: AckedCommitsAreStored
+# mutant no-detach: AckedCommitsAreStored
+# mutant copy-before-close: AckedCommitsAreStored
+# mutant no-cancel: liveness
+# mutant join-at-sigterm: KillLosesAtMostOneInterval
+# mutant no-final-save: KillLosesAtMostOneInterval
+
+COMMITS = [1, 2]
+# Commit 2 is #1217's long query: once the stop has begun, it ends only when the stop cancels it.
+LONG = 2
+# upload-pre-copy: ADR-0271 as released, whose timeout uploads a copy taken before the wait. no-detach: the stop waits
+# for no query to run instead of detaching. copy-before-close: it copies without waiting for the file to close.
+# no-cancel: it never cancels. join-at-sigterm: the watcher stops at SIGTERM, as in ADR-0271. no-final-save: the stop
+# joins the watcher without saving once more.
+MUTANT = ""
+
+action Init:
+    phase = "running"
+    attached = True
+    lock = False
+    authorized = []
+    open = []
+    committing = []
+    cancelled = []
+    local = []
+    acked = []
+    aged = []
+    late = []
+    pre = []
+    copy = []
+    stored = []
+
+# A client's commit through Quack: one request, whose transaction holds the catalog only while it runs (Quack ends a
+# transaction with its request; engine_test.py pins it). Accepting the query and binding the catalog are two steps,
+# so a query accepted before DETACH can bind after it, and then fails. A cancel that arrives before the commit starts
+# interrupts the query, and its client gets an error; a commit that started runs to its end. (A step that only reads
+# makes no interleaving point in FizzBee, so each step records what it did.)
+fair action Commit:
+    c = oneof COMMITS
+    require c not in authorized
+    atomic:
+        authorized.append(c)
+    atomic:
+        if not attached:
+            return
+        open.append(c)
+    atomic:
+        require c != LONG or phase == "running" or c in cancelled
+        if c in cancelled:
+            open.remove(c)
+            return
+        committing.append(c)
+    atomic:
+        local.append(c)
+        committing.remove(c)
+        open.remove(c)
+        if phase not in ["running", "draining"]:
+            late.append(c)
+    if phase in ["exited", "killed"]:
+        return
+    acked.append(c)
+
+# The commit watcher: it saves the catalog until the stop joins it; a killed engine uploads nothing.
+fair action Checkpoint:
+    require phase in ["running", "draining"]
+    atomic:
+        require not lock
+        lock = True
+    snapshot = list(local)
+    atomic:
+        if phase != "killed":
+            stored = snapshot
+    lock = False
+
+# One save interval passes. While the watcher runs it saves within an interval, so time moves on only once every
+# commit is saved; once the stop has joined it, time moves on freely (a stalled commit, a failed cancel).
+atomic action Tick:
+    require phase not in ["exited", "killed"]
+    if phase in ["running", "draining"] and MUTANT != "join-at-sigterm":
+        require all([c in stored for c in local])
+    aged = list(acked)
+
+# SIGTERM: the watcher keeps saving while the running queries drain (in ADR-0271, the watcher stopped here).
+atomic action StopBegin:
+    require phase == "running"
+    if MUTANT == "join-at-sigterm":
+        require not lock
+        lock = True
+    phase = "draining"
+
+# No query runs, or STOP_WAIT_SECONDS passed: join the watcher and save once more. The deadline comes whatever the
+# watcher does (strong fairness: the watcher's lock leaves it enabled only now and then).
+atomic fair<strong> action StopJoin:
+    require phase == "draining"
+    if MUTANT != "join-at-sigterm":
+        require not lock
+        lock = True
+    if MUTANT != "no-final-save":
+        stored = list(local)
+    phase = "joined"
+
+# DETACH the catalog: no new transaction can use it.
+atomic fair action StopDetach:
+    require phase == "joined"
+    pre = list(local)
+    if MUTANT != "no-detach":
+        attached = False
+    phase = "waiting"
+
+# The catalog file closed: no transaction holds it, so its copy holds every commit.
+atomic fair action StopClosed:
+    require phase in ["waiting", "cancelling"]
+    if MUTANT != "copy-before-close":
+        require len(open) == 0
+    copy = list(local)
+    phase = "uploading"
+
+# A query still holds the file after DETACH: cancel each one.
+atomic fair action StopCancel:
+    require phase == "waiting" and len(open) > 0
+    if MUTANT == "upload-pre-copy":
+        copy = list(pre)
+        phase = "uploading"
+        return
+    if MUTANT != "no-cancel":
+        for c in open:
+            cancelled.append(c)
+    phase = "cancelling"
+
+# The upload ends the stop; the process exits and sends no further answer.
+atomic fair action StopUploaded:
+    require phase == "uploading"
+    stored = list(copy)
+    phase = "exited"
+
+# The runtime kills the engine during its stop (a stalled commit, a failed cancel, an upload past the grace).
+atomic action Kill:
+    require phase in ["draining", "joined", "waiting", "cancelling", "uploading"]
+    phase = "killed"
+
+always assertion AckedCommitsAreStored:
+    if phase != "exited":
+        return True
+    return all([c in stored for c in acked])
+
+# A kill loses at most the commits acknowledged within the last save interval, and those that completed after the
+# stop's last save.
+always assertion KillLosesAtMostOneInterval:
+    if phase != "killed":
+        return True
+    return all([c in stored for c in aged if c not in late])
+
+# A stop that began always ends, or is killed.
+always eventually assertion StopEnds:
+    return phase in ["running", "exited", "killed"]
