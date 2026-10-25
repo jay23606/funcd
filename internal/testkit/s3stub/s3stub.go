@@ -48,7 +48,8 @@ const (
 
 // Stub is the endpoint. Set its fields through Set. Box refuses every object read and delete and every put under
 // gen/verified/, as ADR-0203's box policy does; FailPut refuses chosen puts and copies; OnPut runs after each stored
-// put, under the stub's lock (use PutLocked there); OnGet runs before each object read, outside it. Versioning is the
+// put, under the stub's lock (use PutLocked there); OnGet runs before each object read, outside it; FailList refuses
+// the listings of chosen prefixes with a 403, which a client does not retry. Versioning is the
 // bucket's status ("", "Enabled", "Suspended"); VersioningStatus and LockStatus, when set, answer that read with the
 // HTTP status (or Drop).
 type Stub struct {
@@ -61,6 +62,7 @@ type Stub struct {
 	FailPut          func(key string) bool
 	OnPut            func(s *Stub, key string)
 	OnGet            func(key string)
+	FailList         func(prefix string) bool
 	Versioning       string
 	VersioningStatus int
 	ObjectLock       bool
@@ -432,9 +434,10 @@ func (s *Stub) put(w http.ResponseWriter, r *http.Request, key string, body []by
 	w.Header().Set("ETag", etag(body))
 }
 
-// copy is CopyObject from "<bucket>/<key>?versionId=<id>" (URL-encoded) onto key.
+// copy is CopyObject from "<bucket>/<key>?versionId=<id>" (URL-encoded) onto key; without a versionId, from the
+// key's latest version, as S3 copies it.
 func (s *Stub) copy(w http.ResponseWriter, key, source string) {
-	src, id, _ := strings.Cut(source, "?versionId=")
+	src, id, versioned := strings.Cut(source, "?versionId=")
 	src, err := url.PathUnescape(strings.TrimPrefix(src, "/"))
 	if err != nil || !strings.HasPrefix(src, Bucket+"/") {
 		s3Error(w, http.StatusBadRequest, "InvalidArgument")
@@ -445,9 +448,20 @@ func (s *Stub) copy(w http.ResponseWriter, key, source string) {
 		return
 	}
 	srcKey := strings.TrimPrefix(src, Bucket+"/")
-	i := slices.IndexFunc(s.objects[srcKey], func(v version) bool { return v.id == id && !v.marker })
+	vs := s.objects[srcKey]
+	i := slices.IndexFunc(vs, func(v version) bool { return v.id == id && !v.marker })
+	if !versioned {
+		i = len(vs) - 1
+		if i >= 0 && vs[i].marker {
+			i = -1
+		}
+	}
 	if i < 0 {
-		s3Error(w, http.StatusNotFound, "NoSuchVersion")
+		code := "NoSuchVersion"
+		if !versioned {
+			code = "NoSuchKey"
+		}
+		s3Error(w, http.StatusNotFound, code)
 		return
 	}
 	v := s.objects[srcKey][i]
@@ -478,6 +492,10 @@ type listEntry struct {
 
 // list is ListObjectsV2 with max-keys, start-after and continuation-token (the last key of the page before).
 func (s *Stub) list(w http.ResponseWriter, q url.Values) {
+	if s.FailList != nil && s.FailList(q.Get("prefix")) {
+		s3Error(w, http.StatusForbidden, "AccessDenied")
+		return
+	}
 	prefix := q.Get("prefix")
 	limit := 1000
 	if n, err := strconv.Atoi(q.Get("max-keys")); err == nil && n > 0 {
