@@ -18,13 +18,7 @@ detached at 219039a5. The gate, the e2e suite and the lanes run once on the batc
   `TestScenarioIncompleteCopyNotRecorded`.
 
 ### Routed (not this work's)
-- **The backup test rig's minutely Europe/Paris schedules start at the wall clock** · home: elsewhere · destination:
-  the flake tracker (#1142). `newWBRig` seeds its manual clock with `time.Now()`
-  (`pkg/funcd/workload_backup_internal_test.go:111-115`), and `r.schedule` sets `Europe/Paris` (`:221`). ADR-0211
-  Decision 3 fires each slot of a fold once, so in the fold hour each year a minutely Paris schedule takes no slot, and a
-  test that waits for one can stall, as `TestScenarioCatchUpOnceNoOverlap` did on a DST night. The new tests avoid it:
-  `restoredSchedule` sets UTC (`target_sync_internal_test.go:22-26`). The older tests that use `r.schedule` predate this
-  work.
+None.
 
 ### ✅ Verified correct (keep)
 - **Decision 1, the mark:** `holdNamespaces` sets `TargetSynced` False, `PlatformRestored`, on each schedule it lists,
@@ -76,4 +70,4 @@ detached at 219039a5. The gate, the e2e suite and the lanes run once on the batc
 and `just check-specs`).
 
 ### Recommendation
-Stamp ADR-0287 `Implemented` and F202 `implemented`. The routed rig finding goes to the flake tracker.
+Stamp ADR-0287 `Implemented` and F202 `implemented`.
