@@ -46,6 +46,10 @@ type be struct {
 	mp        *multipartStore
 	life      context.Context // canceled when the gateway closes
 	held      hold.CallGate   // a write into a namespace it holds is refused (ADR-0290 Decision 6)
+	// catalogs is a namespace's view of the Lake catalog store, capped at catalogMax bytes (ADR-0293); nil serves none.
+	catalogs   func(ns v1.NamespaceName) blob.Bucket
+	catalogMax int64
+	lakeAt     func(ctx context.Context, ns v1.NamespaceName, bucket, prefix string) (v1.ObjectName, bool, error)
 }
 
 var _ backend.Backend = (*be)(nil)
@@ -84,6 +88,9 @@ func (b *be) authorize(ctx context.Context, action authz.Action, bucket, prefix 
 	pr, err := b.caller(ctx)
 	if err != nil {
 		return nil, principal{}, err
+	}
+	if bucket == v1.LakeCatalogBucket { // only object() and deletable() serve the catalog store
+		return nil, pr, accessDenied()
 	}
 	ok, err := b.allowed(ctx, pr, action, bucket, prefix)
 	if err != nil {
@@ -175,6 +182,8 @@ func mapBlobErr(err error) error {
 		return s3err.GetAPIError(s3err.ErrInvalidRequest)
 	case fault.PayloadTooLarge:
 		return s3err.GetAPIError(s3err.ErrEntityTooLarge)
+	case fault.InsufficientStorage:
+		return s3err.APIError{Code: "QuotaExceeded", Description: err.Error(), HTTPStatusCode: http.StatusInsufficientStorage}
 	default:
 		return s3err.GetAPIError(s3err.ErrInternalError)
 	}
@@ -191,8 +200,7 @@ func (b *be) GetObject(ctx context.Context, in *awss3.GetObjectInput) (*awss3.Ge
 	ctx, end := b.opContext(ctx)
 	defer end()
 	bucket, key := deref(in.Bucket), deref(in.Key)
-	prefix, _ := splitKey(key)
-	sub, _, err := b.authorize(ctx, authz.ActionS3Read, bucket, prefix)
+	sub, _, err := b.object(ctx, authz.ActionS3Read, bucket, key)
 	if err != nil {
 		return nil, err
 	}
@@ -277,8 +285,7 @@ func (b *be) HeadObject(ctx context.Context, in *awss3.HeadObjectInput) (*awss3.
 	ctx, end := b.opContext(ctx)
 	defer end()
 	bucket, key := deref(in.Bucket), deref(in.Key)
-	prefix, _ := splitKey(key)
-	sub, _, err := b.authorize(ctx, authz.ActionS3Read, bucket, prefix)
+	sub, _, err := b.object(ctx, authz.ActionS3Read, bucket, key)
 	if err != nil {
 		return nil, err
 	}
@@ -493,14 +500,21 @@ func (b *be) PutObject(ctx context.Context, in s3response.PutObjectInput) (s3res
 	ctx, end := b.opContext(ctx)
 	defer end()
 	bucket, key := deref(in.Bucket), deref(in.Key)
-	prefix, _ := splitKey(key)
-	sub, _, err := b.authorizeWrite(ctx, bucket, prefix)
+	sub, pr, err := b.object(ctx, authz.ActionS3Write, bucket, key)
 	if err != nil {
+		return s3response.PutObjectOutput{}, err
+	}
+	if err := b.refuseHeld(pr.namespace); err != nil {
 		return s3response.PutObjectOutput{}, err
 	}
 	data, rerr := b.readCapped(in.Body)
 	if rerr != nil {
 		return s3response.PutObjectOutput{}, rerr
+	}
+	if bucket == v1.LakeCatalogBucket {
+		if cerr := b.catalogTooLarge(len(data)); cerr != nil {
+			return s3response.PutObjectOutput{}, cerr
+		}
 	}
 	if cerr := writeConditions(ctx, sub, key, in.IfMatch, in.IfNoneMatch); cerr != nil {
 		return s3response.PutObjectOutput{}, cerr
@@ -516,9 +530,11 @@ func (b *be) DeleteObject(ctx context.Context, in *awss3.DeleteObjectInput) (*aw
 	ctx, end := b.opContext(ctx)
 	defer end()
 	bucket, key := deref(in.Bucket), deref(in.Key)
-	prefix, _ := splitKey(key)
-	sub, _, err := b.authorizeWrite(ctx, bucket, prefix)
+	sub, pr, err := b.deletable(ctx, bucket, key)
 	if err != nil {
+		return nil, err
+	}
+	if err := b.refuseHeld(pr.namespace); err != nil {
 		return nil, err
 	}
 	if derr := sub.Delete(ctx, key); derr != nil && fault.KindOf(derr) != fault.NotFound {
@@ -539,8 +555,7 @@ func (b *be) DeleteObjects(ctx context.Context, in *awss3.DeleteObjectsInput) (s
 	}
 	for _, obj := range in.Delete.Objects {
 		key := deref(obj.Key)
-		prefix, _ := splitKey(key)
-		sub, pr, err := b.authorize(ctx, authz.ActionS3Write, bucket, prefix)
+		sub, pr, err := b.deletable(ctx, bucket, key)
 		if err != nil {
 			res.Error = append(res.Error, awstypes.Error{Key: ptr(key), Code: ptr("AccessDenied"), Message: ptr("access denied")})
 			continue

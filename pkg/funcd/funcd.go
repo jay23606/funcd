@@ -75,6 +75,7 @@ import (
 	"github.com/pyvvo/funcd/internal/platform/hold"
 	"github.com/pyvvo/funcd/internal/platform/observability"
 	"github.com/pyvvo/funcd/internal/provider"
+	"github.com/pyvvo/funcd/internal/quota"
 	"github.com/pyvvo/funcd/internal/restore"
 	"github.com/pyvvo/funcd/internal/route"
 	"github.com/pyvvo/funcd/internal/route/owned"
@@ -329,7 +330,12 @@ type config struct {
 	// ADR-0288); 0 ⇒ platformconfig.DefaultQuarantineRetention. quarantineClock dates the entries and the sweep's
 	// cutoff; nil ⇒ the system clock.
 	quarantinePeriod time.Duration
-	quarantineClock  clock.Clock
+	// functionDefaultResources fills what a solo Function's spec.resources leaves empty (ADR-0291); zero sets none.
+	functionDefaultResources v1.ResourceSpec
+	quarantineClock          clock.Clock
+	// lakeCatalogMaxBytes caps one Lake's catalog in the catalog store (lake.catalogMaxSize, ADR-0293); 0 ⇒ the
+	// gateway's upload cap alone.
+	lakeCatalogMaxBytes int64
 	// lakeSaveInterval is every Lake engine's catalog save interval (lake.saveInterval, ADR-0274); 0 ⇒ none set: every
 	// Lake saves before it answers (ADR-0279).
 	lakeSaveInterval time.Duration
@@ -483,6 +489,7 @@ func (c *config) validate() error {
 // Platform is the assembled funcd runtime — the composition root built by New.
 type Platform struct {
 	cfg          *config
+	quotas       *quota.Book          // the store quotas every capped write asks (ADR-0292)
 	fnReconciler *function.Reconciler // the Function reconciler; Shutdown removes its private pool manifest dir
 	volumes      volume.Manager       // the Functions' volumes (ADR-0262); nil ⇒ off
 	logger       *slog.Logger
@@ -611,6 +618,13 @@ func New(opts ...Option) (_ *Platform, err error) {
 func (p *Platform) buildControlPlane() error {
 	const op = "funcd.New"
 	c := p.cfg
+	p.quotas = quota.NewBook(clock.System(), p.logger)
+	if c.blob != nil {
+		p.quotas.Register(v1.KindBucket, bucketQuotas(c.blob, c.store))
+	}
+	if kv, ok := c.kvStore.(kvstore.Usager); ok {
+		p.quotas.Register(v1.KindKVStore, kvQuotas(kv, c.store))
+	}
 	if c.authorizer == nil {
 		c.authorizer = rbac.New()
 	}
@@ -734,7 +748,7 @@ func (p *Platform) buildControlPlane() error {
 	if err != nil {
 		return fault.Wrapf(err, fault.KindOf(err), op, "build cedar PDP driver")
 	}
-	kvFacade, err := kvsvc.NewFacade(kvsvc.FacadeDeps{KV: c.kvStore, Resolver: kvResolver, Authorizer: cedarPDP, Logger: p.logger})
+	kvFacade, err := kvsvc.NewFacade(kvsvc.FacadeDeps{KV: c.kvStore, Resolver: kvResolver, Authorizer: cedarPDP, Quota: p.quotas, Logger: p.logger})
 	if err != nil {
 		return fault.Wrapf(err, fault.KindOf(err), op, "build KV facade")
 	}
@@ -755,7 +769,7 @@ func (p *Platform) buildControlPlane() error {
 		}
 		blobFacade, berr := blobsvc.NewFacade(blobsvc.FacadeDeps{
 			Resolver:   blobResolver,
-			BucketFor:  s3BucketFor(c.blob, c.store),
+			BucketFor:  s3BucketFor(c.blob, c.store, p.quotas),
 			Authorizer: cedarPDP,
 			Logger:     p.logger,
 		})
@@ -798,11 +812,13 @@ func (p *Platform) buildControlPlane() error {
 		return fault.Wrapf(err, fault.KindOf(err), op, "build SQL binding resolver")
 	}
 	sqlFacade, err := sqlsvc.NewFacade(sqlsvc.FacadeDeps{
-		Resolver: sqlResolver, Authorizer: cedarPDP, Engines: sqlEngines, Master: master, CallTimeout: c.sqlCallTimeout, Logger: p.logger,
+		Resolver: sqlResolver, Authorizer: cedarPDP, Engines: sqlEngines, Master: master, CallTimeout: c.sqlCallTimeout,
+		Quota: p.quotas, Logger: p.logger,
 	})
 	if err != nil {
 		return fault.Wrapf(err, fault.KindOf(err), op, "build SQL facade")
 	}
+	p.quotas.Register(v1.KindSQLDatabase, sqlQuotas(sqlFacade.Usage, c.store))
 	deps := health.NewChecker(health.CheckerDeps{
 		Store: c.store, KV: kvFacade, Blob: blobCheck, SQL: sqlFacade, Links: local.NewResolver(c.store), Authz: cedarPDP, Health: p.prober,
 	})
@@ -850,7 +866,7 @@ func (p *Platform) buildControlPlane() error {
 
 	var s3Injection function.S3GatewayInjection
 	if c.s3gwEnabled {
-		bucketFor := s3BucketFor(c.blob, c.store)
+		bucketFor := s3BucketFor(c.blob, c.store, p.quotas)
 		// ADR-0270: a fresh salt per start, kept in memory, so a restart ends every earlier pair.
 		var salt []byte
 		if c.s3gwKeyPeriod > 0 {
@@ -868,6 +884,11 @@ func (p *Platform) buildControlPlane() error {
 			KeySalt:        salt,
 			Listen:         c.s3gwListenAddr,
 			MaxUploadBytes: c.s3gwMaxUploadBytes,
+			Catalogs: func(ns v1.NamespaceName) blob.Bucket {
+				return blob.Prefixed(c.blob, lakeCatalogPrefix(ns))
+			},
+			CatalogMaxBytes: c.lakeCatalogMaxBytes,
+			LakeAt:          lakeAt(c.store),
 			// ADR-0135: resolve external Identity-issued keys to their stored secret (populates the
 			// previously-nil ExternalKeys seam), so a managed Identity authenticates over SigV4.
 			External: identitysvc.NewExternalKeys(c.store),
@@ -916,6 +937,7 @@ func (p *Platform) buildControlPlane() error {
 	fnReconciler, err := function.NewReconciler(function.Deps{
 		Store:                c.store,
 		QuarantinePeriod:     c.quarantinePeriodOrDefault(),
+		DefaultResources:     c.functionDefaultResources,
 		LogMaxRecordBytes:    cmp.Or(c.funclogMaxRecordBytes, funclog.DefaultMaxRecordBytes),
 		Calls:                calls,
 		InvokeSockets:        p.invokeMgr,
@@ -1003,7 +1025,7 @@ func (p *Platform) buildControlPlane() error {
 	// external S3-frontend writes land in (writer-agnostic detection over blob.Bucket.List), keeps its per-event
 	// seen lists in the event store, and publishes a named CloudEvent per new object onto the same Fanout the
 	// Sensor subscribes to. Registered by the EventSource reconciler; Run in Run().
-	blobWatcher, err := eventing.NewBlobWatcher(blobBucketLister{resolve: s3BucketFor(c.blob, c.store)}, fanout, es.SeenLists(), c.blobPollInterval, p.logger)
+	blobWatcher, err := eventing.NewBlobWatcher(blobBucketLister{resolve: s3BucketFor(c.blob, c.store, p.quotas)}, fanout, es.SeenLists(), c.blobPollInterval, p.logger)
 	if err != nil {
 		return fault.Wrapf(err, fault.KindOf(err), op, "build blob watcher")
 	}
@@ -1118,7 +1140,7 @@ func (p *Platform) buildControlPlane() error {
 	// ADR-0139 (F103): the Site reconciler materializes a site bundle under a digest-scoped prefix of the
 	// SAME per-namespace Bucket view the S3 frontend and the static handler use (s3BucketFor), then owns
 	// the Bucket + Route it declares inline; its status is derived from the owned Route.
-	siteReconciler := site.New(site.Deps{Store: c.store, Buckets: s3BucketFor(c.blob, c.store), DefaultIndex: c.siteDefaultIndex, Logger: p.logger, ReferentPollInterval: c.pacing.ReferentPollInterval})
+	siteReconciler := site.New(site.Deps{Store: c.store, Buckets: s3BucketFor(c.blob, c.store, p.quotas), DefaultIndex: c.siteDefaultIndex, Logger: p.logger, ReferentPollInterval: c.pacing.ReferentPollInterval})
 	ctrl.Register(v1.KindSite.GVK(), siteReconciler)
 	ctrl.Watches(v1.KindRoute.GVK(), owned.MapOwner(c.store, v1.KindSite)) // status is derived from the owned Route
 	// ADR-0241 Decision 5: a Function's IngressReady follows the Route of its own address
@@ -1389,7 +1411,7 @@ func (p *Platform) buildControlPlane() error {
 			// Binding/owner EXISTENCE is reconcile-time (ADR-0121), as for KV. The data-emptiness prober Lists
 			// the same substrate view the s3gateway writes (s3BucketFor).
 			admission.NewBucketQuotaAdmission(r, bucketMax),
-			admission.NewBucketDeletionProtectionAdmission(r, blobProber{blobBucketLister{resolve: s3BucketFor(c.blob, c.store)}}),
+			admission.NewBucketDeletionProtectionAdmission(r, blobProber{lister: blobBucketLister{resolve: s3BucketFor(c.blob, c.store, p.quotas)}, shared: c.blob}),
 			// ADR-0232 SQLDatabase rules: the count quota, and no API delete while the engine holds a table.
 			admission.NewSQLDatabaseQuotaAdmission(r, sqlMax),
 			admission.NewSQLDatabaseDeletionProtectionAdmission(r, sqlReconciler.Prober()),
@@ -1501,7 +1523,7 @@ func (p *Platform) buildControlPlane() error {
 	// ADR-0120 (F82): the static-asset handler serves a static Route's Bucket prefix directly over the
 	// SAME per-namespace Bucket view the S3 frontend uses (s3BucketFor → blob.Prefixed), with no
 	// activator hop. Always wired; a static Route match without it would 404.
-	staticHandler, err := static.New(static.Deps{Buckets: s3BucketFor(c.blob, c.store), Logger: p.logger})
+	staticHandler, err := static.New(static.Deps{Buckets: s3BucketFor(c.blob, c.store, p.quotas), Logger: p.logger})
 	if err != nil {
 		return fault.Wrapf(err, fault.KindOf(err), op, "build static asset handler")
 	}
@@ -1802,6 +1824,11 @@ func (p *Platform) Run(ctx context.Context) error {
 			}
 		}()
 	}
+	wg.Add(1)
+	go func() { // ADR-0292 Decision 3: the store quotas' refresh, off the write path
+		defer wg.Done()
+		p.quotas.Run(ctx)
+	}()
 	wg.Add(1)
 	go func() { // ADR-0288 Decision 5: the quarantine's sweep, never inside the start
 		defer wg.Done()
@@ -2428,9 +2455,10 @@ func enqueueAll(ctx context.Context, st store.Store, ctrl *controller.Controller
 // one substrate bucket, many logical S3 buckets — so distinct namespaces and buckets
 // never collide. Existence-by-namespace here gives tenancy a second guard (a missing /
 // cross-namespace bucket is NoSuchBucket); the binding-as-grant Cedar PEP is the
-// authorization gate on every object op. The view carries the Bucket's spec.maxObjectBytes,
-// so every write path through it (S3 frontend, context.blob, site) enforces that policy.
-func s3BucketFor(shared blob.Bucket, st store.Store) func(ns v1.NamespaceName, bucket string) (blob.Bucket, bool) {
+// authorization gate on every object op. The view carries the Bucket's spec.quota: its per-object cap
+// (blob.Capped, a 413 first) over its total sizes (blob.Quoted, ADR-0292), so every write path through it (S3
+// frontend, context.blob, site) enforces them.
+func s3BucketFor(shared blob.Bucket, st store.Store, chk quota.Checker) func(ns v1.NamespaceName, bucket string) (blob.Bucket, bool) {
 	return func(ns v1.NamespaceName, bucket string) (blob.Bucket, bool) {
 		if bucket == "" {
 			return nil, false
@@ -2439,11 +2467,17 @@ func s3BucketFor(shared blob.Bucket, st store.Store) func(ns v1.NamespaceName, b
 		if err != nil {
 			return nil, false
 		}
-		var maxObjectBytes int64
-		if b, ok := obj.(*v1.Bucket); ok {
-			maxObjectBytes = b.Spec.MaxObjectBytes
+		b, _ := obj.(*v1.Bucket)
+		if b == nil {
+			return nil, false
 		}
-		return blob.Capped(blob.Prefixed(shared, bucketPrefix(ns, v1.ObjectName(bucket))), maxObjectBytes), true
+		capped := func(prefix string) bool {
+			_, ok := bucketQuota(b, prefix).Limit()
+			return ok
+		}
+		subject := quota.Subject{Kind: v1.KindBucket, Namespace: ns, Name: v1.ObjectName(bucket)}
+		view := blob.Quoted(blob.Prefixed(shared, bucketPrefix(ns, v1.ObjectName(bucket))), chk, subject, capped)
+		return blob.Capped(view, b.Spec.Quota.MaxObjectBytes), true
 	}
 }
 
@@ -2455,13 +2489,40 @@ func bucketPrefix(ns v1.NamespaceName, bucket v1.ObjectName) string {
 	return s3Root + string(ns) + "/" + string(bucket) + "/"
 }
 
+// lakeCatalogRoot is the substrate key prefix of the Lake catalog store, beside s3Root (ADR-0293): a Lake's catalog is
+// lake-catalogs/<ns>/<bucket>/<prefix>/_ducklake/catalog.db, under the location of its files.
+const lakeCatalogRoot = "lake-catalogs/"
+
+// lakeCatalogPrefix is a namespace's substrate prefix in the catalog store.
+func lakeCatalogPrefix(ns v1.NamespaceName) string { return lakeCatalogRoot + string(ns) + "/" }
+
+// bucketCatalogPrefix is the substrate prefix of the catalogs of the Lakes on one Bucket's prefixes, which go with the
+// Bucket's objects wherever a purge or the quarantine takes them (ADR-0293 Decision 6).
+func bucketCatalogPrefix(ns v1.NamespaceName, bucket v1.ObjectName) string {
+	return lakeCatalogPrefix(ns) + string(bucket) + "/"
+}
+
+// LakeData maps a catalog's substrate key to the substrate prefix of its Lake's files, ok=false for any other key: the
+// platform mirror freezes a catalog before them (ADR-0293 Decision 5).
+func LakeData(key string) (prefix string, ok bool) {
+	rest, ok := strings.CutPrefix(key, lakeCatalogRoot)
+	if !ok {
+		return "", false
+	}
+	loc, ok := strings.CutSuffix(rest, "/_ducklake/catalog.db")
+	if !ok || strings.Count(loc, "/") != 2 {
+		return "", false
+	}
+	return s3Root + loc + "/", true
+}
+
 // registerWorkloadBackups builds the BackupSchedule, Backup and Restore reconcilers (ADR-0222) over the shared stores
 // and registers them: a Backup's change requeues its schedule and the Restores that read or wait for it.
 func (p *Platform) registerWorkloadBackups(ctrl *controller.Controller, secrets backupsvc.SecretReader) error {
 	c := p.cfg
 	d := backupsvc.Deps{
 		Store: c.store, Secrets: secrets, Purger: bucketPurger{shared: c.blob}, StoreURL: c.blobStoreURL,
-		Sources: workload.Sources{Blob: c.blob, BucketPrefix: bucketPrefix, SQL: p.sqlReconciler.Backups().Source},
+		Sources: workload.Sources{Blob: c.blob, BucketPrefix: bucketPrefix, CatalogPrefix: lakeCatalogPrefix, SQL: p.sqlReconciler.Backups().Source},
 		SQL:     p.sqlReconciler.Backups(),
 		Period:  c.pacing.SupervisionPeriod, Clock: c.backupClock, Meter: c.backupMeter, Logger: p.logger,
 	}
@@ -2509,9 +2570,17 @@ const purgePage = 1000
 // s3BucketFor it resolves no Bucket resource, so it also purges the prefix of a deleted one.
 type bucketPurger struct{ shared blob.Bucket }
 
+// Purge deletes the Bucket's objects, then the catalogs of the Lakes on its prefixes (ADR-0293 Decision 5).
 func (p bucketPurger) Purge(ctx context.Context, ns v1.NamespaceName, bucket v1.ObjectName) error {
+	if err := p.purge(ctx, ns, bucket, bucketPrefix(ns, bucket)); err != nil {
+		return err
+	}
+	return p.purge(ctx, ns, bucket, bucketCatalogPrefix(ns, bucket))
+}
+
+func (p bucketPurger) purge(ctx context.Context, ns v1.NamespaceName, bucket v1.ObjectName, prefix string) error {
 	const op = "funcd.bucketPurger.Purge"
-	view := blob.Prefixed(p.shared, bucketPrefix(ns, bucket))
+	view := blob.Prefixed(p.shared, prefix)
 	after := ""
 	for {
 		items, more, err := view.ListAfter(ctx, "", after, purgePage)
@@ -2530,41 +2599,48 @@ func (p bucketPurger) Purge(ctx context.Context, ns v1.NamespaceName, bucket v1.
 	}
 }
 
-// bucketOrphans lists each <ns>/<bucket> with objects under bucketPrefix and no Bucket (ADR-0206 Decision 6), with
-// the errors of the lookups it could not make. It reads one key per prefix and seeks past the rest, as the S3
-// frontend rolls up a common prefix.
+// bucketOrphans lists each <ns>/<bucket> with objects under bucketPrefix or catalogs under bucketCatalogPrefix and no
+// Bucket (ADR-0206 Decision 6, ADR-0293 Decision 6), with the errors of the lookups it could not make. It reads one key
+// per prefix and seeks past the rest, as the S3 frontend rolls up a common prefix.
 func bucketOrphans(ctx context.Context, shared blob.Bucket, st store.Store) ([]v1.ObjectRef, error) {
 	const op = "funcd.bucketOrphans"
 	var out []v1.ObjectRef
 	var errs []error
-	after := ""
-	for {
-		items, _, err := shared.ListAfter(ctx, s3Root, after, 1)
-		if err != nil {
-			return out, errors.Join(append(errs, fault.Wrapf(err, fault.KindOf(err), op, "list bucket prefixes"))...)
-		}
-		if len(items) == 0 {
-			return out, errors.Join(errs...)
-		}
-		key := items[0].Key
-		parts := strings.SplitN(strings.TrimPrefix(key, s3Root), "/", 3)
-		if len(parts) < 3 {
-			after = key
-			continue
-		}
-		ns, name := v1.NamespaceName(parts[0]), v1.ObjectName(parts[1])
-		after = max(bucketPrefix(ns, name)+string(utf8.MaxRune), key)
-		if ns.Validate() != nil || name.Validate() != nil {
-			continue
-		}
-		_, gerr := st.Get(ctx, v1.KindBucket.GVK(), ns, name)
-		switch {
-		case fault.KindOf(gerr) == fault.NotFound:
-			out = append(out, v1.ObjectRef{Kind: v1.KindBucket, Namespace: ns, Name: name})
-		case gerr != nil:
-			errs = append(errs, fault.Wrapf(gerr, fault.KindOf(gerr), op, "get bucket %s/%s", ns, name))
+	seen := map[v1.ObjectRef]bool{}
+	for _, root := range []string{s3Root, lakeCatalogRoot} {
+		after := ""
+		for {
+			items, _, err := shared.ListAfter(ctx, root, after, 1)
+			if err != nil {
+				errs = append(errs, fault.Wrapf(err, fault.KindOf(err), op, "list bucket prefixes under %s", root))
+				break
+			}
+			if len(items) == 0 {
+				break
+			}
+			key := items[0].Key
+			parts := strings.SplitN(strings.TrimPrefix(key, root), "/", 3)
+			if len(parts) < 3 {
+				after = key
+				continue
+			}
+			ns, name := v1.NamespaceName(parts[0]), v1.ObjectName(parts[1])
+			after = max(root+string(ns)+"/"+string(name)+"/"+string(utf8.MaxRune), key)
+			ref := v1.ObjectRef{Kind: v1.KindBucket, Namespace: ns, Name: name}
+			if ns.Validate() != nil || name.Validate() != nil || seen[ref] {
+				continue
+			}
+			seen[ref] = true
+			_, gerr := st.Get(ctx, v1.KindBucket.GVK(), ns, name)
+			switch {
+			case fault.KindOf(gerr) == fault.NotFound:
+				out = append(out, ref)
+			case gerr != nil:
+				errs = append(errs, fault.Wrapf(gerr, fault.KindOf(gerr), op, "get bucket %s/%s", ns, name))
+			}
 		}
 	}
+	return out, errors.Join(errs...)
 }
 
 // heldMarker reports the hold's marker while the platform is held (ADR-0206).
@@ -2624,6 +2700,22 @@ func s3Buckets(st store.Store) func(ctx context.Context, ns v1.NamespaceName) ([
 	}
 }
 
+// lakeAt names the Lake of a namespace located on bucket/prefix, for the S3 gateway's catalog delete (ADR-0293).
+func lakeAt(st store.Store) func(ctx context.Context, ns v1.NamespaceName, bucket, prefix string) (v1.ObjectName, bool, error) {
+	return func(ctx context.Context, ns v1.NamespaceName, bucket, prefix string) (v1.ObjectName, bool, error) {
+		l, err := st.List(ctx, v1.KindLake.GVK(), store.ListOptions{Namespace: ns})
+		if err != nil {
+			return "", false, err
+		}
+		for _, o := range l.Items {
+			if lk, ok := o.(*v1.Lake); ok && string(lk.Spec.Location.Bucket) == bucket && lk.Spec.Location.Prefix == prefix {
+				return lk.Name, true, nil
+			}
+		}
+		return "", false, nil
+	}
+}
+
 // blobBucketLister adapts the s3BucketFor resolver to the eventing.BucketLister the BlobWatcher polls
 // (ADR-0119): it resolves (ns, Bucket) to the SAME prefixed substrate view external S3-frontend writes land
 // in, then Lists the prefix over it. A missing Bucket is fault.NotFound (the watcher logs + skips that poll;
@@ -2640,16 +2732,28 @@ func (l blobBucketLister) List(ctx context.Context, ns v1.NamespaceName, bucket 
 	return b.List(ctx, prefix)
 }
 
-// blobProber adapts blobBucketLister to admission.BlobProber (ADR-0080 deletion-protection): HasAny reports
-// whether any object exists under "<prefix>/" of the Bucket's substrate view.
-type blobProber struct{ lister blobBucketLister }
+// blobProber adapts blobBucketLister to admission.BlobProber (ADR-0080 deletion-protection): Remaining reports the
+// objects under "<prefix>/" of the Bucket's substrate view, else a Lake's catalog for that prefix in the catalog store,
+// whose inlined rows are the prefix's data too (ADR-0293), by the S3 key its writer deletes it with.
+type blobProber struct {
+	lister blobBucketLister
+	shared blob.Bucket
+}
 
-func (p blobProber) HasAny(ctx context.Context, ns v1.NamespaceName, bucket v1.ObjectName, prefix string) (bool, error) {
+func (p blobProber) Remaining(ctx context.Context, ns v1.NamespaceName, bucket v1.ObjectName, prefix string) (string, error) {
 	items, err := p.lister.List(ctx, ns, bucket, prefix+"/")
-	if err != nil {
-		return false, err
+	switch {
+	case err != nil:
+		return "", err
+	case len(items) > 0:
+		return "objects", nil
 	}
-	return len(items) > 0, nil
+	key := v1.LakeCatalogKey(v1.LakeLocation{Bucket: bucket, Prefix: prefix})
+	found, err := p.shared.Exists(ctx, lakeCatalogPrefix(ns)+key)
+	if err != nil || !found {
+		return "", err
+	}
+	return "its Lake catalog " + v1.LakeCatalogBucket + "/" + key, nil
 }
 
 // kvProber adapts the kvstore.KV driver's List to admission.KVProber (ADR-0072 deletion-protection):

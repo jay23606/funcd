@@ -487,8 +487,11 @@ func TestIssue900_UnversionedWriteSurvivesStatusWrite(t *testing.T) {
 // fullPrefixes is a BlobProber whose listed prefixes hold objects.
 type fullPrefixes map[string]bool
 
-func (p fullPrefixes) HasAny(_ context.Context, _ v1.NamespaceName, _ v1.ObjectName, prefix string) (bool, error) {
-	return p[prefix], nil
+func (p fullPrefixes) Remaining(_ context.Context, _ v1.NamespaceName, _ v1.ObjectName, prefix string) (string, error) {
+	if p[prefix] {
+		return "objects", nil
+	}
+	return "", nil
 }
 
 // An unversioned delete is judged by bucket-deletion-protection (ADR-0080). It reads other objects (the namespace's
@@ -510,15 +513,15 @@ func TestDeleteRechecksProtectionWrittenConcurrently(t *testing.T) {
 			races: 1, code: http.StatusConflict, gets: 2,
 		},
 		"unprotected change": {
-			write: func(b *v1.Bucket) { b.Spec.MaxObjectBytes = 1 << 20 },
+			write: func(b *v1.Bucket) { b.Spec.Quota.MaxObjectBytes = 1 << 20 },
 			races: 1, code: http.StatusNoContent, gets: 2,
 		},
 		"write on every attempt": {
-			write: func(b *v1.Bucket) { b.Spec.MaxObjectBytes++ },
+			write: func(b *v1.Bucket) { b.Spec.Quota.MaxObjectBytes++ },
 			races: 1000, code: http.StatusConflict, gets: controlplane.OwnReadAttempts,
 		},
 		"client version": {
-			write: func(b *v1.Bucket) { b.Spec.MaxObjectBytes = 1 << 20 },
+			write: func(b *v1.Bucket) { b.Spec.Quota.MaxObjectBytes = 1 << 20 },
 			races: 1, ifMatch: true, code: http.StatusConflict, gets: 1,
 		},
 	} {
