@@ -336,6 +336,14 @@ type config struct {
 	// lakeCatalogMaxBytes caps one Lake's catalog in the catalog store (lake.catalogMaxSize, ADR-0293); 0 ⇒ the
 	// gateway's upload cap alone.
 	lakeCatalogMaxBytes int64
+	// lakeScratchBytes sizes each Lake engine's scratch, kept as images under scratchRoot and mounted under
+	// scratchMountRoot (lake.scratchSize, ADR-0294); scratchRoot "" ⇒ no scratch, as on the process runtime.
+	lakeScratchBytes              int64
+	scratchRoot, scratchMountRoot string
+	// floorFree and floorMinFree are the free-space floor of the data filesystem (storage.minFreeSize, ADR-0296);
+	// floorMinFree 0 ⇒ no floor.
+	floorFree    quota.FreeFunc
+	floorMinFree int64
 	// lakeSaveInterval is every Lake engine's catalog save interval (lake.saveInterval, ADR-0274); 0 ⇒ none set: every
 	// Lake saves before it answers (ADR-0279).
 	lakeSaveInterval time.Duration
@@ -490,6 +498,8 @@ func (c *config) validate() error {
 type Platform struct {
 	cfg          *config
 	quotas       *quota.Book          // the store quotas every capped write asks (ADR-0292)
+	checker      quota.Checker        // what every storage write asks: the quotas, behind the free-space floor (ADR-0296)
+	floor        *quota.Floor         // the free-space floor; nil ⇒ none
 	fnReconciler *function.Reconciler // the Function reconciler; Shutdown removes its private pool manifest dir
 	volumes      volume.Manager       // the Functions' volumes (ADR-0262); nil ⇒ off
 	logger       *slog.Logger
@@ -619,6 +629,11 @@ func (p *Platform) buildControlPlane() error {
 	const op = "funcd.New"
 	c := p.cfg
 	p.quotas = quota.NewBook(clock.System(), p.logger)
+	p.checker = p.quotas
+	if c.floorMinFree > 0 {
+		p.floor = quota.NewFloor(c.floorFree, c.floorMinFree, clock.System(), p.logger)
+		p.checker = p.floor.Guard(p.quotas)
+	}
 	if c.blob != nil {
 		p.quotas.Register(v1.KindBucket, bucketQuotas(c.blob, c.store))
 	}
@@ -748,7 +763,7 @@ func (p *Platform) buildControlPlane() error {
 	if err != nil {
 		return fault.Wrapf(err, fault.KindOf(err), op, "build cedar PDP driver")
 	}
-	kvFacade, err := kvsvc.NewFacade(kvsvc.FacadeDeps{KV: c.kvStore, Resolver: kvResolver, Authorizer: cedarPDP, Quota: p.quotas, Logger: p.logger})
+	kvFacade, err := kvsvc.NewFacade(kvsvc.FacadeDeps{KV: c.kvStore, Resolver: kvResolver, Authorizer: cedarPDP, Quota: p.checker, Logger: p.logger})
 	if err != nil {
 		return fault.Wrapf(err, fault.KindOf(err), op, "build KV facade")
 	}
@@ -769,7 +784,7 @@ func (p *Platform) buildControlPlane() error {
 		}
 		blobFacade, berr := blobsvc.NewFacade(blobsvc.FacadeDeps{
 			Resolver:   blobResolver,
-			BucketFor:  s3BucketFor(c.blob, c.store, p.quotas),
+			BucketFor:  s3BucketFor(c.blob, c.store, p.checker),
 			Authorizer: cedarPDP,
 			Logger:     p.logger,
 		})
@@ -813,7 +828,7 @@ func (p *Platform) buildControlPlane() error {
 	}
 	sqlFacade, err := sqlsvc.NewFacade(sqlsvc.FacadeDeps{
 		Resolver: sqlResolver, Authorizer: cedarPDP, Engines: sqlEngines, Master: master, CallTimeout: c.sqlCallTimeout,
-		Quota: p.quotas, Logger: p.logger,
+		Quota: p.checker, Logger: p.logger,
 	})
 	if err != nil {
 		return fault.Wrapf(err, fault.KindOf(err), op, "build SQL facade")
@@ -866,7 +881,7 @@ func (p *Platform) buildControlPlane() error {
 
 	var s3Injection function.S3GatewayInjection
 	if c.s3gwEnabled {
-		bucketFor := s3BucketFor(c.blob, c.store, p.quotas)
+		bucketFor := s3BucketFor(c.blob, c.store, p.checker)
 		// ADR-0270: a fresh salt per start, kept in memory, so a restart ends every earlier pair.
 		var salt []byte
 		if c.s3gwKeyPeriod > 0 {
@@ -885,7 +900,8 @@ func (p *Platform) buildControlPlane() error {
 			Listen:         c.s3gwListenAddr,
 			MaxUploadBytes: c.s3gwMaxUploadBytes,
 			Catalogs: func(ns v1.NamespaceName) blob.Bucket {
-				return blob.Prefixed(c.blob, lakeCatalogPrefix(ns))
+				// no quota caps a catalog; the view asks the free-space floor (ADR-0296 Decision 4)
+				return blob.Quoted(blob.Prefixed(c.blob, lakeCatalogPrefix(ns)), p.checker, quota.Subject{}, func(string) bool { return false })
 			},
 			CatalogMaxBytes: c.lakeCatalogMaxBytes,
 			LakeAt:          lakeAt(c.store),
@@ -1025,7 +1041,7 @@ func (p *Platform) buildControlPlane() error {
 	// external S3-frontend writes land in (writer-agnostic detection over blob.Bucket.List), keeps its per-event
 	// seen lists in the event store, and publishes a named CloudEvent per new object onto the same Fanout the
 	// Sensor subscribes to. Registered by the EventSource reconciler; Run in Run().
-	blobWatcher, err := eventing.NewBlobWatcher(blobBucketLister{resolve: s3BucketFor(c.blob, c.store, p.quotas)}, fanout, es.SeenLists(), c.blobPollInterval, p.logger)
+	blobWatcher, err := eventing.NewBlobWatcher(blobBucketLister{resolve: s3BucketFor(c.blob, c.store, p.checker)}, fanout, es.SeenLists(), c.blobPollInterval, p.logger)
 	if err != nil {
 		return fault.Wrapf(err, fault.KindOf(err), op, "build blob watcher")
 	}
@@ -1140,7 +1156,7 @@ func (p *Platform) buildControlPlane() error {
 	// ADR-0139 (F103): the Site reconciler materializes a site bundle under a digest-scoped prefix of the
 	// SAME per-namespace Bucket view the S3 frontend and the static handler use (s3BucketFor), then owns
 	// the Bucket + Route it declares inline; its status is derived from the owned Route.
-	siteReconciler := site.New(site.Deps{Store: c.store, Buckets: s3BucketFor(c.blob, c.store, p.quotas), DefaultIndex: c.siteDefaultIndex, Logger: p.logger, ReferentPollInterval: c.pacing.ReferentPollInterval})
+	siteReconciler := site.New(site.Deps{Store: c.store, Buckets: s3BucketFor(c.blob, c.store, p.checker), DefaultIndex: c.siteDefaultIndex, Logger: p.logger, ReferentPollInterval: c.pacing.ReferentPollInterval})
 	ctrl.Register(v1.KindSite.GVK(), siteReconciler)
 	ctrl.Watches(v1.KindRoute.GVK(), owned.MapOwner(c.store, v1.KindSite)) // status is derived from the owned Route
 	// ADR-0241 Decision 5: a Function's IngressReady follows the Route of its own address
@@ -1181,10 +1197,15 @@ func (p *Platform) buildControlPlane() error {
 	// injects a process-mode driver that runs the embedded engine as a subprocess (no containers).
 	providerRuntime := c.lakeProvider
 	if providerRuntime == nil {
+		var floor provider.Floor
+		if p.floor != nil {
+			floor = p.floor
+		}
 		var perr error
 		providerRuntime, perr = provider.NewRuntime(provider.Deps{
 			Runtime: c.runtime, OwnerKind: v1.KindLake, Gateway: c.gateway, Logger: p.logger,
 			ProbeTimeout: c.pacing.EngineProbeTimeout, StorageRoot: c.providerStorage,
+			ScratchRoot: c.scratchRoot, ScratchMountRoot: c.scratchMountRoot, Floor: floor,
 		})
 		if perr != nil {
 			return fault.Wrapf(perr, fault.KindOf(perr), op, "build provider runtime")
@@ -1206,6 +1227,9 @@ func (p *Platform) buildControlPlane() error {
 		SaveInterval:         c.lakeSaveInterval,
 		// Only funcdctl dev overrides the Lake runtime: its process engine keeps a local catalog (ADR-0125, ADR-0279).
 		LocalCatalog: c.lakeProvider != nil,
+	}
+	if c.lakeProvider == nil && c.scratchRoot != "" {
+		lakeDeps.ScratchBytes, lakeDeps.CatalogMaxBytes = c.lakeScratchBytes, c.lakeCatalogMaxBytes // ADR-0294
 	}
 	// The engine's S3 keypair is derived over its Lake identity (ADR-0085, ADR-0175) by the same
 	// deriver the Function reconciler uses — present only when the S3 gateway is enabled.
@@ -1411,7 +1435,7 @@ func (p *Platform) buildControlPlane() error {
 			// Binding/owner EXISTENCE is reconcile-time (ADR-0121), as for KV. The data-emptiness prober Lists
 			// the same substrate view the s3gateway writes (s3BucketFor).
 			admission.NewBucketQuotaAdmission(r, bucketMax),
-			admission.NewBucketDeletionProtectionAdmission(r, blobProber{lister: blobBucketLister{resolve: s3BucketFor(c.blob, c.store, p.quotas)}, shared: c.blob}),
+			admission.NewBucketDeletionProtectionAdmission(r, blobProber{lister: blobBucketLister{resolve: s3BucketFor(c.blob, c.store, p.checker)}, shared: c.blob}),
 			// ADR-0232 SQLDatabase rules: the count quota, and no API delete while the engine holds a table.
 			admission.NewSQLDatabaseQuotaAdmission(r, sqlMax),
 			admission.NewSQLDatabaseDeletionProtectionAdmission(r, sqlReconciler.Prober()),
@@ -1523,7 +1547,7 @@ func (p *Platform) buildControlPlane() error {
 	// ADR-0120 (F82): the static-asset handler serves a static Route's Bucket prefix directly over the
 	// SAME per-namespace Bucket view the S3 frontend uses (s3BucketFor → blob.Prefixed), with no
 	// activator hop. Always wired; a static Route match without it would 404.
-	staticHandler, err := static.New(static.Deps{Buckets: s3BucketFor(c.blob, c.store, p.quotas), Logger: p.logger})
+	staticHandler, err := static.New(static.Deps{Buckets: s3BucketFor(c.blob, c.store, p.checker), Logger: p.logger})
 	if err != nil {
 		return fault.Wrapf(err, fault.KindOf(err), op, "build static asset handler")
 	}
@@ -1558,10 +1582,14 @@ func (p *Platform) buildControlPlane() error {
 	// without it, and Path A below then keeps only a Function's tail (ADR-0168).
 	var logs funclog.Sink
 	if lc, ok := c.runtime.(runtime.LogCapturer); ok && c.blob != nil && !c.funclogDisabled {
-		sink, serr := funclog.NewBlobSink(funclog.Deps{
+		deps := funclog.Deps{
 			Bucket: c.blob, Clock: clock.System(), Logger: p.logger,
 			SegmentMaxAge: c.funclogMaxAge, SegmentMaxBytes: c.funclogMaxBytes,
-		})
+		}
+		if p.floor != nil {
+			deps.Floor = p.floor
+		}
+		sink, serr := funclog.NewBlobSink(deps)
 		if serr != nil {
 			return fault.Wrapf(serr, fault.Internal, op, "build funclog sink")
 		}

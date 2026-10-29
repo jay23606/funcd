@@ -31,6 +31,7 @@ import (
 	"github.com/pyvvo/funcd/internal/platform/hold"
 	"github.com/pyvvo/funcd/internal/platform/observability"
 	"github.com/pyvvo/funcd/internal/provider"
+	"github.com/pyvvo/funcd/internal/quota"
 	"github.com/pyvvo/funcd/internal/runtime"
 	"github.com/pyvvo/funcd/internal/store"
 	"github.com/pyvvo/funcd/internal/volume"
@@ -584,6 +585,18 @@ func WithFunctionDefaultResources(rs v1.ResourceSpec) Option {
 	}
 }
 
+// WithFreeSpaceFloor keeps minFreeBytes free on the data filesystem whose free space free reads: workload writes that
+// would take it lower get 507 (storage.minFreeSize, ADR-0296); 0 sets no floor.
+func WithFreeSpaceFloor(free quota.FreeFunc, minFreeBytes int64) Option {
+	return func(c *config) error {
+		if minFreeBytes < 0 || minFreeBytes > 0 && free == nil {
+			return fault.Invalidf("funcd.WithFreeSpaceFloor", "a floor of %d bytes needs a free-space reader and 0 or more bytes", minFreeBytes)
+		}
+		c.floorFree, c.floorMinFree = free, minFreeBytes
+		return nil
+	}
+}
+
 // WithLakeCatalogMaxBytes caps one Lake's catalog in the catalog store (lake.catalogMaxSize, ADR-0293 Decision 3); 0
 // leaves the gateway's upload cap alone.
 func WithLakeCatalogMaxBytes(n int64) Option {
@@ -592,6 +605,19 @@ func WithLakeCatalogMaxBytes(n int64) Option {
 			return fault.Invalidf("funcd.WithLakeCatalogMaxBytes", "lake catalog cap %d: want 0 or more bytes", n)
 		}
 		c.lakeCatalogMaxBytes = n
+		return nil
+	}
+}
+
+// WithLakeScratch gives each Lake engine on the containerd runtime a scratch of sizeBytes (lake.scratchSize,
+// ADR-0294): a preallocated image under root, mounted under mountRoot.
+func WithLakeScratch(sizeBytes int64, root, mountRoot string) Option {
+	return func(c *config) error {
+		if sizeBytes <= 0 || root == "" || mountRoot == "" {
+			return fault.Invalidf("funcd.WithLakeScratch", "lake scratch of %d bytes under %q and %q: want a size and both roots",
+				sizeBytes, root, mountRoot)
+		}
+		c.lakeScratchBytes, c.scratchRoot, c.scratchMountRoot = sizeBytes, root, mountRoot
 		return nil
 	}
 }
