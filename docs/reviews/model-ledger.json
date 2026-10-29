@@ -13213,5 +13213,20 @@
     "dod_total": 7,
     "report": "docs/reviews/adr-0297-implementation-claude-opus-5-5-3.md",
     "notes": "round 3 on 55c2fc66: pass; the whole cmd/funcd package passes with TestStoresOpenBytes serial"
+  },
+  {
+    "date": "2026-10-29",
+    "adr": "0300",
+    "phase": "implementation",
+    "model": "claude-opus-5-5",
+    "verdict": "pass",
+    "blockers": 0,
+    "majors": 0,
+    "minors": 1,
+    "model_attributed": 1,
+    "dod_passed": 8,
+    "dod_total": 8,
+    "report": "docs/reviews/adr-0300-implementation-claude-opus-5-5.md",
+    "notes": "eventstore rename complete; minor (model): the default-dir scenario test proves the derived path, not a start"
   }
 ]
